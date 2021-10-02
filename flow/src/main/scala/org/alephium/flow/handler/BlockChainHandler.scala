@@ -100,6 +100,15 @@ class BlockChainHandler(
   override def receive: Receive = validate orElse updateNodeSyncStatus
 
   def validate: Receive = { case Validate(block, broker, origin) =>
+    if (brokerConfig.contains(block.chainIndex.from)) {
+      block.blockDeps.deps.foreach { dep =>
+        println(
+          s"=== ${block.hash.shortHex},${dep.shortHex},${blockFlow.getHeightUnsafe(
+            block.parentHash
+          ) + 1},${block.timestamp.millis},${block.chainIndex.from.value},${block.chainIndex.to.value}"
+        )
+      }
+    }
     handleData(block, broker, origin)
   }
 
