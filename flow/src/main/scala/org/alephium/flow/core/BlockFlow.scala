@@ -319,7 +319,11 @@ object BlockFlow extends StrictLogging {
     }
 
     def getBestIntraGroupTip(): BlockHash = {
-      intraGroupChains.reduceBy(_.getBestTipUnsafe())(blockHashOrdering.max)
+      println(s"==== ${intraGroupChains
+        .map(chain => chain.getAllTips.map(tip => tip.shortHex -> chain.getWeight(tip)))}")
+      val bestTip = intraGroupChains.reduceBy(_.getBestTipUnsafe())(blockHashOrdering.max)
+      println(s"==== ${bestTip.shortHex}")
+      bestTip
     }
 
     def calBestDepsUnsafe(group: GroupIndex): BlockDeps = {
