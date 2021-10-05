@@ -32,6 +32,10 @@ import org.alephium.serde._
 import org.alephium.util.{AlephiumSpec, AVector, Hex, TimeStamp, U256}
 
 class BlockSpec extends AlephiumSpec with NoIndexModelGenerators with NetworkConfigFixture.Default {
+  it should "print" in {
+    println(s"${TimeStamp.now()}, ${ALF.LaunchTimestamp}")
+  }
+
   it should "serde" in {
     forAll(blockGen) { block =>
       val bytes  = serialize[Block](block)
@@ -421,7 +425,7 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators with NetworkCon
       AVector.from(transactions),
       p2pkh(Hash.unsafe(hex"0478042acbc0e37b410e5d2c7aebe367d47f39aa78a65277b7f8bb7ce3c5e036")),
       consensusConfig.maxMiningTarget,
-      TimeStamp.unsafe(1630879601000L)
+      TimeStamp.unsafe(1633438948000L)
     )
   }
 
