@@ -13,10 +13,10 @@ jobs:
       - uses: olafurpg/setup-java@v10
         with:
           java-version: 11
-      - run: sbt clean coverage test coverageReport && sbt coverageAggregate
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v2
-        with:
-          name: codecov-alephium
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+#      - run: sbt clean coverage test coverageReport && sbt coverageAggregate
+#      - name: Upload coverage to Codecov
+#        uses: codecov/codecov-action@v2
+#        with:
+#          name: codecov-alephium
+#          token: ${{ secrets.CODECOV_TOKEN }}
+#          fail_ci_if_error: true

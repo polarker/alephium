@@ -112,10 +112,12 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         bootClique(nbOfNodes = nbOfNodesClique1, connectionBuild = clique1ConnectionBuild)
       val masterPortClique1 = clique1.masterTcpPort
 
+      println("Start clique1")
       clique1.start()
       clique1.startWs()
       val selfClique1 = clique1.selfClique()
 
+      println("Start mining for clique1")
       clique1.startMining()
       blockNotifyProbe.receiveN(10, Duration.ofMinutesUnsafe(2).asScala)
       clique1.stopMining()
@@ -128,6 +130,7 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         )
       val masterPortClique2 = clique2.masterTcpPort
 
+      println("Start clique2")
       clique2.start()
       val selfClique2 = clique2.selfClique()
 
@@ -150,6 +153,7 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         }
       }
 
+      println("Check both cliques have the same blocks")
       val toTs = TimeStamp.now()
       eventually {
         val blockflow1 = selfClique1.nodes.flatMap { peer =>
@@ -170,6 +174,7 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         blockflow1.map(_.toSet).toSet is blockflow2.map(_.toSet).toSet
       }
 
+      println("Check clique2 is synced using rest query")
       eventually(request[SelfClique](getSelfClique, restPort(masterPortClique2)).synced is true)
 
       clique1.stop()
