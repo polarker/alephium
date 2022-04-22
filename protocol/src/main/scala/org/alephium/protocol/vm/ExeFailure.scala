@@ -93,6 +93,12 @@ case object EmptyContractAsset                                 extends ExeFailur
 case object NoCaller                                           extends ExeFailure
 final case class NegativeTimeStamp(millis: Long)               extends ExeFailure
 final case class InvalidTarget(value: BigInteger)              extends ExeFailure
+case object InvalidBytesSliceArg                               extends ExeFailure
+case object InvalidBytesSize                                   extends ExeFailure
+final case class SerdeErrorByteVecToAddress(error: SerdeError) extends ExeFailure
+case object FailedInRecoverEthAddress                          extends ExeFailure
+
+final case class InactiveInstr[-Ctx <: StatelessContext](instr: Instr[Ctx]) extends ExeFailure
 
 sealed trait IOFailure extends Product {
   def error: IOError
@@ -102,3 +108,4 @@ final case class IOErrorUpdateState(error: IOError)    extends IOFailure
 final case class IOErrorRemoveContract(error: IOError) extends IOFailure
 final case class IOErrorLoadContract(error: IOError)   extends IOFailure
 final case class IOErrorLoadOutputs(error: IOError)    extends IOFailure
+final case class IOErrorWriteLog(error: IOError)       extends IOFailure

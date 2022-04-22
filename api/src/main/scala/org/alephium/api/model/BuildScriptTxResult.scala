@@ -16,32 +16,20 @@
 
 package org.alephium.api.model
 
-import akka.util.ByteString
-
-import org.alephium.protocol.model.{ContractOutputRef, TxInput, TxOutputRef}
-import org.alephium.protocol.vm.UnlockScript
+import org.alephium.protocol.Hash
+import org.alephium.protocol.config.GroupConfig
+import org.alephium.protocol.model.UnsignedTransaction
 import org.alephium.serde.serialize
+import org.alephium.util.Hex
 
-sealed trait Input {
-  def outputRef: OutputRef
-}
-
-object Input {
-
-  @upickle.implicits.key("asset")
-  final case class Asset(outputRef: OutputRef, unlockScript: ByteString) extends Input
-
-  @upickle.implicits.key("contract")
-  final case class Contract(outputRef: OutputRef) extends Input
-
-  def apply(outputRef: TxOutputRef, unlockScript: UnlockScript): Asset = {
-    Asset(OutputRef.from(outputRef), serialize(unlockScript))
-  }
-
-  def from(input: TxInput): Asset = {
-    apply(input.outputRef, input.unlockScript)
-  }
-
-  def from(input: ContractOutputRef): Contract =
-    Contract(OutputRef.from(input))
+final case class BuildScriptTxResult(unsignedTx: String, txId: Hash, group: Int)
+object BuildScriptTxResult {
+  def from(
+      unsignedTx: UnsignedTransaction
+  )(implicit groupConfig: GroupConfig): BuildScriptTxResult =
+    BuildScriptTxResult(
+      Hex.toHexString(serialize(unsignedTx)),
+      unsignedTx.hash,
+      unsignedTx.fromGroup.value
+    )
 }

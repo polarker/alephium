@@ -19,6 +19,7 @@ package org.alephium.flow.setting
 import java.math.BigInteger
 import java.net.{InetAddress, InetSocketAddress}
 import java.nio.file.Path
+import java.util.{GregorianCalendar, TimeZone}
 
 import scala.collection.immutable.ArraySeq
 
@@ -37,7 +38,8 @@ import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.config._
 import org.alephium.protocol.mining.Emission
 import org.alephium.protocol.model.{Address, Block, NetworkId, Target, Weight}
-import org.alephium.util.{ActorRefT, AVector, Duration, Env, U256}
+import org.alephium.protocol.vm.LogConfig
+import org.alephium.util._
 
 final case class BrokerSetting(groups: Int, brokerNum: Int, brokerId: Int) extends BrokerConfig {
   override lazy val groupNumPerBroker: Int = groups / brokerNum
@@ -86,6 +88,7 @@ final case class MiningSetting(
 
 final case class NetworkSetting(
     networkId: NetworkId,
+    lemanHardForkTimestamp: TimeStamp,
     noPreMineProof: ByteString,
     maxOutboundConnectionsPerGroup: Int,
     maxInboundConnectionsPerGroup: Int,
@@ -157,7 +160,8 @@ final case class MemPoolSetting(
     cleanSharedPoolFrequency: Duration,
     cleanPendingPoolFrequency: Duration,
     batchBroadcastTxsFrequency: Duration,
-    batchDownloadTxsFrequency: Duration
+    batchDownloadTxsFrequency: Duration,
+    autoMineForDev: Boolean // for dev only
 )
 
 final case class WalletSetting(secretDir: Path, lockingTimeout: Duration)
@@ -166,7 +170,14 @@ object WalletSetting {
   final case class BlockFlow(host: String, port: Int, groups: Int)
 }
 
-final case class NodeSetting(dbSyncWrite: Boolean)
+final case class NodeSetting(
+    dbSyncWrite: Boolean,
+    eventLog: Option[LogConfig]
+) {
+  lazy val logConfig: LogConfig = {
+    eventLog.getOrElse(LogConfig.disabled())
+  }
+}
 
 final case class Allocation(
     address: Address.Asset,
@@ -228,6 +239,7 @@ object AlephiumConfig {
 
   final private case class TempNetworkSetting(
       networkId: NetworkId,
+      lemanHardForkTimestamp: TimeStamp,
       noPreMineProof: Seq[String],
       maxOutboundConnectionsPerGroup: Int,
       maxInboundConnectionsPerGroup: Int,
@@ -262,6 +274,7 @@ object AlephiumConfig {
       val proofInOne = Hash.doubleHash(ByteString.fromString(noPreMineProof.mkString(""))).bytes
       NetworkSetting(
         networkId,
+        lemanHardForkTimestamp,
         proofInOne,
         maxOutboundConnectionsPerGroup,
         maxInboundConnectionsPerGroup,
@@ -373,6 +386,18 @@ object AlephiumConfig {
   def load(rootPath: Path, configPath: String): AlephiumConfig =
     load(Env.currentEnv, rootPath, configPath)
   def load(config: Config, configPath: String): AlephiumConfig =
-    config.as[AlephiumConfig](configPath)
+    sanityCheck(config.as[AlephiumConfig](configPath))
   def load(config: Config): AlephiumConfig = load(config, "alephium")
+
+  def sanityCheck(config: AlephiumConfig): AlephiumConfig = {
+    if (config.network.networkId == NetworkId.AlephiumMainNet) {
+      val calendar = new GregorianCalendar(2022, 4, 30)
+      calendar.setTimeZone(TimeZone.getTimeZone("UTC"))
+      if (config.network.lemanHardForkTimestamp.millis != calendar.getTimeInMillis) {
+        throw new IllegalArgumentException("Invalid timestamp for leman hard fork")
+      }
+    }
+
+    config
+  }
 }

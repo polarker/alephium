@@ -25,6 +25,8 @@ import scala.util.{Random, Using}
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.testkit.{TestActor, TestProbe}
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, EitherValues}
+import org.scalatest.compatible.Assertion
+import sttp.client3.Response
 import sttp.model.StatusCode
 
 import org.alephium.api.{ApiError, ApiModel}
@@ -198,7 +200,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -221,7 +223,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": [],
         |      "lockTime": "1234"
         |    }
@@ -255,7 +257,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -388,7 +390,7 @@ abstract class RestServerSpec(
             status is dummyTxStatus
           } else {
             response.code is StatusCode.Ok
-            response.as[TxStatus] is NotFound
+            response.as[TxStatus] is TxNotFound
           }
         }
 
@@ -402,7 +404,7 @@ abstract class RestServerSpec(
             status is dummyTxStatus
           } else {
             response.code is StatusCode.Ok
-            response.as[TxStatus] is NotFound
+            response.as[TxStatus] is TxNotFound
           }
         }
       }
@@ -430,7 +432,7 @@ abstract class RestServerSpec(
     ) check { response =>
       response.code is StatusCode.Ok
 
-      val result   = response.as[BuildMultisigAddress.Result]
+      val result   = response.as[BuildMultisigAddressResult]
       val expected = ServerFixture.p2mpkhAddress(AVector(dummyKeyHex, dummyKeyHex2), 1)
 
       result.address is expected
@@ -455,7 +457,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -609,30 +611,32 @@ abstract class RestServerSpec(
 
   it should "call GET /infos/node" in {
     val buildInfo = NodeInfo.BuildInfo(BuildInfo.releaseVersion, BuildInfo.commitId)
-    minerProbe.setAutoPilot(new TestActor.AutoPilot {
-      var miningStarted: Boolean = false
-      def run(sender: ActorRef, msg: Any): TestActor.AutoPilot =
-        msg match {
-          case Miner.IsMining =>
-            sender ! miningStarted
-            TestActor.KeepRunning
-          case Miner.Start =>
-            miningStarted = true
-            TestActor.KeepRunning
-          case Miner.Stop =>
-            miningStarted = false
-            TestActor.KeepRunning
-        }
-
-    })
 
     Get(s"/infos/node") check { response =>
       response.code is StatusCode.Ok
       response.as[NodeInfo] is NodeInfo(
-        ReleaseVersion.current,
         buildInfo,
         networkConfig.upnp.enabled,
         networkConfig.externalAddressInferred
+      )
+    }
+  }
+
+  it should "call GET /infos/version" in {
+    Get(s"/infos/version") check { response =>
+      response.code is StatusCode.Ok
+      response.as[NodeVersion] is NodeVersion(ReleaseVersion.current)
+    }
+  }
+
+  it should "call GET /infos/chain-params" in {
+    Get(s"/infos/chain-params") check { response =>
+      response.code is StatusCode.Ok
+      response.as[ChainParams] is ChainParams(
+        networkConfig.networkId,
+        consensusConfig.numZerosAtLeastInHash,
+        brokerConfig.groupNumPerBroker,
+        brokerConfig.groups
       )
     }
   }
@@ -661,7 +665,7 @@ abstract class RestServerSpec(
   }
 
   it should "call POST /infos/misbehaviors" in {
-    val body = """{"type":"unban","peers":["123.123.123.123"]}"""
+    val body = """{"type":"Unban","peers":["123.123.123.123"]}"""
     Post(s"/infos/misbehaviors", body) check { response =>
       response.code is StatusCode.Ok
     }
@@ -676,7 +680,7 @@ abstract class RestServerSpec(
     Get(s"/contracts/${dummyContractAddress}/state?group=${dummyContractGroup.group}") check {
       response =>
         response.code is StatusCode.Ok
-        response.as[ContractStateResult] is ContractStateResult(AVector(Val.U256(U256.Zero)))
+        response.as[ContractState].address.toBase58 is dummyContractAddress
     }
   }
 
@@ -735,6 +739,163 @@ abstract class RestServerSpec(
       } else {
         response.code is StatusCode.Ok
       }
+    }
+  }
+
+  it should "get events for a contract from a given block" in {
+    val block = blockGen
+      .map(_.header.copy(timestamp = (TimeStamp.now() - Duration.ofMinutes(5).get).get))
+      .retryUntil(_.chainIndex.isIntraGroup)
+      .sample
+      .get
+    val blockHash  = block.hash.toHexString
+    val chainIndex = block.chainIndex
+
+    Get(s"/events/contract/in-block?block=$blockHash&contractAddress=$dummyContractAddress") check {
+      response =>
+        response.code is StatusCode.Ok
+        val events = response.body.rightValue
+        events is s"""
+        |{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |    {
+        |      "type": "ContractEvent",
+        |      "blockHash": "$blockHash",
+        |      "contractAddress": "${dummyContractAddress}",
+        |      "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
+        |      "eventIndex": 0,
+        |      "fields": [
+        |        {
+        |          "type": "U256",
+        |          "value": "4"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi"
+        |        }
+        |      ]
+        |    }
+        |  ]
+        |}
+        |""".stripMargin.filterNot(_.isWhitespace)
+    }
+  }
+
+  it should "get events for a contract within a time interval" in {
+    val blockHash  = dummyBlock.hash.toHexString
+    val chainIndex = dummyBlock.chainIndex
+
+    val now    = TimeStamp.now()
+    val fromTs = (now - Duration.ofMinutes(10).get).get
+    val toTs   = (now - Duration.ofMinutes(3).get).get
+
+    val urlBase = s"/events/contract/within-time-interval?contractAddress=$dummyContractAddress"
+
+    info("with valid fromTs and toTs")
+    Get(s"$urlBase&fromTs=${fromTs.millis}&toTs=${toTs.millis}").check(validResponse)
+
+    info("with fromTs only")
+    Get(s"$urlBase&fromTs=${fromTs.millis}").check(validResponse)
+
+    info("with invalid fromTs and toTs")
+    Get(s"$urlBase&fromTs=${toTs.millis}&toTs=${fromTs.millis}").check { response =>
+      response.code is StatusCode.BadRequest
+      response.body.leftValue is s"""{"detail":"Invalid value (`fromTs` must be before `toTs`)"}"""
+    }
+
+    def validResponse(response: Response[Either[String, String]]): Assertion = {
+      response.code is StatusCode.Ok
+      val events = response.body.rightValue
+      if (dummyBlock.chainIndex.isIntraGroup) {
+        events is s"""
+        |[{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |    {
+        |      "type": "ContractEvent",
+        |      "blockHash": "$blockHash",
+        |      "contractAddress": "${dummyContractAddress}",
+        |      "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
+        |      "eventIndex": 0,
+        |      "fields": [
+        |        {
+        |          "type": "U256",
+        |          "value": "4"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi"
+        |        }
+        |      ]
+        |    }
+        |  ]
+        |}]
+        |""".stripMargin.filterNot(_.isWhitespace)
+      } else {
+        events is s"""
+        |[{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |  ]
+        |}]
+        |""".stripMargin.filterNot(_.isWhitespace)
+      }
+    }
+  }
+
+  it should "get events for a TxScript from a given block" in {
+    val block = blockGen
+      .map(_.header.copy(timestamp = (TimeStamp.now() - Duration.ofMinutes(5).get).get))
+      .retryUntil(_.chainIndex.isIntraGroup)
+      .sample
+      .get
+    val blockHash  = block.hash.toHexString
+    val chainIndex = block.chainIndex
+    val txId       = "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69"
+
+    Get(s"/events/tx-script?block=$blockHash&txId=${txId}") check { response =>
+      response.code is StatusCode.Ok
+      val events = response.body.rightValue
+      events is s"""
+        |{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |    {
+        |      "type": "TxScriptEvent",
+        |      "blockHash": "$blockHash",
+        |      "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
+        |      "eventIndex": 0,
+        |      "fields": [
+        |        {
+        |          "type": "U256",
+        |          "value": "4"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi"
+        |        }
+        |      ]
+        |    }
+        |  ]
+        |}
+        |""".stripMargin.filterNot(_.isWhitespace)
     }
   }
 }

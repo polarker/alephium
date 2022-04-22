@@ -17,32 +17,71 @@
 package org.alephium.app
 
 import org.alephium.api.model._
-import org.alephium.api.model.Output.Contract
 import org.alephium.json.Json._
 import org.alephium.protocol.{ALPH, Hash, PublicKey}
-import org.alephium.protocol.model.Address
+import org.alephium.protocol.model.{Address, ContractId}
 import org.alephium.util._
 import org.alephium.wallet.api.model._
 
 class VotingTest extends AlephiumActorSpec {
   it should "test the voting pipeline" in new VotingFixture {
+
     val admin  = wallets.head
     val voters = wallets.tail
-    val ContractRef(contractId, contractAddress, contractCode) =
+    val ContractRef(contractId, contractAddress @ Address.Contract(_), contractCode) =
       deployContract(admin, voters, U256.unsafe(voters.size))
     checkState(0, 0, false, false)
 
+    val startVotingTs = TimeStamp.now()
     allocateTokens(admin, voters, contractId.toHexString, contractCode)
     checkState(0, 0, false, true)
 
-    val nbYes = voters.size - 1
-    val nbNo  = voters.size - nbYes
+    checkEvents(contractAddress, startVotingTs) { events =>
+      val allEvents = events.fold(AVector.empty[Event])(_ ++ _.events)
+
+      allEvents.length is 1
+      val votingStartedEvent = allEvents.head.asInstanceOf[ContractEvent]
+      votingStartedEvent.eventIndex is 0
+      votingStartedEvent.contractId is contractAddress.lockupScript.contractId
+    }
+
+    val startVoteCastingTs = TimeStamp.now()
+    val nbYes              = voters.size - 1
+    val nbNo               = voters.size - nbYes
     voters.take(nbYes).foreach(wallet => vote(wallet, contractId.toHexString, true, contractCode))
     voters.drop(nbYes).foreach(wallet => vote(wallet, contractId.toHexString, false, contractCode))
     checkState(nbYes, nbNo, false, true)
 
+    checkEvents(contractAddress, startVoteCastingTs) { events =>
+      val allEvents = events.fold(AVector.empty[Event])(_ ++ _.events)
+
+      val expectedResult = voters.take(nbYes).map { wallet =>
+        (1, wallet.activeAddress, true)
+      } ++ voters.drop(nbYes).map { wallet =>
+        (1, wallet.activeAddress, false)
+      }
+
+      val returnedResult = allEvents.map { event =>
+        val voterAddress = event.fields(0).asInstanceOf[ValAddress]
+        val decision     = event.fields(1).asInstanceOf[ValBool]
+        (event.eventIndex, voterAddress.value.toBase58, decision.value)
+      }
+
+      returnedResult.toSeq is expectedResult.toSeq
+    }
+
+    val closeVotingTs = TimeStamp.now()
     close(admin, contractId.toHexString, contractCode)
     checkState(nbYes, nbNo, true, true)
+
+    checkEvents(contractAddress, closeVotingTs) { events =>
+      val allEvents = events.fold(AVector.empty[Event])(_ ++ _.events)
+
+      allEvents.length is 1
+      val votingStartedEvent = allEvents.head.asInstanceOf[ContractEvent]
+      votingStartedEvent.eventIndex is 2
+      votingStartedEvent.contractId is contractAddress.lockupScript.contractId
+    }
 
     clique.selfClique().nodes.foreach { peer =>
       request[Boolean](stopMining, peer.restPort) is true
@@ -51,23 +90,43 @@ class VotingTest extends AlephiumActorSpec {
 
     def checkState(nbYes: Int, nbNo: Int, isClosed: Boolean, isInitialized: Boolean) = {
       val contractState =
-        request[ContractStateResult](
+        request[ContractState](
           getContractState(contractAddress.toBase58, activeAddressesGroup),
           restPort
         )
-      contractState.fields.get(0).get is Val.U256(U256.unsafe(nbYes))
-      contractState.fields.get(1).get is Val.U256(U256.unsafe(nbNo))
-      contractState.fields.get(2).get is Val.Bool(isClosed)
-      contractState.fields.get(3).get is Val.Bool(isInitialized)
-      contractState.fields.get(4).get is Val.Address(Address.fromBase58(admin.activeAddress).get)
+      contractState.fields.get(0).get is ValU256(U256.unsafe(nbYes))
+      contractState.fields.get(1).get is ValU256(U256.unsafe(nbNo))
+      contractState.fields.get(2).get is ValBool(isClosed)
+      contractState.fields.get(3).get is ValBool(isInitialized)
+      contractState.fields.get(4).get is ValAddress(Address.fromBase58(admin.activeAddress).get)
       contractState.fields.drop(5) is AVector.from[Val](
-        voters.map(v => Val.Address(Address.fromBase58(v.activeAddress).get))
+        voters.map(v => ValAddress(Address.fromBase58(v.activeAddress).get))
       )
+    }
+
+    @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
+    def checkEvents(
+        contractAddress: Address,
+        startTs: TimeStamp,
+        toTs: TimeStamp = TimeStamp.now()
+    )(
+        validate: (AVector[Events]) => Any
+    ) = {
+      import org.alephium.api.UtilJson._
+
+      val events =
+        request[AVector[Events]](
+          getEventsWithinTimeInterval(startTs, toTs, contractAddress),
+          restPort
+        )
+
+      validate(events)
     }
   }
 }
 
 trait VotingFixture extends WalletFixture {
+  // scalastyle:off method.length
   def deployContract(admin: Wallet, voters: Seq[Wallet], tokenAmount: U256): ContractRef = {
     val allocationTransfers = voters.zipWithIndex
       .map { case (_, i) =>
@@ -86,6 +145,11 @@ trait VotingFixture extends WalletFixture {
         |  admin: Address,
         |  voters: [Address; ${voters.size}]
         |) {
+        |
+        |  event VotingStarted()
+        |  event VoteCasted(voter: Address, result: Bool)
+        |  event VotingClosed()
+        |
         |  pub payable fn allocateTokens() -> () {
         |     assert!(initialized == false)
         |     assert!(txCaller!(txCallerSize!() - 1) == admin)
@@ -93,12 +157,17 @@ trait VotingFixture extends WalletFixture {
         |     yes = 0
         |     no = 0
         |     initialized = true
+        |
+        |     emit VotingStarted()
         |  }
         |
         |  pub payable fn vote(choice: Bool, voter: Address) -> () {
         |    assert!(initialized == true && isClosed == false)
         |    transferAlph!(voter, admin, $utxoFee)
         |    transferTokenToSelf!(voter, selfTokenId!(), 1)
+        |
+        |    emit VoteCasted(voter, choice)
+        |
         |    if (choice == true) {
         |       yes = yes + 1
         |    } else {
@@ -110,15 +179,25 @@ trait VotingFixture extends WalletFixture {
         |     assert!(initialized == true && isClosed == false)
         |     assert!(txCaller!(txCallerSize!() - 1) == admin)
         |     isClosed = true
+        |
+        |     emit VotingClosed()
         |   }
         | }
       """.stripMargin
     // scalastyle:on no.equal
-    val votersList: String =
-      voters.map(wallet => s"@${wallet.activeAddress}").mkString(",")
-    val state = s"[ 0, 0, false, false, @${admin.activeAddress}, [${votersList}]]"
-    contract(admin, votingContract, Some(state), Some(tokenAmount))
+    val votersList: AVector[Val] =
+      AVector.from(voters.map(wallet => ValAddress(Address.fromBase58(wallet.activeAddress).get)))
+    voters.map(wallet => s"@${wallet.activeAddress}").mkString(",")
+    val initialFields = AVector[Val](
+      ValU256(U256.Zero),
+      ValU256(U256.Zero),
+      Val.False,
+      Val.False,
+      ValAddress(Address.fromBase58(admin.activeAddress).get)
+    ) ++ votersList
+    contract(admin, votingContract, Some(initialFields), Some(tokenAmount))
   }
+  // scalastyle:on method.length
 
   def allocateTokens(
       adminWallet: Wallet,
@@ -182,7 +261,7 @@ trait WalletFixture extends CliqueFixture {
   val genesisWalletName     = "genesis-wallet"
   def submitTx(unsignedTx: String, txId: Hash, walletName: String): TxResult = {
     val signature =
-      request[Sign.Result](sign(walletName, s"${txId.toHexString}"), restPort).signature
+      request[SignResult](sign(walletName, s"${txId.toHexString}"), restPort).signature
     val tx = request[TxResult](
       submitTransaction(s"""
           {
@@ -198,59 +277,53 @@ trait WalletFixture extends CliqueFixture {
   def contract(
       wallet: Wallet,
       code: String,
-      state: Option[String],
+      initialFields: Option[AVector[Val]],
       issueTokenAmount: Option[U256]
   ): ContractRef = {
     val compileResult = request[CompileResult](compileContract(code), restPort)
-    val buildResult = request[BuildContractResult](
+    val buildResult = request[BuildContractDeployScriptTxResult](
       buildContract(
         fromPublicKey = wallet.publicKey.toHexString,
-        code = compileResult.code,
-        state = state,
+        code = Hex.toHexString(compileResult.bytecode),
+        initialFields = initialFields,
         issueTokenAmount = issueTokenAmount
       ),
       restPort
     )
-    val txResult = submitTx(buildResult.unsignedTx, buildResult.hash, wallet.creation.walletName)
+    val txResult = submitTx(buildResult.unsignedTx, buildResult.txId, wallet.creation.walletName)
     val Confirmed(blockHash, _, _, _, _) =
       request[TxStatus](getTransactionStatus(txResult), restPort)
     val block = request[BlockEntry](getBlock(blockHash.toHexString), restPort)
 
     // scalastyle:off no.equal
-    val tx: Tx = block.transactions.find(_.id == txResult.txId).get
+    val tx: Transaction = block.transactions.find(_.unsigned.txId == txResult.txId).get
     // scalastyle:on no.equal
 
-    val Contract(_, contractAddress, _) = tx.outputs
-      .find(output =>
-        output match {
-          case Contract(_, _, _) => true
-          case _                 => false
-        }
-      )
-      .get
-    ContractRef(buildResult.contractId, contractAddress, code)
+    val ContractOutput(_, _, _, contractAddress, _) =
+      tx.generatedOutputs.find(_.isInstanceOf[ContractOutput]).get
+    ContractRef(buildResult.contractAddress.contractId, contractAddress, code)
   }
 
   def script(publicKey: String, code: String, walletName: String) = {
     val compileResult = request[CompileResult](compileScript(code), restPort)
-    val buildResult = request[BuildScriptResult](
+    val buildResult = request[BuildScriptTxResult](
       buildScript(
         fromPublicKey = publicKey,
-        code = compileResult.code
+        code = Hex.toHexString(compileResult.bytecode)
       ),
       restPort
     )
-    submitTx(buildResult.unsignedTx, buildResult.hash, walletName)
+    submitTx(buildResult.unsignedTx, buildResult.txId, walletName)
   }
 
   def createWallets(nWallets: Int, restPort: Int, walletsBalance: U256): Seq[Wallet] = {
-    request[WalletRestore.Result](restoreWallet(password, mnemonic, genesisWalletName), restPort)
+    request[WalletRestoreResult](restoreWallet(password, mnemonic, genesisWalletName), restPort)
     unitRequest(unlockWallet(password, genesisWalletName), restPort)
     val walletsCreation: IndexedSeq[WalletCreation] =
       (1 to nWallets).map(i => WalletCreation("password", s"walletName-$i", isMiner = Some(true)))
-    val walletsCreationResult: IndexedSeq[WalletCreation.Result] =
+    val walletsCreationResult: IndexedSeq[WalletCreationResult] =
       walletsCreation.map(walletCreation =>
-        request[WalletCreation.Result](
+        request[WalletCreationResult](
           createWallet(
             walletCreation.password,
             walletCreation.walletName,
@@ -279,7 +352,7 @@ trait WalletFixture extends CliqueFixture {
           postWalletChangeActiveAddress(walletCreation.walletName, newActiveAddress),
           restPort
         )
-        val txResult = request[Transfer.Result](
+        val txResult = request[TransferResult](
           transferWallet(genesisWalletName, newActiveAddress, walletsBalance),
           restPort
         )
@@ -310,10 +383,10 @@ trait WalletFixture extends CliqueFixture {
   val utxoFee = "50000000000000"
 }
 
-final case class ContractRef(contractId: Hash, contractAddress: Address, code: String)
+final case class ContractRef(contractId: ContractId, contractAddress: Address, code: String)
 final case class Wallet(
     creation: WalletCreation,
-    result: WalletCreation.Result,
+    result: WalletCreationResult,
     activeAddress: String,
     publicKey: PublicKey
 )

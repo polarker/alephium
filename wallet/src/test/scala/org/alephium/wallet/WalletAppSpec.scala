@@ -86,7 +86,7 @@ class WalletAppSpec
       case Some(pass) => passwordWithPassphraseJson(pass)
     }
   def transferJson(amount: Int) =
-    s"""{"destinations":[{"address":"$transferAddress","amount":"$amount","tokens":[]}]}"""
+    s"""{"destinations":[{"address":"$transferAddress","alphAmount":"$amount","tokens":[]}]}"""
   val sweepJson                                 = s"""{"toAddress":"$transferAddress"}"""
   def changeActiveAddressJson(address: Address) = s"""{"address":"${address.toBase58}"}"""
   def restoreJson(mnemonic: Mnemonic, name: String) =
@@ -136,7 +136,7 @@ class WalletAppSpec
     }
 
     create(24) check { response =>
-      val result = response.as[WalletCreation.Result]
+      val result = response.as[WalletCreationResult]
       mnemonic = result.mnemonic
       wallet = result.walletName
       response.code is StatusCode.Ok
@@ -199,7 +199,7 @@ class WalletAppSpec
     }
 
     transfer(transferAmount) check { response =>
-      response.as[Transfer.Result]
+      response.as[TransferResult]
       response.code is StatusCode.Ok
     }
 
@@ -218,12 +218,12 @@ class WalletAppSpec
     }
 
     sweepActiveAddress() check { response =>
-      response.as[Transfer.Results]
+      response.as[TransferResults]
       response.code is StatusCode.Ok
     }
 
     sweepAllAddresses() check { response =>
-      response.as[Transfer.Results]
+      response.as[TransferResults]
       response.code is StatusCode.Ok
     }
 
@@ -252,13 +252,13 @@ class WalletAppSpec
     }
 
     revealMnemonic() check { response =>
-      response.as[RevealMnemonic.Result].mnemonic is mnemonic
+      response.as[RevealMnemonicResult].mnemonic is mnemonic
       response.code is StatusCode.Ok
     }
 
     val newMnemonic = Mnemonic.generate(24).get
     restore(newMnemonic, "wallet-new-name") check { response =>
-      wallet = response.as[WalletRestore.Result].walletName
+      wallet = response.as[WalletRestoreResult].walletName
       response.code is StatusCode.Ok
     }
 
@@ -298,7 +298,7 @@ class WalletAppSpec
 
     //handle passphrase
     Post("/wallets", passwordWithPassphraseJson(mnemonicPassphrase)) check { response =>
-      val result = response.as[WalletCreation.Result]
+      val result = response.as[WalletCreationResult]
       mnemonic = result.mnemonic
       wallet = result.walletName
       response.code is StatusCode.Ok
@@ -329,7 +329,7 @@ class WalletAppSpec
     address = Address.asset("15L9J68punrrGAoXGQjLu9dX5k1kDKehqfG5tFVWqJbG9").get
 
     restore(mnemonic, "new-wallet") check { response =>
-      wallet = response.as[WalletRestore.Result].walletName
+      wallet = response.as[WalletRestoreResult].walletName
       wallet is "new-wallet"
       response.code is StatusCode.Ok
     }
@@ -353,7 +353,7 @@ class WalletAppSpec
     val unsignedTx = transactionGen().sample.get.unsigned
 
     sign(unsignedTx.hash.toHexString) check { response =>
-      response.as[Sign.Result].signature is SignatureSchema.sign(
+      response.as[SignResult].signature is SignatureSchema.sign(
         unsignedTx.hash.bytes,
         privateKey
       )
@@ -367,7 +367,7 @@ class WalletAppSpec
     }
 
     minerCreate() check { response =>
-      val result = response.as[WalletCreation.Result]
+      val result = response.as[WalletCreationResult]
       mnemonic = result.mnemonic
       minerWallet = result.walletName
       response.code is StatusCode.Ok
@@ -444,7 +444,7 @@ object WalletAppSpec extends {
     router.route().path("/transactions/build").handler(BodyHandler.create()).handler { ctx =>
       val buildTransaction = read[BuildTransaction](ctx.getBodyAsString())
       val amount = buildTransaction.destinations.fold(U256.Zero) { (acc, destination) =>
-        acc.addUnsafe(destination.amount.value)
+        acc.addUnsafe(destination.alphAmount.value)
       }
       val unsignedTx = transactionGen().sample.get.unsigned
 
@@ -488,10 +488,17 @@ object WalletAppSpec extends {
       complete(ctx, TxResult(Hash.generate, 0, 0))
     }
 
+    router.route().path("/infos/chain-params").handler { ctx =>
+      complete(
+        ctx,
+        ChainParams(NetworkId.AlephiumMainNet, 18, 1, 2)
+      )
+    }
+
     router.route().path("/infos/self-clique").handler { ctx =>
       complete(
         ctx,
-        SelfClique(cliqueId, NetworkId.AlephiumMainNet, 18, AVector(peer, peer), true, true, 1, 2)
+        SelfClique(cliqueId, AVector(peer, peer), true, true)
       )
     }
 

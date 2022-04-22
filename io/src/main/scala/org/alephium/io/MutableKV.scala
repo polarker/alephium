@@ -14,18 +14,10 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.io
 
-import org.alephium.protocol.PublicKey
-import org.alephium.protocol.vm.{GasBox, GasPrice}
+trait MutableKV[K, V, T] extends ReadableKV[K, V] {
+  def remove(key: K): IOResult[T]
 
-@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-final case class BuildContract(
-    fromPublicKey: PublicKey,
-    code: String,
-    state: Option[String] = None,
-    issueTokenAmount: Option[Amount] = None,
-    gas: Option[GasBox] = None,
-    gasPrice: Option[GasPrice] = None,
-    utxosLimit: Option[Int] = None
-) extends UtxoBasedModel
+  def put(key: K, value: V): IOResult[T]
+}

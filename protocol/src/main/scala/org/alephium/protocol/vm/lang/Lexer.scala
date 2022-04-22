@@ -22,7 +22,7 @@ import fastparse._
 import fastparse.NoWhitespace._
 
 import org.alephium.protocol.model.Address
-import org.alephium.protocol.vm.Val
+import org.alephium.protocol.vm.{LockupScript, Val}
 import org.alephium.protocol.vm.Val.ByteVec
 import org.alephium.protocol.vm.lang.ArithOperator._
 import org.alephium.protocol.vm.lang.LogicalOperator._
@@ -81,14 +81,22 @@ object Lexer {
       }
 
   def bytesInternal[_: P]: P[Val.ByteVec] =
-    P(hex).!.map { hexString =>
-      val byteVecOpt = Hex.from(hexString).map(ByteVec(_))
-      byteVecOpt match {
-        case Some(byteVec) => byteVec
-        case None          => throw Compiler.Error(s"Invalid byteVec: $hexString")
+    P(CharsWhileIn("0-9a-zA-Z", 0)).!.map { string =>
+      Hex.from(string) match {
+        case Some(bytes) => ByteVec(bytes)
+        case None =>
+          Address.extractLockupScript(string) match {
+            case Some(LockupScript.P2C(contractId)) => ByteVec(contractId.bytes)
+            case _                                  => throw Compiler.Error(s"Invalid byteVec: $string")
+          }
       }
     }
   def bytes[_: P]: P[Val.ByteVec] = P("#" ~ bytesInternal)
+  def contractAddress[_: P]: P[Val.ByteVec] =
+    addressInternal.map {
+      case Val.Address(LockupScript.P2C(contractId)) => Val.ByteVec(contractId.bytes)
+      case addr                                      => throw Compiler.Error(s"Invalid contract address: #@${addr.toBase58}")
+    }
 
   def addressInternal[_: P]: P[Val.Address] =
     P(CharsWhileIn("0-9a-zA-Z")).!.map { input =>
@@ -138,10 +146,26 @@ object Lexer {
   def payable[_: P]: P[FuncModifier]      = keyword("payable").map(_ => Payable)
   def funcModifier[_: P]: P[FuncModifier] = P(pub | payable)
 
-  // format: off
-  def keywordSet: Set[String] =
-    Set("TxContract", "AssetScript", "TxScript", "let", "mut", "fn", "return", "true", "false", "if", "else", "while", "loop")
-  // format: on
+  def keywordSet: Set[String] = Set(
+    "TxContract",
+    "AssetScript",
+    "TxScript",
+    "let",
+    "mut",
+    "fn",
+    "return",
+    "true",
+    "false",
+    "if",
+    "else",
+    "while",
+    "pub",
+    "payable",
+    "event",
+    "emit",
+    "loop",
+    "extends"
+  )
 
   val primTpes: Map[String, Type] =
     Type.primitives.map(tpe => (getSimpleName(tpe), tpe)).toArray.toMap

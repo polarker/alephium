@@ -19,7 +19,7 @@ package org.alephium.protocol.vm
 import org.alephium.macros.Gas
 import org.alephium.protocol.PublicKey
 
-//scalastyle:off magic.number
+//scalastyle:off magic.number number.of.types
 
 trait GasSchedule
 
@@ -107,10 +107,25 @@ object GasBytesConcat {
   def gas(byteLength: Int): GasBox = GasBox.unsafe(byteLength * gasPerByte)
 }
 
+trait GasBytesSlice extends GasFormula {
+  def gas(byteLength: Int): GasBox = GasBytesSlice.gas(byteLength)
+}
+object GasBytesSlice {
+  val gasPerByte: Int = 1
+  def gas(byteLength: Int): GasBox =
+    GasVeryLow.gas.addUnsafe(GasBox.unsafe(byteLength * gasPerByte))
+}
+
 @Gas
 trait GasSignature extends GasSimple
 object GasSignature {
   val gas: GasBox = GasBox.unsafe(2000)
+}
+
+@Gas
+trait GasEcRecover extends GasSimple
+object GasEcRecover {
+  val gas: GasBox = GasBox.unsafe(2500)
 }
 
 @Gas

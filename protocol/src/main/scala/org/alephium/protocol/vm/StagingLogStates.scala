@@ -14,12 +14,21 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.io
+package org.alephium.protocol.vm
 
-trait ReadableTrie[K, V] {
-  def get(key: K): IOResult[V]
+import scala.collection.mutable
 
-  def getOpt(key: K): IOResult[Option[V]]
+import org.alephium.io._
+import org.alephium.util.AVector
 
-  def exist(key: K): IOResult[Boolean]
+final class StagingLogStates(
+    val underlying: CachedLogStates,
+    val caches: mutable.LinkedHashMap[LogStatesId, Modified[LogStates]]
+) extends StagingKV[LogStatesId, LogStates] {
+  def getNewLogs(): AVector[LogStates] = {
+    caches.foldLeft(AVector.empty[LogStates]) {
+      case (acc, (_, updated: ValueExists[LogStates] @unchecked)) => acc :+ updated.value
+      case (acc, _)                                               => acc
+    }
+  }
 }

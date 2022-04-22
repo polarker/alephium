@@ -30,7 +30,8 @@ import org.alephium.json.Json._
 import org.alephium.json.Json.{ReadWriter => RW}
 import org.alephium.protocol.{ALPH, BlockHash, Hash, PublicKey, Signature}
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model._
+import org.alephium.protocol.model
+import org.alephium.protocol.model.{Address, CliqueId, GroupIndex, NetworkId, Nonce}
 import org.alephium.protocol.vm.{GasBox, GasPrice, StatefulContract}
 import org.alephium.serde.{deserialize, serialize, RandomBytes}
 import org.alephium.util._
@@ -46,8 +47,6 @@ object ApiModel {
 
 @SuppressWarnings(Array("org.wartremover.warts.ToString"))
 trait ApiModelCodec {
-
-  def blockflowFetchMaxAge: Duration
 
   implicit val peerStatusBannedRW: RW[PeerStatus.Banned]   = macroRW
   implicit val peerStatusPenaltyRW: RW[PeerStatus.Penalty] = macroRW
@@ -170,13 +169,26 @@ trait ApiModelCodec {
 
   implicit val tokenRW: RW[Token] = macroRW
 
+  implicit val scriptRW: RW[Script] = readwriter[String].bimap(
+    _.value,
+    Script(_)
+  )
+
+  implicit val outputAssetRW: RW[AssetOutput]       = macroRW[AssetOutput]
+  implicit val outputContractRW: RW[ContractOutput] = macroRW[ContractOutput]
+
+  implicit val fixedAssetOutputRW: RW[FixedAssetOutput] = macroRW[FixedAssetOutput]
+
   implicit val outputRW: RW[Output] =
-    RW.merge(macroRW[Output.Asset], macroRW[Output.Contract])
+    RW.merge(outputAssetRW, outputContractRW)
 
-  implicit val inputRW: RW[Input] =
-    RW.merge(macroRW[Input.Asset], macroRW[Input.Contract])
+  implicit val inputAssetRW: RW[AssetInput] = macroRW[AssetInput]
 
-  implicit val txRW: RW[Tx] = macroRW
+  implicit val unsignedTxRW: RW[UnsignedTx] = macroRW
+
+  implicit val transactionTemplateRW: RW[TransactionTemplate] = macroRW
+
+  implicit val transactionRW: RW[Transaction] = macroRW
 
   implicit val exportFileRW: RW[ExportFile] = macroRW
 
@@ -192,7 +204,11 @@ trait ApiModelCodec {
 
   implicit val nodeInfoRW: RW[NodeInfo] = macroRW
 
+  implicit val nodeVersionRW: RW[NodeVersion] = macroRW
+
   implicit val buildInfoRW: RW[NodeInfo.BuildInfo] = macroRW
+
+  implicit val chainParamsRW: RW[ChainParams] = macroRW
 
   implicit val selfCliqueRW: RW[SelfClique] = macroRW
 
@@ -228,19 +244,19 @@ trait ApiModelCodec {
   implicit val decodeTransactionRW: RW[DecodeTransaction] = macroRW
 
   implicit val txStatusRW: RW[TxStatus] =
-    RW.merge(macroRW[Confirmed], macroRW[MemPooled.type], macroRW[NotFound.type])
+    RW.merge(macroRW[Confirmed], macroRW[MemPooled.type], macroRW[TxNotFound.type])
 
-  implicit val buildContractRW: RW[BuildContract] = macroRW
+  implicit val buildContractRW: RW[BuildContractDeployScriptTx] = macroRW
 
-  implicit val buildScriptRW: RW[BuildScript] = macroRW
+  implicit val buildScriptRW: RW[BuildScriptTx] = macroRW
 
-  implicit val buildContractResultRW: RW[BuildContractResult] = macroRW
+  implicit val buildContractResultRW: RW[BuildContractDeployScriptTxResult] = macroRW
 
-  implicit val buildScriptResultRW: RW[BuildScriptResult] = macroRW
+  implicit val buildScriptResultRW: RW[BuildScriptTxResult] = macroRW
 
   implicit val buildMultisigAddressRW: RW[BuildMultisigAddress] = macroRW
 
-  implicit val buildMultisigAddressResultRW: RW[BuildMultisigAddress.Result] = macroRW
+  implicit val buildMultisigAddressResultRW: RW[BuildMultisigAddressResult] = macroRW
 
   implicit val buildMultisigRW: RW[BuildMultisig] = macroRW
 
@@ -250,7 +266,10 @@ trait ApiModelCodec {
 
   implicit val compileContractRW: RW[Compile.Contract] = macroRW
 
-  implicit val compileResultRW: RW[CompileResult] = macroRW
+  implicit val compileResultFieldsRW: RW[CompileResult.FieldsSig]     = macroRW
+  implicit val compileResultFunctionRW: RW[CompileResult.FunctionSig] = macroRW
+  implicit val compileResultEventRW: RW[CompileResult.EventSig]       = macroRW
+  implicit val compileResultRW: RW[CompileResult]                     = macroRW
 
   implicit val statefulContractReader: Reader[StatefulContract] = StringReader.map { input =>
     val bs =
@@ -263,9 +282,9 @@ trait ApiModelCodec {
   implicit val statefulContractWriter: Writer[StatefulContract] =
     StringWriter.comap(contract => Hex.toHexString(serialize(contract)))
 
-  implicit val assetRW: ReadWriter[TestContract.Asset]                       = macroRW
-  implicit val existingContractRW: ReadWriter[TestContract.ExistingContract] = macroRW
-  implicit val inputAssetRW: ReadWriter[TestContract.InputAsset]             = macroRW
+  implicit val assetRW: ReadWriter[AssetState]                               = macroRW
+  implicit val existingContractRW: ReadWriter[ContractState]                 = macroRW
+  implicit val testContractInputAssetRW: ReadWriter[TestContract.InputAsset] = macroRW
   implicit val testContractRW: ReadWriter[TestContract]                      = macroRW
   implicit val testContractResultRW: ReadWriter[TestContractResult]          = macroRW
 
@@ -289,7 +308,7 @@ trait ApiModelCodec {
     {
       case "start-mining" => MinerAction.StartMining
       case "stop-mining"  => MinerAction.StopMining
-      case other          => throw new Abort(s"Invalid miner action: $other")
+      case other          => throw Abort(s"Invalid miner action: $other")
     }
   )
 
@@ -305,8 +324,8 @@ trait ApiModelCodec {
 
   implicit val minerAddressesRW: RW[MinerAddresses] = macroRW
 
-  implicit val peerInfoRW: ReadWriter[BrokerInfo] = {
-    readwriter[ujson.Value].bimap[BrokerInfo](
+  implicit val peerInfoRW: ReadWriter[model.BrokerInfo] = {
+    readwriter[ujson.Value].bimap[model.BrokerInfo](
       peer =>
         ujson.Obj(
           "cliqueId"  -> writeJs(peer.cliqueId),
@@ -315,7 +334,7 @@ trait ApiModelCodec {
           "address"   -> writeJs(peer.address)
         ),
       json =>
-        BrokerInfo.unsafe(
+        model.BrokerInfo.unsafe(
           read[CliqueId](json("cliqueId")),
           read[Int](json("brokerId")),
           read[Int](json("brokerNum")),
@@ -339,20 +358,20 @@ trait ApiModelCodec {
     }
   )
 
-  implicit val valBoolRW: RW[Val.Bool]       = macroRW
-  implicit val valU256RW: RW[Val.U256]       = macroRW
-  implicit val valI256RW: RW[Val.I256]       = macroRW
-  implicit val valAddressRW: RW[Val.Address] = macroRW
-  implicit val valByteVecRW: RW[Val.ByteVec] = macroRW
+  implicit val valBoolRW: RW[ValBool]       = macroRW
+  implicit val valU256RW: RW[ValU256]       = macroRW
+  implicit val valI256RW: RW[ValI256]       = macroRW
+  implicit val valAddressRW: RW[ValAddress] = macroRW
+  implicit val valByteVecRW: RW[ValByteVec] = macroRW
+  implicit val valArrayRW: RW[ValArray]     = macroRW
   implicit val valRW: RW[Val] = RW.merge(
     valBoolRW,
     valU256RW,
     valI256RW,
     valAddressRW,
-    valByteVecRW
+    valByteVecRW,
+    valArrayRW
   )
-
-  implicit val contractStateRW: RW[ContractStateResult] = macroRW
 
   implicit val apiKeyEncoder: Writer[ApiKey] = StringWriter.comap(_.value)
   implicit val apiKeyDecoder: Reader[ApiKey] = StringReader.map { raw =>
@@ -364,13 +383,18 @@ trait ApiModelCodec {
 
   implicit val verifySignatureRW: RW[VerifySignature] = macroRW
 
-  implicit val releaseVersionEncoder: Writer[ReleaseVersion] = StringWriter.comap(_.toString)
-  implicit val releaseVersionDecoder: Reader[ReleaseVersion] = StringReader.map { raw =>
-    ReleaseVersion.from(raw) match {
+  implicit val releaseVersionEncoder: Writer[model.ReleaseVersion] = StringWriter.comap(_.toString)
+  implicit val releaseVersionDecoder: Reader[model.ReleaseVersion] = StringReader.map { raw =>
+    model.ReleaseVersion.from(raw) match {
       case Some(version) => version
       case None          => throw Abort(s"Cannot decode version: $raw")
     }
   }
+
+  implicit val contractEventRW: RW[ContractEvent] = macroRW
+  implicit val txScriptEventRW: RW[TxScriptEvent] = macroRW
+  implicit val eventRW: RW[Event]                 = macroRW
+  implicit val eventsRW: RW[Events]               = macroRW
 
   private def bytesWriter[T <: RandomBytes]: Writer[T] =
     StringWriter.comap[T](_.toHexString)

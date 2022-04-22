@@ -17,7 +17,7 @@
 package org.alephium.app
 
 import org.alephium.api.ApiError
-import org.alephium.api.model._
+import org.alephium.api.model.{TransactionTemplate => _, _}
 import org.alephium.flow.gasestimation._
 import org.alephium.flow.validation.{InvalidSignature, NotEnoughSignature}
 import org.alephium.json.Json._
@@ -46,9 +46,9 @@ class MultisigTest extends AlephiumActorSpec {
     unsignedTx.inputs.length is 2
 
     val decodedTx =
-      request[Tx](decodeUnsignedTransaction(buildTxResult.unsignedTx), restPort)
+      request[UnsignedTx](decodeUnsignedTransaction(buildTxResult.unsignedTx), restPort)
 
-    decodedTx is Tx.from(unsignedTx)
+    decodedTx is UnsignedTx.fromProtocol(unsignedTx)
 
     val submitTx = submitTransaction(buildTxResult, privateKey)
     request[ApiError.InternalServerError](
@@ -142,7 +142,7 @@ class MultisigTest extends AlephiumActorSpec {
     val restPort = clique.getRestPort(group.group)
 
     val walletName = "wallet-name"
-    request[WalletCreation.Result](createWallet(password, walletName), restPort)
+    request[WalletCreationResult](createWallet(password, walletName), restPort)
 
     val address2 =
       request[Addresses](getAddresses(walletName), restPort).activeAddress
@@ -154,7 +154,7 @@ class MultisigTest extends AlephiumActorSpec {
       ).publicKey.toHexString
 
     val multisigAddress =
-      request[BuildMultisigAddress.Result](
+      request[BuildMultisigAddressResult](
         multisig(AVector(publicKey, publicKey2), 2),
         restPort
       ).address.toBase58
@@ -182,7 +182,7 @@ class MultisigTest extends AlephiumActorSpec {
     )
 
     val signature2: Signature =
-      request[Sign.Result](sign(walletName, buildTxResult.txId.toHexString), restPort).signature
+      request[SignResult](sign(walletName, buildTxResult.txId.toHexString), restPort).signature
 
     request[Boolean](
       verify(buildTxResult.txId.toHexString, signature1, publicKey),
@@ -232,7 +232,7 @@ class MultisigTest extends AlephiumActorSpec {
         unlockPubKeys: AVector[String]
     ): BuildTransactionResult = {
       val multisigAddress =
-        request[BuildMultisigAddress.Result](
+        request[BuildMultisigAddressResult](
           multisig(allPubKeys, unlockPubKeys.length),
           restPort
         ).address.toBase58
@@ -266,9 +266,10 @@ class MultisigTest extends AlephiumActorSpec {
     ): UnsignedTransaction = {
       val unsignedTx =
         deserialize[UnsignedTransaction](Hex.from(buildTxResult.unsignedTx).get).rightValue
-      val decodedTx = request[Tx](decodeUnsignedTransaction(buildTxResult.unsignedTx), restPort)
+      val decodedTx =
+        request[UnsignedTx](decodeUnsignedTransaction(buildTxResult.unsignedTx), restPort)
 
-      decodedTx is Tx.from(unsignedTx)
+      decodedTx is UnsignedTx.fromProtocol(unsignedTx)
 
       val submitMultisigTx = signAndSubmitMultisigTransaction(buildTxResult, unlockPrivKeys)
       val multisigTx       = request[TxResult](submitMultisigTx, restPort)

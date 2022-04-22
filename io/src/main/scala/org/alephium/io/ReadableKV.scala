@@ -14,23 +14,12 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.io
 
-import org.alephium.protocol.Hash
-import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.UnsignedTransaction
-import org.alephium.serde.serialize
-import org.alephium.util.Hex
+trait ReadableKV[K, V] {
+  def get(key: K): IOResult[V]
 
-final case class BuildScriptResult(unsignedTx: String, hash: Hash, fromGroup: Int, toGroup: Int)
-object BuildScriptResult {
-  def from(
-      unsignedTx: UnsignedTransaction
-  )(implicit groupConfig: GroupConfig): BuildScriptResult =
-    BuildScriptResult(
-      Hex.toHexString(serialize(unsignedTx)),
-      unsignedTx.hash,
-      unsignedTx.fromGroup.value,
-      unsignedTx.toGroup.value
-    )
+  def getOpt(key: K): IOResult[Option[V]]
+
+  def exists(key: K): IOResult[Boolean]
 }
