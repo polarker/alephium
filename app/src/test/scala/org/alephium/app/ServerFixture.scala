@@ -25,7 +25,7 @@ import akka.util.ByteString
 import org.scalacheck.Gen
 
 import org.alephium.api.ApiModelCodec
-import org.alephium.api.model._
+import org.alephium.api.model.{AssetOutput => _, ContractOutput => _, Transaction => _, _}
 import org.alephium.flow.client.Node
 import org.alephium.flow.core._
 import org.alephium.flow.core.BlockChain.TxIndex
@@ -63,7 +63,7 @@ trait ServerFixture
   )
   lazy val dummyIntraCliqueInfo = genIntraCliqueInfo
   lazy val dummySelfClique =
-    EndpointsLogic.selfCliqueFrom(dummyIntraCliqueInfo, config.consensus, true, true)
+    EndpointsLogic.selfCliqueFrom(dummyIntraCliqueInfo, true, true)
   lazy val dummyBlockEntry      = BlockEntry.from(dummyBlock, 1)
   lazy val dummyNeighborPeers   = NeighborPeers(AVector.empty)
   lazy val dummyBalance         = Balance.from(Amount.Zero, Amount.Zero, 0)
@@ -234,9 +234,9 @@ object ServerFixture {
     override def getHeightedBlocks(
         fromTs: TimeStamp,
         toTs: TimeStamp
-    ): IOResult[AVector[AVector[(Block, Int)]]] = {
+    ): IOResult[AVector[(ChainIndex, AVector[(Block, Int)])]] = {
       blockFlowProbe ! (block.header.timestamp >= fromTs && block.header.timestamp <= toTs)
-      Right(AVector(AVector((block, 1))))
+      Right(AVector((block.chainIndex, AVector((block, 1)))))
     }
 
     override def getBalance(
@@ -299,7 +299,7 @@ object ServerFixture {
     ): IOResult[Option[BlockFlowState.TxStatus]] = {
       assume(brokerConfig.contains(chainIndex.from))
       if (chainIndex == blockChainIndex) {
-        Right(Some(BlockFlowState.TxStatus(TxIndex(block.hash, 0), 1, 2, 3)))
+        Right(Some(BlockFlowState.Confirmed(TxIndex(block.hash, 0), 1, 2, 3)))
       } else {
         Right(None)
       }
@@ -318,6 +318,78 @@ object ServerFixture {
     override def getBlockHeader(hash: BlockHash): IOResult[BlockHeader] = Right(block.header)
     override def getBlock(hash: BlockHash): IOResult[Block]             = Right(block)
     override def calWeight(block: Block): IOResult[Weight]              = ???
+
+    override def getHeightedIntraBlocks(
+        fromTs: TimeStamp,
+        toTs: TimeStamp
+    ): IOResult[AVector[(ChainIndex, AVector[(Block, Int)])]] = {
+      Right(AVector((block.chainIndex, AVector((block, 10)))))
+    }
+
+    override def getGroupForContract(contractId: ContractId): Either[String, GroupIndex] = {
+      Right(GroupIndex.unsafe(0))
+    }
+
+    override def searchLocalTransactionStatus(
+        txId: Hash,
+        chainIndexes: AVector[ChainIndex]
+    ): Either[String, Option[BlockFlowState.TxStatus]] = {
+      val blockChainIndex = ChainIndex.from(block.hash, config.broker.groups)
+      if (brokerConfig.chainIndexes.contains(blockChainIndex)) {
+        Right(
+          Some(
+            BlockFlowState.Confirmed(
+              index = TxIndex(block.hash, 0),
+              chainConfirmations = 1,
+              fromGroupConfirmations = 2,
+              toGroupConfirmations = 3
+            )
+          )
+        )
+      } else {
+        Right(None)
+      }
+    }
+
+    override def getEvents(
+        worldState: WorldState.Persisted,
+        eventKey: Hash,
+        start: Int,
+        end: Int
+    ): IOResult[(Int, AVector[LogStates])] = {
+      lazy val address1 = Address.fromBase58("16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS").get
+      lazy val address2 = Address.fromBase58("27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi").get
+
+      Right(
+        (
+          2,
+          AVector(
+            LogStates(
+              block.hash,
+              eventKey,
+              states = AVector(
+                LogState(
+                  txId = dummyTx.id,
+                  index = 0,
+                  fields = AVector(
+                    vm.Val.U256(U256.unsafe(4)),
+                    vm.Val.Address(address1.lockupScript),
+                    vm.Val.Address(address2.lockupScript)
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    }
+
+    override def getEventsCurrentCount(
+        chainIndex: ChainIndex,
+        eventKey: Hash
+    ): IOResult[Option[Int]] = {
+      Right(Some(10))
+    }
 
     // scalastyle:off no.equal
     override def getBestCachedWorldState(groupIndex: GroupIndex): IOResult[WorldState.Cached] = {

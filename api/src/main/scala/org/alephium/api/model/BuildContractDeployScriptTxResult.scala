@@ -18,19 +18,32 @@ package org.alephium.api.model
 
 import org.alephium.protocol.Hash
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.UnsignedTransaction
+import org.alephium.protocol.model.{Address, TxOutputRef, UnsignedTransaction}
+import org.alephium.protocol.vm.{GasBox, GasPrice}
 import org.alephium.serde.serialize
 import org.alephium.util.Hex
 
-final case class BuildScriptResult(unsignedTx: String, hash: Hash, fromGroup: Int, toGroup: Int)
-object BuildScriptResult {
+final case class BuildContractDeployScriptTxResult(
+    group: Int,
+    unsignedTx: String,
+    gasAmount: GasBox,
+    gasPrice: GasPrice,
+    txId: Hash,
+    contractAddress: Address.Contract
+) extends GasInfo
+
+object BuildContractDeployScriptTxResult {
   def from(
       unsignedTx: UnsignedTransaction
-  )(implicit groupConfig: GroupConfig): BuildScriptResult =
-    BuildScriptResult(
-      Hex.toHexString(serialize(unsignedTx)),
-      unsignedTx.hash,
+  )(implicit groupConfig: GroupConfig): BuildContractDeployScriptTxResult = {
+    val contractId = TxOutputRef.key(unsignedTx.hash, unsignedTx.fixedOutputs.length)
+    BuildContractDeployScriptTxResult(
       unsignedTx.fromGroup.value,
-      unsignedTx.toGroup.value
+      Hex.toHexString(serialize(unsignedTx)),
+      unsignedTx.gasAmount,
+      unsignedTx.gasPrice,
+      unsignedTx.hash,
+      Address.contract(contractId)
     )
+  }
 }

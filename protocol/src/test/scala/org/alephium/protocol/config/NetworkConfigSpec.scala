@@ -14,17 +14,19 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.protocol.config
 
-import org.alephium.protocol.PublicKey
-import org.alephium.protocol.vm.{GasBox, GasPrice}
+import org.alephium.protocol.model.HardFork
+import org.alephium.util.{AlephiumSpec, Duration, TimeStamp}
 
-@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-final case class BuildScript(
-    fromPublicKey: PublicKey,
-    code: String,
-    amount: Option[Amount] = None,
-    gas: Option[GasBox] = None,
-    gasPrice: Option[GasPrice] = None,
-    utxosLimit: Option[Int] = None
-) extends UtxoBasedModel
+class NetworkConfigSpec extends AlephiumSpec with NetworkConfigFixture.Default {
+  override def lemanHardForkTimestamp: TimeStamp = TimeStamp.now()
+
+  networkConfig.getHardFork(lemanHardForkTimestamp) is HardFork.Leman
+  networkConfig.getHardFork(
+    lemanHardForkTimestamp.minusUnsafe(Duration.ofSecondsUnsafe(1))
+  ) is HardFork.Mainnet
+  networkConfig.getHardFork(
+    lemanHardForkTimestamp.plusUnsafe(Duration.ofSecondsUnsafe(1))
+  ) is HardFork.Leman
+}

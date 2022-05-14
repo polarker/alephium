@@ -18,17 +18,22 @@ package org.alephium.app
 
 import java.net.InetSocketAddress
 
+import scala.util.Random
+
 import akka.util.ByteString
 
+import org.alephium.api.{model => api}
 import org.alephium.api.ApiError
-import org.alephium.api.model._
+import org.alephium.api.model.{TransactionTemplate => _, _}
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.core.{AMMContract, BlockFlow}
 import org.alephium.flow.gasestimation._
 import org.alephium.protocol._
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model._
+import org.alephium.protocol.model.{AssetOutput => _, ContractOutput => _, _}
 import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript}
+import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.serde.serialize
 import org.alephium.util._
 
 // scalastyle:off file.size.limit
@@ -52,6 +57,8 @@ class ServerUtilsSpec extends AlephiumSpec {
 
   trait Fixture extends FlowFixture with ApiConfigFixture {
     implicit def flowImplicit: BlockFlow = blockFlow
+
+    def emptyKey(index: Int): Hash = TxOutputRef.key(Hash.zero, index)
   }
 
   trait FlowFixtureWithApi extends FlowFixture with ApiConfigFixture
@@ -88,7 +95,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       )
 
       val senderBalanceWithGas =
-        genesisBalance - destination1.amount.value - destination2.amount.value
+        genesisBalance - destination1.alphAmount.value - destination2.alphAmount.value
 
       checkAddressBalance(fromAddress, senderBalanceWithGas - txTemplate.gasFeeUnsafe)
       checkDestinationBalance(destination1)
@@ -146,7 +153,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       )
 
       val senderBalanceWithGas =
-        genesisBalance - destination1.amount.value - destination2.amount.value
+        genesisBalance - destination1.alphAmount.value - destination2.alphAmount.value
 
       checkAddressBalance(fromAddress, senderBalanceWithGas - txTemplate.gasFeeUnsafe)
       checkAddressBalance(destination1.address, U256.unsafe(0), 0)
@@ -632,7 +639,7 @@ class ServerUtilsSpec extends AlephiumSpec {
   it should "not create transaction with overflowing ALPH amount" in new MultipleUtxos {
     val alphAmountOverflowDestinations = AVector(
       destination1,
-      destination2.copy(amount = Amount(ALPH.MaxALPHValue))
+      destination2.copy(alphAmount = Amount(ALPH.MaxALPHValue))
     )
     serverUtils
       .prepareUnsignedTransaction(
@@ -769,7 +776,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       UnconfirmedTransactions(
         chainIndex.from.value,
         chainIndex.to.value,
-        AVector(Tx.fromTemplate(txTemplate))
+        AVector(api.TransactionTemplate.fromProtocol(txTemplate))
       )
     )
   }
@@ -781,91 +788,109 @@ class ServerUtilsSpec extends AlephiumSpec {
     val buyer           = lp
     val contractAddress = Address.contract(ContractId.zero)
 
-    def testContract0: TestContract
+    def testContract0: TestContract.Complete
 
     val serverUtils  = new ServerUtils()
     val testFlow     = BlockFlow.emptyUnsafe(config)
     lazy val result0 = serverUtils.runTestContract(testFlow, testContract0).rightValue
 
     val testContractId1 = ContractId.random
-    def testContract1: TestContract
+    def testContract1: TestContract.Complete
     lazy val result1 = serverUtils.runTestContract(testFlow, testContract1).rightValue
   }
 
   it should "test AMM contract: add liquidity" in new TestContractFixture {
-    val testContract0 = TestContract(
+    val testContract0 = TestContract.Complete(
+      artifactId = AMMContract.swapCode.hash,
       code = AMMContract.swapCode,
-      initialFields =
-        AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(10)), Val.U256(100)),
-      initialAsset = TestContract.Asset(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
+      initialFields = AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(10)), ValU256(100)),
+      initialAsset = AssetState(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
       testMethodIndex = 0,
-      testArgs = AVector[Val](Val.Address(lp), Val.U256(ALPH.alph(100)), Val.U256(100)),
+      testArgs = AVector[Val](ValAddress(lp), ValU256(ALPH.alph(100)), ValU256(100)),
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101), AVector(Token(tokenId, 100)))
+          AssetState(ALPH.alph(101), AVector(Token(tokenId, 100)))
         )
       )
     )
 
     result0.returns.isEmpty is true
-    result0.gasUsed is 17301
+    result0.gasUsed is 17495
     result0.contracts.length is 1
     val contractState = result0.contracts.head
     contractState.id is ContractId.zero
     contractState.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(110)), Val.U256(200))
-    contractState.asset is TestContract.Asset(ALPH.alph(110), AVector(Token(tokenId, 200)))
-    result0.outputs.length is 2
-    result0.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(110)), ValU256(200))
+    contractState.asset is AssetState(ALPH.alph(110), AVector(Token(tokenId, 200)))
+    result0.txOutputs.length is 2
+    result0.txOutputs(0) is ContractOutput(
+      result0.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(110)),
       contractAddress,
       AVector(Token(tokenId, 200))
     )
-    result0.outputs(1) is Output.Asset(
+    result0.txOutputs(1) is AssetOutput(
+      result0.txOutputs(1).hint,
+      emptyKey(1),
       Amount(937500000000000000L),
       lp,
       AVector.empty,
       TimeStamp.zero,
       ByteString.empty
     )
+    result0.events.length is 1
+    result0.events(0).eventIndex is 0
+    result0.events(0).fields is AVector[Val](
+      ValAddress(lp),
+      ValU256(ALPH.alph(100)),
+      ValU256(100)
+    )
 
-    val testContract1 = TestContract(
+    val testContract1 = TestContract.Complete(
       contractId = testContractId1,
+      artifactId = AMMContract.swapProxyCode.hash,
       code = AMMContract.swapProxyCode,
       initialFields =
-        AVector[Val](Val.ByteVec(testContract0.contractId.bytes), Val.ByteVec(tokenId.bytes)),
-      initialAsset = TestContract.Asset(ALPH.alph(1)),
+        AVector[Val](ValByteVec(testContract0.contractId.bytes), ValByteVec(tokenId.bytes)),
+      initialAsset = AssetState(ALPH.alph(1)),
       testMethodIndex = 0,
-      testArgs = AVector[Val](Val.Address(lp), Val.U256(ALPH.alph(100)), Val.U256(100)),
+      testArgs = AVector[Val](ValAddress(lp), ValU256(ALPH.alph(100)), ValU256(100)),
       existingContracts = result0.contracts,
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101), AVector(Token(tokenId, 100)))
+          AssetState(ALPH.alph(101), AVector(Token(tokenId, 100)))
         )
       )
     )
     result1.returns.isEmpty is true
-    result1.gasUsed is 24905
+    result1.gasUsed is 25099
     result1.contracts.length is 2
     val contractState1 = result1.contracts.head
     contractState1.id is ContractId.zero
     contractState1.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(210)), Val.U256(300))
-    contractState1.asset is TestContract.Asset(ALPH.alph(210), AVector(Token(tokenId, 300)))
-    result1.outputs.length is 3
-    result1.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(210)), ValU256(300))
+    contractState1.asset is AssetState(ALPH.alph(210), AVector(Token(tokenId, 300)))
+    result1.txOutputs.length is 3
+    result1.txOutputs(0) is ContractOutput(
+      result1.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(210)),
       contractAddress,
       AVector(Token(tokenId, 300))
     )
-    result1.outputs(1) is Output.Contract(
+    result1.txOutputs(1) is ContractOutput(
+      result1.txOutputs(1).hint,
+      emptyKey(1),
       Amount(1000000000000000000L),
       Address.contract(testContractId1),
       AVector.empty
     )
-    result1.outputs(2) is Output.Asset(
+    result1.txOutputs(2) is AssetOutput(
+      result1.txOutputs(2).hint,
+      emptyKey(2),
       Amount(937500000000000000L),
       lp,
       AVector.empty,
@@ -875,81 +900,95 @@ class ServerUtilsSpec extends AlephiumSpec {
   }
 
   it should "test AMM contract: swap token" in new TestContractFixture {
-    val testContract0 = TestContract(
+    val testContract0 = TestContract.Complete(
+      artifactId = AMMContract.swapCode.hash,
       code = AMMContract.swapCode,
-      initialFields =
-        AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(10)), Val.U256(100)),
-      initialAsset = TestContract.Asset(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
+      initialFields = AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(10)), ValU256(100)),
+      initialAsset = AssetState(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
       testMethodIndex = 1,
-      testArgs = AVector[Val](Val.Address(buyer), Val.U256(ALPH.alph(10))),
+      testArgs = AVector[Val](ValAddress(buyer), ValU256(ALPH.alph(10))),
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101), AVector(Token(tokenId, 100)))
+          AssetState(ALPH.alph(101), AVector(Token(tokenId, 100)))
         )
       )
     )
 
     result0.returns.isEmpty is true
-    result0.gasUsed is 17333
+    result0.gasUsed is 17504
     result0.contracts.length is 1
     val contractState = result0.contracts.head
     contractState.id is ContractId.zero
     contractState.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(20)), Val.U256(50))
-    contractState.asset is TestContract.Asset(ALPH.alph(20), AVector(Token(tokenId, 50)))
-    result0.outputs.length is 2
-    result0.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(20)), ValU256(50))
+    contractState.asset is AssetState(ALPH.alph(20), AVector(Token(tokenId, 50)))
+    result0.txOutputs.length is 2
+    result0.txOutputs(0) is ContractOutput(
+      result0.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(20)),
       contractAddress,
       AVector(Token(tokenId, 50))
     )
-    result0.outputs(1) is Output.Asset(
+    result0.txOutputs(1) is AssetOutput(
+      result0.txOutputs(1).hint,
+      emptyKey(1),
       Amount(ALPH.nanoAlph(90937500000L)),
       buyer,
       AVector(Token(tokenId, 150)),
       TimeStamp.zero,
       ByteString.empty
     )
+    result0.events.length is 1
+    result0.events(0).eventIndex is 1
+    result0.events(0).fields is AVector[Val](ValAddress(buyer), ValU256(ALPH.alph(10)))
 
-    val testContract1 = TestContract(
+    val testContract1 = TestContract.Complete(
       contractId = testContractId1,
+      artifactId = AMMContract.swapProxyCode.hash,
       code = AMMContract.swapProxyCode,
       initialFields =
-        AVector[Val](Val.ByteVec(testContract0.contractId.bytes), Val.ByteVec(tokenId.bytes)),
-      initialAsset = TestContract.Asset(ALPH.alph(1)),
+        AVector[Val](ValByteVec(testContract0.contractId.bytes), ValByteVec(tokenId.bytes)),
+      initialAsset = AssetState(ALPH.alph(1)),
       testMethodIndex = 2,
-      testArgs = AVector[Val](Val.Address(buyer), Val.U256(50)),
+      testArgs = AVector[Val](ValAddress(buyer), ValU256(50)),
       existingContracts = result0.contracts,
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101), AVector(Token(tokenId, 50)))
+          AssetState(ALPH.alph(101), AVector(Token(tokenId, 50)))
         )
       )
     )
     result1.returns.isEmpty is true
-    result1.gasUsed is 24898
+    result1.gasUsed is 25069
     result1.contracts.length is 2
     val contractState1 = result1.contracts.head
     contractState1.id is ContractId.zero
     contractState1.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(10)), Val.U256(100))
-    contractState1.asset is TestContract.Asset(ALPH.alph(10), AVector(Token(tokenId, 100)))
-    result1.outputs.length is 3
-    result1.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(10)), ValU256(100))
+    contractState1.asset is AssetState(ALPH.alph(10), AVector(Token(tokenId, 100)))
+    result1.txOutputs.length is 3
+    result1.txOutputs(0) is ContractOutput(
+      result1.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(10)),
       contractAddress,
       AVector(Token(tokenId, 100))
     )
-    result1.outputs(1) is Output.Asset(
+    result1.txOutputs(1) is AssetOutput(
+      result1.txOutputs(1).hint,
+      emptyKey(1),
       Amount(ALPH.nanoAlph(110937500000L)),
       lp,
       AVector.empty,
       TimeStamp.zero,
       ByteString.empty
     )
-    result1.outputs(2) is Output.Contract(
+    result1.txOutputs(2) is ContractOutput(
+      result1.txOutputs(2).hint,
+      emptyKey(2),
       Amount(1000000000000000000L),
       Address.contract(testContractId1),
       AVector.empty
@@ -957,85 +996,217 @@ class ServerUtilsSpec extends AlephiumSpec {
   }
 
   it should "test AMM contract: swap Alph" in new TestContractFixture {
-    val testContract0 = TestContract(
+    val testContract0 = TestContract.Complete(
+      artifactId = AMMContract.swapCode.hash,
       code = AMMContract.swapCode,
-      initialFields =
-        AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(10)), Val.U256(100)),
-      initialAsset = TestContract.Asset(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
+      initialFields = AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(10)), ValU256(100)),
+      initialAsset = AssetState(ALPH.alph(10), tokens = AVector(Token(tokenId, 100))),
       testMethodIndex = 2,
-      testArgs = AVector[Val](Val.Address(buyer), Val.U256(100)),
+      testArgs = AVector[Val](ValAddress(buyer), ValU256(100)),
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101), AVector(Token(tokenId, 100)))
+          AssetState(ALPH.alph(101), AVector(Token(tokenId, 100)))
         )
       )
     )
 
     result0.returns.isEmpty is true
-    result0.gasUsed is 17333
+    result0.gasUsed is 17504
     result0.contracts.length is 1
     val contractState = result0.contracts.head
     contractState.id is ContractId.zero
     contractState.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(5)), Val.U256(200))
-    contractState.asset is TestContract.Asset(ALPH.alph(5), AVector(Token(tokenId, 200)))
-    result0.outputs.length is 2
-    result0.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(5)), ValU256(200))
+    contractState.asset is AssetState(ALPH.alph(5), AVector(Token(tokenId, 200)))
+    result0.txOutputs.length is 2
+    result0.txOutputs(0) is ContractOutput(
+      result0.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(5)),
       contractAddress,
       AVector(Token(tokenId, 200))
     )
-    result0.outputs(1) is Output.Asset(
+    result0.txOutputs(1) is AssetOutput(
+      result0.txOutputs(1).hint,
+      emptyKey(1),
       Amount(ALPH.nanoAlph(105937500000L)),
       buyer,
       AVector.empty,
       TimeStamp.zero,
       ByteString.empty
     )
+    result0.events.length is 1
+    result0.events(0).eventIndex is 2
+    result0.events(0).fields is AVector[Val](ValAddress(buyer), ValU256(100))
 
-    val testContract1 = TestContract(
+    val testContract1 = TestContract.Complete(
       contractId = testContractId1,
+      artifactId = AMMContract.swapProxyCode.hash,
       code = AMMContract.swapProxyCode,
       initialFields =
-        AVector[Val](Val.ByteVec(testContract0.contractId.bytes), Val.ByteVec(tokenId.bytes)),
-      initialAsset = TestContract.Asset(ALPH.alph(1)),
+        AVector[Val](ValByteVec(testContract0.contractId.bytes), ValByteVec(tokenId.bytes)),
+      initialAsset = AssetState(ALPH.alph(1)),
       testMethodIndex = 1,
-      testArgs = AVector[Val](Val.Address(buyer), Val.U256(ALPH.alph(5))),
+      testArgs = AVector[Val](ValAddress(buyer), ValU256(ALPH.alph(5))),
       existingContracts = result0.contracts,
       inputAssets = AVector(
         TestContract.InputAsset(
           lp,
-          TestContract.Asset(ALPH.alph(101))
+          AssetState(ALPH.alph(101))
         )
       )
     )
     result1.returns.isEmpty is true
-    result1.gasUsed is 24859
+    result1.gasUsed is 25030
     result1.contracts.length is 2
     val contractState1 = result1.contracts.head
     contractState1.id is ContractId.zero
     contractState1.fields is
-      AVector[Val](Val.ByteVec(tokenId.bytes), Val.U256(ALPH.alph(10)), Val.U256(100))
-    contractState1.asset is TestContract.Asset(ALPH.alph(10), AVector(Token(tokenId, 100)))
-    result1.outputs.length is 3
-    result1.outputs(0) is Output.Contract(
+      AVector[Val](ValByteVec(tokenId.bytes), ValU256(ALPH.alph(10)), ValU256(100))
+    contractState1.asset is AssetState(ALPH.alph(10), AVector(Token(tokenId, 100)))
+    result1.txOutputs.length is 3
+    result1.txOutputs(0) is ContractOutput(
+      result1.txOutputs(0).hint,
+      emptyKey(0),
       Amount(ALPH.alph(10)),
       contractAddress,
       AVector(Token(tokenId, 100))
     )
-    result1.outputs(1) is Output.Asset(
+    result1.txOutputs(1) is AssetOutput(
+      result1.txOutputs(1).hint,
+      emptyKey(1),
       Amount(ALPH.nanoAlph(95937500000L)),
       lp,
       AVector(Token(tokenId, 100)),
       TimeStamp.zero,
       ByteString.empty
     )
-    result1.outputs(2) is Output.Contract(
+    result1.txOutputs(2) is ContractOutput(
+      result1.txOutputs(2).hint,
+      emptyKey(2),
       Amount(1000000000000000000L),
       Address.contract(testContractId1),
       AVector.empty
     )
+  }
+
+  it should "test array parameters in contract" in new Fixture {
+    val isPublic = if (Random.nextBoolean()) "pub" else ""
+    val contract =
+      s"""
+         |TxContract ArrayTest(mut array: [U256; 2]) {
+         |  ${isPublic} fn swap(input: [U256; 2]) -> ([U256; 2]) {
+         |    array[0] = input[1]
+         |    array[1] = input[0]
+         |    return array
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).toOption.get
+
+    val testContract = TestContract(
+      bytecode = code,
+      artifactId = code.hash,
+      initialFields = AVector[Val](ValArray(AVector(ValU256(U256.Zero), ValU256(U256.One)))),
+      testArgs = AVector[Val](ValArray(AVector(ValU256(U256.Zero), ValU256(U256.One))))
+    ).toComplete().rightValue
+
+    val serverUtils   = new ServerUtils()
+    val compileResult = serverUtils.compileContract(Compile.Contract(contract)).rightValue
+    compileResult.fields.types is AVector("[U256;2]")
+    val func = compileResult.functions.head
+    func.argTypes is AVector("[U256;2]")
+    func.returnTypes is AVector("[U256;2]")
+
+    val testFlow      = BlockFlow.emptyUnsafe(config)
+    val result        = serverUtils.runTestContract(testFlow, testContract).rightValue
+    val contractState = result.contracts(0)
+    result.contracts.length is 1
+    contractState.fields is AVector[Val](ValU256(U256.One), ValU256(U256.Zero))
+    result.returns is AVector[Val](ValU256(U256.One), ValU256(U256.Zero))
+    contractState.artifactId is compileResult.codeHashUnsafe
+    result.artifactId is result.artifactId
+  }
+
+  it should "compile contract" in new Fixture {
+    val expectedMethodByteCode = "010000000004{x:U256}a000304d"
+    val serverUtils            = new ServerUtils()
+
+    {
+      val rawCode =
+        s"""
+           |TxContract Foo<x: U256>(y: U256) {
+           |  pub fn foo() -> () {
+           |    assert!(x != y)
+           |  }
+           |}
+           |""".stripMargin
+      val query  = Compile.Contract(rawCode)
+      val result = serverUtils.compileContract(query).rightValue
+      result.compiled is TemplateContractByteCode(1, AVector(expectedMethodByteCode))
+    }
+
+    {
+      val rawCode =
+        s"""
+           |TxContract Foo(y: U256) {
+           |  pub fn foo() -> () {
+           |    assert!(1 != y)
+           |  }
+           |}
+           |""".stripMargin
+      val code   = Compiler.compileContract(rawCode).rightValue
+      val query  = Compile.Contract(rawCode)
+      val result = serverUtils.compileContract(query).rightValue
+
+      val compiledCode = result.bytecodeUnsafe
+      compiledCode is Hex.toHexString(serialize(code))
+      compiledCode is {
+        val replaced     = expectedMethodByteCode.replace("{x:U256}", "0d") // bytecode of U256Const1
+        val methodLength = Hex.toHexString(IndexedSeq((replaced.length / 2).toByte))
+        s"0101$methodLength" + replaced
+      }
+    }
+  }
+
+  it should "compile script" in new Fixture {
+    val expectedByteCode = "01010000000004{x:U256}{y:U256}304d"
+    val serverUtils      = new ServerUtils()
+
+    {
+      val rawCode =
+        s"""
+           |TxScript Main<x: U256, y: U256> {
+           |  pub fn main() -> () {
+           |    assert!(x != y)
+           |  }
+           |}
+           |""".stripMargin
+
+      val query  = Compile.Script(rawCode)
+      val result = serverUtils.compileScript(query).rightValue
+      result.compiled is TemplateScriptByteCode(expectedByteCode)
+    }
+
+    {
+      val rawCode =
+        s"""
+           |TxScript Main {
+           |  pub fn main() -> () {
+           |    assert!(1 != 2)
+           |  }
+           |}
+           |""".stripMargin
+      val code   = Compiler.compileTxScript(rawCode).rightValue
+      val query  = Compile.Script(rawCode)
+      val result = serverUtils.compileScript(query).rightValue
+
+      result.bytecodeUnsafe is Hex.toHexString(serialize(code))
+      result.bytecodeUnsafe is expectedByteCode
+        .replace("{x:U256}", "0d") // bytecode of U256Const1
+        .replace("{y:U256}", "0e") // bytecode of U256Const2
+    }
   }
 
   private def generateDestination(
@@ -1071,7 +1242,7 @@ class ServerUtilsSpec extends AlephiumSpec {
         .createTxTemplate(SubmitTransaction(unsignedTx, signature))
         .rightValue
 
-    serverUtils.getTransactionStatus(blockFlow, txId, chainIndex) isE NotFound
+    serverUtils.getTransactionStatus(blockFlow, txId, chainIndex) isE TxNotFound
 
     blockFlow.getMemPool(chainIndex).addToTxPool(chainIndex, AVector(txTemplate), TimeStamp.now())
     serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE MemPooled
@@ -1094,6 +1265,6 @@ class ServerUtilsSpec extends AlephiumSpec {
       serverUtils: ServerUtils,
       blockFlow: BlockFlow
   ) = {
-    checkAddressBalance(destination.address, destination.amount.value, utxoNum)
+    checkAddressBalance(destination.address, destination.alphAmount.value, utxoNum)
   }
 }

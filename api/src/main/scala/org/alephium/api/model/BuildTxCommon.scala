@@ -16,28 +16,16 @@
 
 package org.alephium.api.model
 
-import org.alephium.protocol.Hash
-import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.{TxOutputRef, UnsignedTransaction}
-import org.alephium.serde.serialize
-import org.alephium.util.Hex
+import org.alephium.protocol.vm.{GasBox, GasPrice}
 
-final case class BuildContractResult(
-    unsignedTx: String,
-    hash: Hash,
-    contractId: Hash,
-    fromGroup: Int,
-    toGroup: Int
-)
-object BuildContractResult {
-  def from(
-      unsignedTx: UnsignedTransaction
-  )(implicit groupConfig: GroupConfig): BuildContractResult =
-    BuildContractResult(
-      Hex.toHexString(serialize(unsignedTx)),
-      unsignedTx.hash,
-      TxOutputRef.key(unsignedTx.hash, unsignedTx.fixedOutputs.length),
-      unsignedTx.fromGroup.value,
-      unsignedTx.toGroup.value
-    )
+trait BuildTxCommon {
+  def gasAmount: Option[GasBox]
+
+  def gasPrice: Option[GasPrice]
+}
+
+trait GasInfo {
+  def gasAmount: GasBox
+
+  def gasPrice: GasPrice
 }

@@ -34,7 +34,9 @@ object Address {
   final case class Asset(lockupScript: LockupScript.Asset) extends Address {
     def groupIndex(implicit config: GroupConfig): GroupIndex = lockupScript.groupIndex
   }
-  final case class Contract(lockupScript: LockupScript.P2C) extends Address
+  final case class Contract(lockupScript: LockupScript.P2C) extends Address {
+    def contractId: ContractId = lockupScript.contractId
+  }
 
   def from(lockupScript: LockupScript): Address = {
     lockupScript match {
@@ -43,7 +45,7 @@ object Address {
     }
   }
 
-  def contract(contractId: ContractId): Address = {
+  def contract(contractId: ContractId): Address.Contract = {
     Contract(LockupScript.p2c(contractId))
   }
 

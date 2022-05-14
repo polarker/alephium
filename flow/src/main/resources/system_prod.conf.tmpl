@@ -94,6 +94,7 @@ alephium {
     clean-pending-pool-frequency = 60 minutes
     batch-broadcast-txs-frequency = 500 milli
     batch-download-txs-frequency = 500 milli
+    auto-mine-for-dev = false
   }
 
   api {
@@ -119,6 +120,10 @@ alephium {
     # a boolean flag to indicate whether a write with rocksdb should be synchronized
     # Note that if it is just the process that crashes (i.e., the machine does not reboot), no writes will be lost even if sync==false
     db-sync-write = false
+    event-log {
+      enabled = false
+      index-by-tx-id = false
+    }
   }
 }
 

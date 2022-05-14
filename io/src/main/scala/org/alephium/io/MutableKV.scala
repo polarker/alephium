@@ -14,14 +14,16 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.io
 
-import org.alephium.protocol.vm.{GasBox, GasPrice}
+trait MutableKV[K, V, T] extends ReadableKV[K, V] {
+  def remove(key: K): IOResult[T]
 
-trait UtxoBasedModel {
-  def gas: Option[GasBox]
+  def put(key: K, value: V): IOResult[T]
+}
 
-  def gasPrice: Option[GasPrice]
-
-  def utxosLimit: Option[Int]
+object MutableKV {
+  trait WithInitialValue[K, V, T] { Self: MutableKV[K, V, T] =>
+    def getInitialValue(key: K): IOResult[Option[V]]
+  }
 }
