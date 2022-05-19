@@ -14,12 +14,18 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.io
+package org.alephium.api.model
 
-trait ReadableTrie[K, V] {
-  def get(key: K): IOResult[V]
+import org.alephium.protocol.vm.{GasBox, GasPrice}
 
-  def getOpt(key: K): IOResult[Option[V]]
+trait BuildTxCommon {
+  def gasAmount: Option[GasBox]
 
-  def exist(key: K): IOResult[Boolean]
+  def gasPrice: Option[GasPrice]
+}
+
+trait GasInfo {
+  def gasAmount: GasBox
+
+  def gasPrice: GasPrice
 }

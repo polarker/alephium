@@ -174,6 +174,12 @@ trait BlockFlowState extends FlowTipsUtil {
     outBlockChains.flatMapE { chains => chains.mapE(f) }
   }
 
+  protected def concatIntraBlockChainsE[T: ClassTag](
+      f: BlockChain => IOResult[T]
+  ): IOResult[AVector[T]] = {
+    intraGroupBlockChains.mapE(f)
+  }
+
   def getBlockChain(hash: BlockHash): BlockChain
 
   def getBlockChain(chainIndex: ChainIndex): BlockChain
@@ -513,10 +519,14 @@ object BlockFlowState {
     }
   }
 
-  final case class TxStatus(
+  sealed trait TxStatus
+
+  final case class Confirmed(
       index: TxIndex,
       chainConfirmations: Int,
       fromGroupConfirmations: Int,
       toGroupConfirmations: Int
-  )
+  ) extends TxStatus
+
+  final case object MemPooled extends TxStatus
 }

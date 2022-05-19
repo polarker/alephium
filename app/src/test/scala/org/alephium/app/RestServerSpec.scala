@@ -25,6 +25,8 @@ import scala.util.{Random, Using}
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.testkit.{TestActor, TestProbe}
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, EitherValues}
+import org.scalatest.compatible.Assertion
+import sttp.client3.Response
 import sttp.model.StatusCode
 
 import org.alephium.api.{ApiError, ApiModel}
@@ -121,7 +123,7 @@ abstract class RestServerSpec(
     }
     Get(s"/addresses/${dummyContractAddress}/group") check { response =>
       response.code is StatusCode.Ok
-      response.as[Group] is dummyContractGroup
+      response.as[Group] is Group(0)
     }
   }
 
@@ -198,7 +200,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -221,7 +223,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": [],
         |      "lockTime": "1234"
         |    }
@@ -255,7 +257,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -371,10 +373,9 @@ abstract class RestServerSpec(
             response.code is StatusCode.Ok
             status is dummyTxStatus
           } else {
-            response.code is StatusCode.BadRequest
-            response.as[ApiError.BadRequest] is ApiError.BadRequest(
-              s"${txId.toHexString} belongs to other groups"
-            )
+            val status = response.as[TxStatus]
+            response.code is StatusCode.Ok
+            status is TxNotFound
           }
         }
 
@@ -388,7 +389,7 @@ abstract class RestServerSpec(
             status is dummyTxStatus
           } else {
             response.code is StatusCode.Ok
-            response.as[TxStatus] is NotFound
+            response.as[TxStatus] is TxNotFound
           }
         }
 
@@ -402,7 +403,7 @@ abstract class RestServerSpec(
             status is dummyTxStatus
           } else {
             response.code is StatusCode.Ok
-            response.as[TxStatus] is NotFound
+            response.as[TxStatus] is TxNotFound
           }
         }
       }
@@ -430,7 +431,7 @@ abstract class RestServerSpec(
     ) check { response =>
       response.code is StatusCode.Ok
 
-      val result   = response.as[BuildMultisigAddress.Result]
+      val result   = response.as[BuildMultisigAddressResult]
       val expected = ServerFixture.p2mpkhAddress(AVector(dummyKeyHex, dummyKeyHex2), 1)
 
       result.address is expected
@@ -455,7 +456,7 @@ abstract class RestServerSpec(
         |  "destinations": [
         |    {
         |      "address": "$dummyToAddress",
-        |      "amount": "1",
+        |      "alphAmount": "1",
         |      "tokens": []
         |    }
         |  ]
@@ -609,30 +610,32 @@ abstract class RestServerSpec(
 
   it should "call GET /infos/node" in {
     val buildInfo = NodeInfo.BuildInfo(BuildInfo.releaseVersion, BuildInfo.commitId)
-    minerProbe.setAutoPilot(new TestActor.AutoPilot {
-      var miningStarted: Boolean = false
-      def run(sender: ActorRef, msg: Any): TestActor.AutoPilot =
-        msg match {
-          case Miner.IsMining =>
-            sender ! miningStarted
-            TestActor.KeepRunning
-          case Miner.Start =>
-            miningStarted = true
-            TestActor.KeepRunning
-          case Miner.Stop =>
-            miningStarted = false
-            TestActor.KeepRunning
-        }
-
-    })
 
     Get(s"/infos/node") check { response =>
       response.code is StatusCode.Ok
       response.as[NodeInfo] is NodeInfo(
-        ReleaseVersion.current,
         buildInfo,
         networkConfig.upnp.enabled,
         networkConfig.externalAddressInferred
+      )
+    }
+  }
+
+  it should "call GET /infos/version" in {
+    Get(s"/infos/version") check { response =>
+      response.code is StatusCode.Ok
+      response.as[NodeVersion] is NodeVersion(ReleaseVersion.current)
+    }
+  }
+
+  it should "call GET /infos/chain-params" in {
+    Get(s"/infos/chain-params") check { response =>
+      response.code is StatusCode.Ok
+      response.as[ChainParams] is ChainParams(
+        networkConfig.networkId,
+        consensusConfig.numZerosAtLeastInHash,
+        brokerConfig.groupNumPerBroker,
+        brokerConfig.groups
       )
     }
   }
@@ -661,7 +664,7 @@ abstract class RestServerSpec(
   }
 
   it should "call POST /infos/misbehaviors" in {
-    val body = """{"type":"unban","peers":["123.123.123.123"]}"""
+    val body = """{"type":"Unban","peers":["123.123.123.123"]}"""
     Post(s"/infos/misbehaviors", body) check { response =>
       response.code is StatusCode.Ok
     }
@@ -676,7 +679,7 @@ abstract class RestServerSpec(
     Get(s"/contracts/${dummyContractAddress}/state?group=${dummyContractGroup.group}") check {
       response =>
         response.code is StatusCode.Ok
-        response.as[ContractStateResult] is ContractStateResult(AVector(Val.U256(U256.Zero)))
+        response.as[ContractState].address.toBase58 is dummyContractAddress
     }
   }
 
@@ -734,6 +737,156 @@ abstract class RestServerSpec(
         response.as[ApiError.Unauthorized] is ApiError.Unauthorized("Wrong api key")
       } else {
         response.code is StatusCode.Ok
+      }
+    }
+  }
+
+  it should "get events for a contract within a counter range" in {
+    val blockHash  = dummyBlock.hash
+    val start      = 10
+    val end        = 100
+    val urlBase    = s"/events/contract?contractAddress=$dummyContractAddress"
+    val chainIndex = ChainIndex.unsafe(0, 0)
+
+    info("with valid start and end")
+    Get(s"$urlBase&start=$start&end=$end").check(validResponse)
+
+    info("with start only")
+    Get(s"$urlBase&start=$start").check(validResponse)
+
+    info("with start smaller than end")
+    Get(s"$urlBase&start=$end&end=$start").check { response =>
+      response.code is StatusCode.BadRequest
+      response.body.leftValue is s"""{"detail":"Invalid value (`end` must be larger than `start`)"}"""
+    }
+
+    info("with end larger than (start + MaxCounterRange)")
+    Get(s"$urlBase&start=$start&end=${start + CounterRange.MaxCounterRange + 1}").check {
+      response =>
+        response.code is StatusCode.BadRequest
+        response.body.leftValue is s"""{"detail":"Invalid value (`end` must be smaller than ${start + CounterRange.MaxCounterRange})"}"""
+    }
+
+    info("with start larger than (Int.MaxValue - MaxCounterRange)")
+    Get(s"$urlBase&start=${Int.MaxValue - CounterRange.MaxCounterRange + 1}").check { response =>
+      response.code is StatusCode.BadRequest
+      response.body.leftValue is s"""{"detail":"Invalid value (`start` must be smaller than ${Int.MaxValue - CounterRange.MaxCounterRange})"}"""
+    }
+
+    def validResponse(response: Response[Either[String, String]]): Assertion = {
+      response.code is StatusCode.Ok
+      val events = response.body.rightValue
+      events is s"""
+        |{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |    {
+        |      "type": "ContractEvent",
+        |      "blockHash": "${blockHash.toHexString}",
+        |      "contractAddress": "${dummyContractAddress}",
+        |      "txId": "${dummyTx.id.toHexString}",
+        |      "eventIndex": 0,
+        |      "fields": [
+        |        {
+        |          "type": "U256",
+        |          "value": "4"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi"
+        |        }
+        |      ]
+        |    }
+        |  ],
+        |  "nextStart": 2
+        |}
+        |""".stripMargin.filterNot(_.isWhitespace)
+    }
+  }
+
+  it should "get events for a TxScript" in {
+    val blockHash = dummyBlock.hash
+    val txId      = dummyTx.id
+
+    servers.foreach { server =>
+      Get(
+        s"/events/tx-script?txId=${txId.toHexString}",
+        server.port
+      ) check { response =>
+        val chainIndex = ChainIndex.from(blockHash, server.node.config.broker.groups)
+        val rightNode  = server.node.config.broker.chainIndexes.contains(chainIndex)
+
+        if (rightNode) {
+          response.code is StatusCode.Ok
+          val events = response.body.rightValue
+          events is s"""
+        |{
+        |  "chainFrom": ${chainIndex.from.value},
+        |  "chainTo": ${chainIndex.to.value},
+        |  "events": [
+        |    {
+        |      "type": "TxScriptEvent",
+        |      "blockHash": "${blockHash.toHexString}",
+        |      "txId": "${txId.toHexString}",
+        |      "eventIndex": 0,
+        |      "fields": [
+        |        {
+        |          "type": "U256",
+        |          "value": "4"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "16BCZkZzGb3QnycJQefDHqeZcTA5RhrwYUDsAYkCf7RhS"
+        |        },
+        |        {
+        |          "type": "Address",
+        |          "value": "27gAhB8JB6UtE9tC3PwGRbXHiZJ9ApuCMoHqe1T4VzqFi"
+        |        }
+        |      ]
+        |    }
+        |  ],
+        |  "nextStart": 2
+        |}
+        |""".stripMargin.filterNot(_.isWhitespace)
+        } else {
+          response.code is StatusCode.NotFound
+          val error = response.as[ApiError.NotFound]
+          error.detail is s"Transaction ${txId.toHexString} not found"
+        }
+      }
+    }
+  }
+
+  it should "get current events count for a contract" in {
+    val url = s"/events/contract/current-count?contractAddress=$dummyContractAddress"
+    Get(url) check { response =>
+      response.code is StatusCode.Ok
+      response.body.rightValue is "10"
+    }
+  }
+
+  it should "get current events count for a TxScript" in {
+    val blockHash = dummyBlock.hash
+    val url       = s"/events/tx-script/current-count?txId=${dummyTx.id.toHexString}"
+
+    servers.foreach { server =>
+      Get(url, server.port) check { response =>
+        val chainIndex = ChainIndex.from(blockHash, server.node.config.broker.groups)
+        val rightNode  = server.node.config.broker.chainIndexes.contains(chainIndex)
+
+        if (rightNode) {
+          response.code is StatusCode.Ok
+          response.body.rightValue is "10"
+        } else {
+          response.code is StatusCode.NotFound
+          val error = response.as[ApiError.NotFound]
+          error.detail is s"Transaction ${dummyTx.id.toHexString} not found"
+        }
       }
     }
   }

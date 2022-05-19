@@ -16,11 +16,15 @@
 
 package org.alephium.api.model
 
+import org.alephium.protocol.Hash
 import org.alephium.util.AVector
 
 final case class TestContractResult(
+    originalCodeHash: Hash, // new
+    testCodeHash: Hash,     // new
     returns: AVector[Val],
     gasUsed: Int,
-    contracts: AVector[TestContract.ExistingContract],
-    outputs: AVector[Output]
+    contracts: AVector[ContractState],
+    txOutputs: AVector[Output],
+    events: AVector[Event]
 )

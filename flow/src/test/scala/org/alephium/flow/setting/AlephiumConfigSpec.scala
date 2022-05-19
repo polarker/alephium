@@ -31,10 +31,12 @@ import net.ceedubs.ficus.readers.ValueReader
 
 import org.alephium.conf._
 import org.alephium.protocol.ALPH
+import org.alephium.protocol.Hash
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.mining.HashRate
 import org.alephium.protocol.model.{Address, GroupIndex, NetworkId}
-import org.alephium.util.{AlephiumSpec, AVector, Duration, Env}
+import org.alephium.protocol.vm.LogConfig
+import org.alephium.util.{AlephiumSpec, AVector, Duration, Env, Files, Hex}
 
 class AlephiumConfigSpec extends AlephiumSpec {
   import ConfigUtils._
@@ -53,8 +55,8 @@ class AlephiumConfigSpec extends AlephiumSpec {
   }
 
   it should "load mainnet config" in {
-    lazy val rootPath = Platform.getRootPath(Env.Test)
-    val config        = AlephiumConfig.load(Env.Prod, rootPath, "alephium")
+    val rootPath = Files.tmpDir
+    val config   = AlephiumConfig.load(Env.Prod, rootPath, "alephium")
 
     config.broker.groups is 4
     config.consensus.numZerosAtLeastInHash is 37
@@ -186,5 +188,57 @@ class AlephiumConfigSpec extends AlephiumSpec {
     Configs.checkRootPath(rootPath0, NetworkId.AlephiumTestNet).isLeft is true
     Configs.checkRootPath(rootPath1, NetworkId.AlephiumTestNet).isLeft is true
     Configs.checkRootPath(rootPath2, NetworkId.AlephiumTestNet) isE ()
+  }
+
+  it should "load logConfig" in {
+    {
+      info("With addresses")
+      def address(contractId: String) = {
+        Address.contract(Hash.unsafe(Hex.unsafe(contractId)))
+      }
+      val address1 = address("109b05391a240a0d21671720f62fe39138aaca562676053900b348a51e11ba25")
+      val address2 = address("1a21d30793fdf47bf07694017d0d721e94b78dffdc9c8e0b627833b66e5c75d8")
+      val logConfig = LogConfig(
+        enabled = true,
+        contractAddresses = Some(AVector(address1, address2))
+      )
+
+      val configs =
+        s"""
+           |{
+           |  event-log {
+           |    enabled = true
+           |    contract-addresses = [
+           |      ${address1.toBase58}
+           |      ${address2.toBase58}
+           |    ]
+           |  }
+           |}
+           |""".stripMargin
+
+      ConfigFactory
+        .parseString(configs)
+        .as[LogConfig]("event-log")(ValueReader[LogConfig]) is logConfig
+    }
+
+    {
+      info("Without addresses")
+      val logConfig = LogConfig(
+        enabled = true,
+        contractAddresses = None
+      )
+      val configs =
+        s"""
+           |{
+           |  event-log {
+           |    enabled = true
+           |  }
+           |}
+           |""".stripMargin
+
+      ConfigFactory
+        .parseString(configs)
+        .as[LogConfig]("event-log")(ValueReader[LogConfig]) is logConfig
+    }
   }
 }

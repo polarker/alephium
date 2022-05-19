@@ -19,56 +19,85 @@ package org.alephium.api.model
 import akka.util.ByteString
 
 import org.alephium.api.{badRequest, Try}
+import org.alephium.api.model.TestContract._
+import org.alephium.protocol.{vm, ALPH, Hash}
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.{Address, AssetOutput, ContractId, ContractOutput, GroupIndex}
-import org.alephium.protocol.vm
-import org.alephium.protocol.vm.{Val => _, _}
+import org.alephium.protocol.model.{Address, AssetOutput, ContractId, GroupIndex}
+import org.alephium.protocol.vm.{ContractState => _, Val => _, _}
 import org.alephium.util.{AVector, TimeStamp, U256}
 
 @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class TestContract(
-    group: Int = 0,
-    contractId: ContractId = ContractId.zero,
-    code: StatefulContract,
-    initialFields: AVector[Val] = AVector.empty,
-    initialAsset: TestContract.Asset,
-    testMethodIndex: Int = 0,
-    testArgs: AVector[Val] = AVector.empty,
-    existingContracts: AVector[TestContract.ExistingContract] = AVector.empty,
-    inputAssets: AVector[TestContract.InputAsset] = AVector.empty
+    group: Option[Int] = None,
+    address: Option[Address.Contract] = None,
+    bytecode: StatefulContract,
+    initialFields: AVector[Val] = TestContract.initialFieldsDefault,
+    initialAsset: Option[AssetState] = None,
+    testMethodIndex: Option[Int] = None,
+    testArgs: AVector[Val] = TestContract.testArgsDefault,
+    existingContracts: Option[AVector[ContractState]] = None,
+    inputAssets: Option[AVector[TestContract.InputAsset]] = None
 ) {
-  def groupIndex(implicit groupConfig: GroupConfig): Try[GroupIndex] = {
-    GroupIndex.from(group).toRight(badRequest("Invalid group index"))
+  def toComplete(): Try[TestContract.Complete] = {
+    val methodIndex = testMethodIndex.getOrElse(testMethodIndexDefault)
+    bytecode.methods.get(methodIndex) match {
+      case Some(method) =>
+        val testCode =
+          if (method.isPublic) {
+            bytecode
+          } else {
+            bytecode.copy(methods =
+              bytecode.methods.replace(methodIndex, method.copy(isPublic = true))
+            )
+          }
+        Right(
+          Complete(
+            group.getOrElse(groupDefault),
+            address.getOrElse(addressDefault).contractId,
+            originalCodeHash = bytecode.hash,
+            code = testCode,
+            initialFields,
+            initialAsset.getOrElse(initialAssetDefault),
+            methodIndex,
+            testArgs,
+            existingContracts.getOrElse(existingContractsDefault),
+            inputAssets.getOrElse(inputAssetsDefault)
+          )
+        )
+      case None => Left(badRequest(s"Invalid method index ${methodIndex}"))
+    }
   }
 }
 
 object TestContract {
-  @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-  final case class Asset(alphAmount: U256, tokens: AVector[Token] = AVector.empty) {
-    def toContractOutput(contractId: ContractId): ContractOutput = {
-      ContractOutput(
-        alphAmount,
-        LockupScript.p2c(contractId),
-        tokens.map(token => (token.id, token.amount))
-      )
-    }
-  }
-
-  object Asset {
-    def from(output: ContractOutput): Asset = {
-      Asset(output.amount, output.tokens.map(pair => Token(pair._1, pair._2)))
-    }
-  }
+  val groupDefault: Int                                = 0
+  val addressDefault: Address.Contract                 = Address.contract(ContractId.zero)
+  val initialFieldsDefault: AVector[Val]               = AVector.empty
+  val testMethodIndexDefault: Int                      = 0
+  val testArgsDefault: AVector[Val]                    = AVector.empty
+  val existingContractsDefault: AVector[ContractState] = AVector.empty
+  val inputAssetsDefault: AVector[InputAsset]          = AVector.empty
+  val initialAssetDefault: AssetState                  = AssetState(ALPH.alph(1))
 
   @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-  final case class ExistingContract(
-      id: ContractId,
+  final case class Complete(
+      group: Int = groupDefault,
+      contractId: ContractId = addressDefault.contractId,
+      originalCodeHash: Hash,
       code: StatefulContract,
-      fields: AVector[Val] = AVector.empty,
-      asset: Asset
-  )
+      initialFields: AVector[Val] = initialFieldsDefault,
+      initialAsset: AssetState = initialAssetDefault,
+      testMethodIndex: Int = testMethodIndexDefault,
+      testArgs: AVector[Val] = testArgsDefault,
+      existingContracts: AVector[ContractState] = existingContractsDefault,
+      inputAssets: AVector[TestContract.InputAsset] = inputAssetsDefault
+  ) {
+    def groupIndex(implicit groupConfig: GroupConfig): Try[GroupIndex] = {
+      GroupIndex.from(group).toRight(badRequest("Invalid group index"))
+    }
+  }
 
-  final case class InputAsset(address: Address.Asset, asset: Asset) {
+  final case class InputAsset(address: Address.Asset, asset: AssetState) {
     def toAssetOutput: AssetOutput =
       AssetOutput(
         asset.alphAmount,

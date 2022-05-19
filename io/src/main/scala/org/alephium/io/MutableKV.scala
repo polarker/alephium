@@ -14,8 +14,16 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.io
 
-import org.alephium.util.AVector
+trait MutableKV[K, V, T] extends ReadableKV[K, V] {
+  def remove(key: K): IOResult[T]
 
-final case class ContractStateResult(fields: AVector[Val])
+  def put(key: K, value: V): IOResult[T]
+}
+
+object MutableKV {
+  trait WithInitialValue[K, V, T] { Self: MutableKV[K, V, T] =>
+    def getInitialValue(key: K): IOResult[Option[V]]
+  }
+}

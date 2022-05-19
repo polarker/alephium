@@ -16,21 +16,6 @@
 
 package org.alephium.api.model
 
-import org.alephium.protocol.Hash
-import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.UnsignedTransaction
-import org.alephium.serde.serialize
-import org.alephium.util.Hex
+import org.alephium.protocol.model.ReleaseVersion
 
-final case class BuildScriptResult(unsignedTx: String, hash: Hash, fromGroup: Int, toGroup: Int)
-object BuildScriptResult {
-  def from(
-      unsignedTx: UnsignedTransaction
-  )(implicit groupConfig: GroupConfig): BuildScriptResult =
-    BuildScriptResult(
-      Hex.toHexString(serialize(unsignedTx)),
-      unsignedTx.hash,
-      unsignedTx.fromGroup.value,
-      unsignedTx.toGroup.value
-    )
-}
+final case class NodeVersion(version: ReleaseVersion)

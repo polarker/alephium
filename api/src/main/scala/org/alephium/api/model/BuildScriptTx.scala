@@ -14,10 +14,21 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.io
+package org.alephium.api.model
 
-trait MutableTrie[K, V, T] extends ReadableTrie[K, V] {
-  def remove(key: K): IOResult[T]
+import akka.util.ByteString
 
-  def put(key: K, value: V): IOResult[T]
-}
+import org.alephium.protocol.PublicKey
+import org.alephium.protocol.vm.{GasBox, GasPrice}
+import org.alephium.util.AVector
+
+@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
+final case class BuildScriptTx(
+    fromPublicKey: PublicKey,
+    bytecode: ByteString,
+    alphAmount: Option[Amount] = None,
+    tokens: Option[AVector[Token]] = None,
+    gasAmount: Option[GasBox] = None,
+    gasPrice: Option[GasPrice] = None,
+    utxosLimit: Option[Int] = None
+) extends BuildTxCommon

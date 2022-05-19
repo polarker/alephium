@@ -260,8 +260,8 @@ class VMSpec extends AlephiumSpec {
     ): Assertion = {
       val worldState  = blockFlow.getBestCachedWorldState(chainIndex.from).rightValue
       val contractKey = Hash.from(Hex.from(contractId).get).get
-      worldState.contractState.exist(contractKey) isE existed
-      worldState.outputState.exist(contractAssetRef) isE existed
+      worldState.contractState.exists(contractKey) isE existed
+      worldState.outputState.exists(contractAssetRef) isE existed
     }
   }
 
@@ -1058,6 +1058,435 @@ class VMSpec extends AlephiumSpec {
     val block = mine(blockFlow, blockTemplate)
     addAndCheck0(blockFlow, block)
     checkContract(ALPH.cent(95), 5)
+  }
+
+  it should "test contract inheritance" in new ContractFixture {
+    val contract: String =
+      s"""
+         |TxContract Child(mut x: U256) extends Parent0(x), Parent1(x) {
+         |  pub fn foo() -> () {
+         |    p0()
+         |    p1()
+         |    gp()
+         |  }
+         |}
+         |
+         |TxContract Grandparent(mut x: U256) {
+         |  event GP(value: U256)
+         |
+         |  fn gp() -> () {
+         |    x = x + 1
+         |    emit GP(x)
+         |  }
+         |}
+         |
+         |TxContract Parent0(mut x: U256) extends Grandparent(x) {
+         |  fn p0() -> () {
+         |    gp()
+         |  }
+         |}
+         |
+         |TxContract Parent1(mut x: U256) extends Grandparent(x) {
+         |  fn p1() -> () {
+         |    gp()
+         |  }
+         |}
+         |""".stripMargin
+
+    val contractOutputRef = createContract(contract, AVector(Val.U256(0)))
+    val contractId        = contractOutputRef.key.toHexString
+    checkContractState(contractId, contractOutputRef, true)
+
+    val script =
+      s"""
+         |TxScript Main {
+         |  pub fn main() -> () {
+         |    let child = Child(#$contractId)
+         |    child.foo()
+         |  }
+         |}
+         |$contract
+         |""".stripMargin
+
+    val main  = Compiler.compileTxScript(script).rightValue
+    val block = simpleScript(blockFlow, chainIndex, main)
+    val txId  = block.nonCoinbase.head.id
+    addAndCheck(blockFlow, block)
+
+    val worldState    = blockFlow.getBestCachedWorldState(chainIndex.from).rightValue
+    val contractState = worldState.getContractState(contractOutputRef.key).rightValue
+    contractState.fields is AVector[Val](Val.U256(3))
+    getLogStates(blockFlow, chainIndex.from, contractOutputRef.key, 0).value is
+      LogStates(
+        block.hash,
+        contractOutputRef.key,
+        AVector(
+          LogState(txId, 0, AVector(Val.U256(1))),
+          LogState(txId, 0, AVector(Val.U256(2))),
+          LogState(txId, 0, AVector(Val.U256(3)))
+        )
+      )
+  }
+
+  trait EventFixture extends FlowFixture {
+    def contractRaw: String
+    def callingScriptRaw: String
+
+    lazy val contract       = Compiler.compileContract(contractRaw).rightValue
+    lazy val initialState   = AVector[Val](Val.U256.unsafe(10))
+    lazy val chainIndex     = ChainIndex.unsafe(0, 0)
+    lazy val fromLockup     = getGenesisLockupScript(chainIndex)
+    lazy val genesisAddress = Address.Asset(fromLockup)
+    lazy val contractCreationScript =
+      contractCreation(contract, initialState, fromLockup, ALPH.alph(1))
+    lazy val createContractBlock =
+      payableCall(blockFlow, chainIndex, contractCreationScript)
+    lazy val contractOutputRef =
+      TxOutputRef.unsafe(createContractBlock.transactions.head, 0).asInstanceOf[ContractOutputRef]
+    lazy val contractId = contractOutputRef.key
+
+    addAndCheck(blockFlow, createContractBlock, 1)
+    checkState(blockFlow, chainIndex, contractId, initialState, contractOutputRef)
+
+    val callingScript = Compiler.compileTxScript(callingScriptRaw, 1).rightValue
+    val callingBlock  = simpleScript(blockFlow, chainIndex, callingScript)
+    addAndCheck(blockFlow, callingBlock, 2)
+  }
+
+  trait EventFixtureWithContract extends EventFixture {
+    override def contractRaw: String =
+      s"""
+         |TxContract Foo(mut result: U256) {
+         |
+         |  event Adding(a: U256, b: U256)
+         |  event Added()
+         |
+         |  pub fn add(a: U256) -> (U256) {
+         |    emit Adding(a, result)
+         |    result = result + a
+         |    emit Added()
+         |    return result
+         |  }
+         |
+         |  pub payable fn destroy(targetAddress: Address) -> () {
+         |    destroySelf!(targetAddress)
+         |  }
+         |}
+         |""".stripMargin
+
+    override def callingScriptRaw: String =
+      s"""
+         |$contractRaw
+         |
+         |TxScript Bar {
+         |  pub fn call() -> () {
+         |    let foo = Foo(#${contractId.toHexString})
+         |    foo.add(4)
+         |
+         |    return
+         |  }
+         |}
+         |""".stripMargin
+
+    protected def verifyCallingEvents(
+        logStates: LogStates,
+        block: Block,
+        result: Int,
+        currentCount: Int
+    ) = {
+      logStates.blockHash is block.hash
+      logStates.eventKey is contractId
+      logStates.states.length is 2
+
+      getCurentCount(blockFlow, chainIndex.from, contractId).value is currentCount
+
+      val addingLogState = logStates.states(0)
+      addingLogState.txId is block.nonCoinbase.head.id
+      addingLogState.index is 0.toByte
+      addingLogState.fields.length is 2
+      addingLogState.fields(0) is Val.U256(U256.unsafe(4))
+      addingLogState.fields(1) is Val.U256(U256.unsafe(result))
+
+      val addedLogState = logStates.states(1)
+      addedLogState.txId is block.nonCoinbase.head.id
+      addedLogState.index is 1.toByte
+      addedLogState.fields.length is 0
+    }
+  }
+
+  it should "emit events and write to the log storage" in new EventFixtureWithContract {
+    {
+      info("Events emitted from the contract exist in the block")
+
+      val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+      val logStates    = logStatesOpt.value
+
+      verifyCallingEvents(logStates, callingBlock, result = 10, currentCount = 1)
+    }
+
+    {
+      info("Events emitted from the create contract block")
+
+      val createContractTxId = createContractBlock.nonCoinbase.head.id
+      val logStatesOpt =
+        getLogStates(blockFlow, chainIndex.from, createContractTxId, 0)
+      val logStates = logStatesOpt.value
+
+      logStates.blockHash is createContractBlock.hash
+      logStates.eventKey is createContractTxId
+      logStates.states.length is 1
+
+      getCurentCount(blockFlow, chainIndex.from, createContractTxId).value is 1
+
+      val createContractLogState = logStates.states(0)
+      createContractLogState.txId is createContractBlock.nonCoinbase.head.id
+      createContractLogState.index is -1.toByte
+      createContractLogState.fields.length is 1
+      createContractLogState.fields(0) is Val.Address(LockupScript.p2c(contractId))
+    }
+
+    {
+      info("Events emitted from the destroy contract block")
+      def destroyScriptRaw: String =
+        s"""
+           |$contractRaw
+           |
+           |TxScript Main {
+           |  pub payable fn main() -> () {
+           |    Foo(#${contractId.toHexString}).destroy(@${genesisAddress.toBase58})
+           |  }
+           |}
+           |""".stripMargin
+
+      val destroyScript        = Compiler.compileTxScript(destroyScriptRaw, 1).rightValue
+      val destroyContractBlock = payableCall(blockFlow, chainIndex, destroyScript)
+      addAndCheck(blockFlow, destroyContractBlock, 3)
+
+      val destroyContractTxId = destroyContractBlock.nonCoinbase.head.id
+      val logStatesOpt =
+        getLogStates(blockFlow, chainIndex.from, destroyContractTxId, 0)
+      val logStates = logStatesOpt.value
+
+      logStates.blockHash is destroyContractBlock.hash
+      logStates.eventKey is destroyContractTxId
+      logStates.states.length is 1
+
+      getCurentCount(blockFlow, chainIndex.from, destroyContractTxId).value is 1
+
+      val destroyContractLogState = logStates.states(0)
+      destroyContractLogState.txId is destroyContractBlock.nonCoinbase.head.id
+      destroyContractLogState.index is -2.toByte
+      destroyContractLogState.fields.length is 1
+      destroyContractLogState.fields(0) is Val.Address(LockupScript.p2c(contractId))
+    }
+
+    {
+      info("Events emitted from the contract with wrong counter")
+
+      val logStatesOpt1 = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+      val logStates1    = logStatesOpt1.value
+      val newCounter    = logStates1.states.length
+
+      newCounter is 2
+
+      AVector(1, 2, 100).foreach { count =>
+        getLogStates(blockFlow, chainIndex.from, contractId, count) is None
+      }
+    }
+
+    {
+      info("Events emitted from a non-existent contract")
+
+      val wrongContractId = Hash.generate
+      val logStatesOpt    = getLogStates(blockFlow, chainIndex.from, wrongContractId, 0)
+      logStatesOpt is None
+    }
+  }
+
+  it should "not write to the log storage when logging is disabled" in new EventFixtureWithContract {
+    implicit override lazy val logConfig: LogConfig =
+      LogConfig(enabled = false, contractAddresses = None)
+
+    getLogStates(blockFlow, chainIndex.from, contractId, 0) is None
+  }
+
+  it should "not write to the log storage when logging is enabled but contract is not whitelisted" in new EventFixtureWithContract {
+    implicit override lazy val logConfig: LogConfig = LogConfig(
+      enabled = true,
+      contractAddresses = Some(AVector(Hash.generate, Hash.generate).map(Address.contract))
+    )
+
+    getLogStates(blockFlow, chainIndex.from, contractId, 0) is None
+  }
+
+  it should "emit events with all supported field types" in new EventFixture {
+    lazy val address = Address.Contract(LockupScript.P2C(Hash.generate))
+
+    override def contractRaw: String =
+      s"""
+         |TxContract Foo(mut result: U256) {
+         |
+         |  event TestEvent1(a: U256, b: I256, c: Address, d: ByteVec)
+         |  event TestEvent2(a: U256, b: I256, c: Address, d: Bool)
+         |
+         |  pub fn testEventTypes() -> (U256) {
+         |    emit TestEvent1(4, -5i, @${address.toBase58}, byteVec!(@${address.toBase58}))
+         |    let b = true
+         |    emit TestEvent2(5, -4i, @${address.toBase58}, b)
+         |    return result + 1
+         |  }
+         |}
+         |""".stripMargin
+
+    override def callingScriptRaw: String =
+      s"""
+         |$contractRaw
+         |
+         |TxScript Bar {
+         |  pub fn call() -> () {
+         |    let foo = Foo(#${contractId.toHexString})
+         |    foo.testEventTypes()
+         |
+         |    return
+         |  }
+         |}
+         |""".stripMargin
+
+    val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+    val logStates    = logStatesOpt.value
+
+    logStates.blockHash is callingBlock.hash
+    logStates.eventKey is contractId
+    logStates.states.length is 2
+
+    getCurentCount(blockFlow, chainIndex.from, contractId).value is 1
+
+    val testEventLogState1 = logStates.states(0)
+    testEventLogState1.txId is callingBlock.nonCoinbase.head.id
+    testEventLogState1.index is 0.toByte
+    testEventLogState1.fields.length is 4
+    testEventLogState1.fields(0) is Val.U256(U256.unsafe(4))
+    testEventLogState1.fields(1) is Val.I256(I256.unsafe(-5))
+    testEventLogState1.fields(2) is Val.Address(address.lockupScript)
+    testEventLogState1.fields(3) is Val.Address(address.lockupScript).toByteVec()
+
+    val testEventLogState2 = logStates.states(1)
+    testEventLogState1.txId is callingBlock.nonCoinbase.head.id
+    testEventLogState2.index is 1.toByte
+    testEventLogState2.fields.length is 4
+    testEventLogState2.fields(0) is Val.U256(U256.unsafe(5))
+    testEventLogState2.fields(1) is Val.I256(I256.unsafe(-4))
+    testEventLogState2.fields(2) is Val.Address(address.lockupScript)
+    testEventLogState2.fields(3) is Val.Bool(true)
+  }
+
+  it should "get all events emitted by a contract" in new EventFixtureWithContract {
+    {
+      info("All events emitted from the contract after the first method call")
+
+      val (nextCount, allLogStates) = getEvents(blockFlow, chainIndex, contractId, 0)
+      nextCount is 1
+      allLogStates.length is 1
+      val logStates = allLogStates.head
+
+      verifyCallingEvents(logStates, callingBlock, result = 10, currentCount = 1)
+    }
+
+    val secondCallingBlock = simpleScript(blockFlow, chainIndex, callingScript)
+    addAndCheck(blockFlow, secondCallingBlock, 3)
+
+    {
+      info("All events emitted from the contract after the second method call")
+
+      val (nextCount1, _) = getEvents(blockFlow, chainIndex, contractId, 0, 1)
+      nextCount1.value is 2
+      val (nextCount2, _) = getEvents(blockFlow, chainIndex, contractId, 0, 2)
+      nextCount2 is 2
+
+      val (nextCount, allLogStates) = getEvents(blockFlow, chainIndex, contractId, 0)
+      nextCount is 2
+      allLogStates.length is 2
+      val logStates1 = allLogStates.head
+      val logStates2 = allLogStates.last
+
+      verifyCallingEvents(logStates1, callingBlock, result = 10, currentCount = 2)
+      verifyCallingEvents(logStates2, secondCallingBlock, result = 14, currentCount = 2)
+    }
+
+    {
+      info("Part of the events emitted from the contract after the second method call")
+      val (nextCount, allLogStates) = getEvents(blockFlow, chainIndex, contractId, 0, 2)
+      nextCount is 2
+      allLogStates.length is 2
+
+      val logStates1 = allLogStates.head
+      val logStates2 = allLogStates.last
+
+      verifyCallingEvents(logStates1, callingBlock, result = 10, currentCount = 2)
+
+      logStates2.blockHash is secondCallingBlock.hash
+      logStates2.eventKey is contractId
+      logStates2.states.length is 2
+
+      val addingLogState = logStates2.states(0)
+      addingLogState.txId is secondCallingBlock.nonCoinbase.head.id
+      addingLogState.index is 0.toByte
+      addingLogState.fields.length is 2
+      addingLogState.fields(0) is Val.U256(U256.unsafe(4))
+      addingLogState.fields(1) is Val.U256(U256.unsafe(14))
+    }
+  }
+
+  it should "not compile when emitting events with array field types" in new FlowFixture {
+    def contractRaw: String =
+      s"""
+         |TxContract Foo(mut result: U256) {
+         |
+         |  event TestEvent(f: [U256; 2])
+         |
+         |  pub fn testArrayEventType() -> (U256) {
+         |    emit TestEvent([1, 2])
+         |    return 0
+         |  }
+         |}
+         |""".stripMargin
+    Compiler.compileContract(contractRaw).leftValue is Compiler.Error(
+      "Array type not supported for event TestEvent"
+    )
+  }
+
+  private def getLogStates(
+      blockFlow: BlockFlow,
+      groupIndex: GroupIndex,
+      contractId: ContractId,
+      count: Int
+  ): Option[LogStates] = {
+    val logStatesId = LogStatesId(contractId, count)
+    (for {
+      worldState   <- blockFlow.getBestPersistedWorldState(groupIndex)
+      logStatesOpt <- worldState.logState.getOpt(logStatesId)
+    } yield logStatesOpt).rightValue
+  }
+
+  private def getEvents(
+      blockFlow: BlockFlow,
+      chainIndex: ChainIndex,
+      contractId: ContractId,
+      start: Int,
+      end: Int = Int.MaxValue
+  ): (Int, AVector[LogStates]) = {
+    blockFlow.getEvents(chainIndex, contractId, start, end).rightValue
+  }
+
+  private def getCurentCount(
+      blockFlow: BlockFlow,
+      groupIndex: GroupIndex,
+      contractId: ContractId
+  ): Option[Int] = {
+    (for {
+      worldState <- blockFlow.getBestPersistedWorldState(groupIndex)
+      countOpt   <- worldState.logCounterState.getOpt(contractId)
+    } yield countOpt).rightValue
   }
 }
 // scalastyle:on file.size.limit no.equal regex

@@ -129,6 +129,20 @@ class ParserSpec extends AlephiumSpec {
     parsed1.isPayable is true
     parsed1.args.size is 2
     parsed1.rtypes is Seq(Type.U256, Type.U256)
+
+    info("Simple return type")
+    val parsed2 = fastparse
+      .parse(
+        "pub payable fn add(x: U256, y: U256) -> U256 { return x + y }",
+        StatelessParser.func(_)
+      )
+      .get
+      .value
+    parsed2.id is Ast.FuncId("add", false)
+    parsed2.isPublic is true
+    parsed2.isPayable is true
+    parsed2.args.size is 2
+    parsed2.rtypes is Seq(Type.U256)
   }
 
   it should "parser contract initial states" in {
@@ -307,6 +321,65 @@ class ParserSpec extends AlephiumSpec {
           ),
           Ast.Placeholder[StatelessContext]()
         )
+      )
+    )
+  }
+
+  it should "parse event" in {
+    {
+      info("0 field")
+
+      val eventRaw = "event Event()"
+      fastparse.parse(eventRaw, StatefulParser.event(_)).get.value is EventDef(
+        TypeId("Event"),
+        Seq()
+      )
+    }
+
+    {
+      info("fields of primitive types")
+
+      val eventRaw = "event Transfer(from: Address, to: Address, amount: U256)"
+      fastparse.parse(eventRaw, StatefulParser.event(_)).get.value is EventDef(
+        TypeId("Transfer"),
+        Seq(
+          EventField(Ident("from"), Type.Address),
+          EventField(Ident("to"), Type.Address),
+          EventField(Ident("amount"), Type.U256)
+        )
+      )
+    }
+
+    {
+      info("fields of array type")
+
+      val eventRaw = "event Participants(addresses: [Address; 3])"
+      fastparse.parse(eventRaw, StatefulParser.event(_)).get.value is EventDef(
+        TypeId("Participants"),
+        Seq(
+          EventField(Ident("addresses"), Type.FixedSizeArray(Type.Address, 3))
+        )
+      )
+    }
+  }
+
+  it should "parse contract inheritance" in {
+    val code =
+      s"""
+         |TxContract Child(x: U256, y: U256) extends Parent0(x), Parent1(x) {
+         |  fn foo() -> () {
+         |  }
+         |}
+         |""".stripMargin
+
+    fastparse.parse(code, StatefulParser.contract(_)).get.value is TxContract(
+      TypeId("Child"),
+      Seq(Argument(Ident("x"), Type.U256, false), Argument(Ident("y"), Type.U256, false)),
+      Seq(FuncDef(FuncId("foo", false), false, false, Seq.empty, Seq.empty, Seq.empty)),
+      Seq.empty,
+      List(
+        ContractInheritance(TypeId("Parent0"), Seq(Ident("x"))),
+        ContractInheritance(TypeId("Parent1"), Seq(Ident("x")))
       )
     )
   }
