@@ -29,6 +29,8 @@ class ContractPoolSpec extends AlephiumSpec with NumericHelpers {
     val initialGas = GasBox.unsafe(1000000)
 
     val pool = new ContractPool {
+      def getHardFork(): HardFork = HardFork.Leman
+
       val worldState: WorldState.Staging = cachedWorldState.staging()
       var gasRemaining: GasBox           = initialGas
     }
@@ -171,7 +173,7 @@ class ContractPoolSpec extends AlephiumSpec with NumericHelpers {
     with CompilerConfigFixture.Default {
     val outputRef  = contractOutputRefGen(GroupIndex.unsafe(0)).sample.get
     val contractId = outputRef.key
-    val output     = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(contractId))).sample.get
+    val output = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(contractId))).sample.get
     pool.worldState.createContractUnsafe(
       StatefulContract.forSMT,
       AVector.empty,

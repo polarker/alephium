@@ -16,13 +16,14 @@
 
 package org.alephium.protocol.vm
 
-import org.alephium.protocol.{Hash, Signature}
+import org.alephium.protocol.{BlockHash, Hash, Signature}
+import org.alephium.protocol.config.NetworkConfig
 import org.alephium.protocol.model._
 import org.alephium.util.{AVector, TimeStamp}
 
 trait ContextGenerators extends VMFactory with NoIndexModelGenerators {
   def genBlockEnv(): BlockEnv = {
-    BlockEnv(NetworkId.AlephiumDevNet, TimeStamp.now(), Target.Max)
+    BlockEnv(NetworkId.AlephiumDevNet, TimeStamp.now(), Target.Max, Some(BlockHash.generate))
   }
 
   def genTxEnv(scriptOpt: Option[StatefulScript] = None, signatures: AVector[Signature]): TxEnv = {
@@ -38,7 +39,7 @@ trait ContextGenerators extends VMFactory with NoIndexModelGenerators {
       signatures: AVector[Signature] = AVector.empty,
       blockEnv: Option[BlockEnv] = None,
       txEnv: Option[TxEnv] = None
-  ): StatelessContext = {
+  )(implicit networkConfig: NetworkConfig): StatelessContext = {
     StatelessContext.apply(
       blockEnv.getOrElse(genBlockEnv()),
       txEnv.getOrElse(genTxEnv(signatures = signatures)),
@@ -60,14 +61,14 @@ trait ContextGenerators extends VMFactory with NoIndexModelGenerators {
       scriptOpt: Option[StatefulScript],
       gasLimit: GasBox = minimalGas,
       signatures: AVector[Signature] = AVector.empty
-  ): StatefulContext = {
+  )(implicit networkConfig: NetworkConfig): StatefulContext = {
     val txEnv = genTxEnv(scriptOpt, signatures)
     StatefulContext(
       genBlockEnv(),
       txEnv,
       cachedWorldState.staging(),
       gasLimit
-    )
+    )(networkConfig, LogConfig.allEnabled())
   }
 
   def prepareStatefulScript(
@@ -85,7 +86,7 @@ trait ContextGenerators extends VMFactory with NoIndexModelGenerators {
       gasLimit: GasBox = GasBox.unsafe(100000),
       contractOutputOpt: Option[(ContractOutput, ContractOutputRef)] = None,
       txEnvOpt: Option[TxEnv] = None
-  ): (StatefulContractObject, StatefulContext) = {
+  )(implicit _networkConfig: NetworkConfig): (StatefulContractObject, StatefulContext) = {
     val groupIndex = GroupIndex.unsafe(0)
     val (contractOutput, contractOutputRef) = contractOutputOpt.getOrElse {
       val co  = contractOutputGen(scriptGen = p2cLockupGen(groupIndex)).sample.get
@@ -103,12 +104,14 @@ trait ContextGenerators extends VMFactory with NoIndexModelGenerators {
 
     val obj = halfDecoded.toObjectUnsafe(contractOutputRef.key, fields)
     val context = new StatefulContext {
-      val worldState: WorldState.Staging            = cachedWorldState.staging()
-      val outputBalances: Balances                  = Balances.empty
-      def nextOutputIndex: Int                      = 0
-      def blockEnv: BlockEnv                        = ???
-      def txEnv: TxEnv                              = txEnvOpt.getOrElse(???)
+      val worldState: WorldState.Staging = cachedWorldState.staging()
+      val networkConfig: NetworkConfig   = _networkConfig
+      val outputBalances: Balances       = Balances.empty
+      def nextOutputIndex: Int           = 0
+      def blockEnv: BlockEnv             = genBlockEnv()
+      def txEnv: TxEnv                   = txEnvOpt.getOrElse(genTxEnv(None, AVector.empty))
       def getInitialBalances(): ExeResult[Balances] = failed(ExpectNonPayableMethod)
+      def logConfig: LogConfig                      = LogConfig.allEnabled()
       var gasRemaining: GasBox                      = gasLimit
     }
     obj -> context

@@ -16,11 +16,13 @@
 
 package org.alephium.protocol.vm
 
+import akka.util.ByteString
 import org.scalacheck.Gen
 
-import org.alephium.io.{IOResult, StorageFixture}
+import org.alephium.io.{IOResult, RocksDBSource, StorageFixture}
+import org.alephium.protocol.Hash
 import org.alephium.protocol.model._
-import org.alephium.util.{AlephiumSpec, AVector, U256}
+import org.alephium.util.{AlephiumSpec, AVector, I256, U256}
 
 class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with StorageFixture {
   def generateAsset: Gen[(TxOutputRef, TxOutput)] = {
@@ -114,16 +116,75 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
   }
 
   it should "test mutable world state" in {
-    test(WorldState.emptyCached(newDB))
+    val storage = newDBStorage()
+    test(
+      WorldState.emptyCached(
+        newDB(storage, RocksDBSource.ColumnFamily.All),
+        newDB(storage, RocksDBSource.ColumnFamily.Log),
+        newDB(storage, RocksDBSource.ColumnFamily.LogCounter)
+      )
+    )
   }
 
   it should "test immutable world state" in {
-    test(WorldState.emptyPersisted(newDB))
+    val storage = newDBStorage()
+    test(
+      WorldState.emptyPersisted(
+        newDB(storage, RocksDBSource.ColumnFamily.All),
+        newDB(storage, RocksDBSource.ColumnFamily.Log),
+        newDB(storage, RocksDBSource.ColumnFamily.LogCounter)
+      )
+    )
+  }
+
+  it should "maintain the order of the cached logs" in {
+    val logInputGen = for {
+      blockHash  <- blockHashGen
+      txId       <- hashGen
+      contractId <- hashGen
+    } yield (blockHash, txId, contractId)
+
+    val storage = newDBStorage()
+    val worldState = WorldState
+      .emptyCached(
+        newDB(storage, RocksDBSource.ColumnFamily.All),
+        newDB(storage, RocksDBSource.ColumnFamily.Log),
+        newDB(storage, RocksDBSource.ColumnFamily.LogCounter)
+      )
+      .staging()
+
+    val logInputs = Gen.listOfN(10, logInputGen).sample.value
+    val fields =
+      AVector[Val](Val.I256(I256.from(0)), Val.I256(I256.from(1))) // the first field is event code
+    val logStates = logInputs.map { case (blockHash, txId, contractId) =>
+      worldState.writeLogForContract(
+        blockHash,
+        txId,
+        contractId,
+        fields,
+        false
+      )
+
+      LogStates(blockHash, contractId, AVector(LogState(txId, 0, fields.tail)))
+    }
+
+    val newLogs = worldState.logState.getNewLogs()
+    newLogs is AVector.from(logStates)
+  }
+
+  it should "test the event key of contract creation and destruction" in {
+    createContractEventId.bytes is Hash.zero.bytes.init ++ ByteString(-1)
+    destroyContractEventId.bytes is Hash.zero.bytes.init ++ ByteString(-2)
   }
 
   trait StagingFixture {
-    val worldState = WorldState.emptyCached(newDB)
-    val staging    = worldState.staging()
+    val storage = newDBStorage()
+    val worldState = WorldState.emptyCached(
+      newDB(storage, RocksDBSource.ColumnFamily.All),
+      newDB(storage, RocksDBSource.ColumnFamily.Log),
+      newDB(storage, RocksDBSource.ColumnFamily.LogCounter)
+    )
+    val staging = worldState.staging()
 
     val (code, state, contractOutputRef, contractOutput) = generateContract.sample.get
 

@@ -16,10 +16,14 @@
 
 package org.alephium.io
 
-trait ReadableTrie[K, V] {
-  def get(key: K): IOResult[V]
+trait MutableKV[K, V, T] extends ReadableKV[K, V] {
+  def remove(key: K): IOResult[T]
 
-  def getOpt(key: K): IOResult[Option[V]]
+  def put(key: K, value: V): IOResult[T]
+}
 
-  def exist(key: K): IOResult[Boolean]
+object MutableKV {
+  trait WithInitialValue[K, V, T] { Self: MutableKV[K, V, T] =>
+    def getInitialValue(key: K): IOResult[Option[V]]
+  }
 }

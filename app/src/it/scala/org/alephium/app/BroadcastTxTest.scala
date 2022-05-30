@@ -18,8 +18,6 @@ package org.alephium.app
 
 import java.net.InetSocketAddress
 
-import sttp.model.StatusCode
-
 import org.alephium.api.model._
 import org.alephium.protocol.model.BrokerInfo
 import org.alephium.util._
@@ -29,11 +27,11 @@ class BroadcastTxTest extends AlephiumActorSpec {
     val clique = bootClique(nbOfNodes = 2)
     clique.start()
 
-    val tx        = transfer(publicKey, transferAddress, transferAmount, privateKey, clique.masterRestPort)
+    val tx = transfer(publicKey, transferAddress, transferAmount, privateKey, clique.masterRestPort)
     val restPort1 = clique.getServer(tx.fromGroup).config.network.restPort
     val restPort2 = clique.getServer((tx.fromGroup + 1) % groups0).config.network.restPort
-    eventually(request[TxStatus](getTransactionStatus(tx), restPort1) is MemPooled)
-    eventually(requestFailed(getTransactionStatus(tx), restPort2, StatusCode.BadRequest))
+    eventually(request[TxStatus](getTransactionStatusLocal(tx), restPort1) is MemPooled)
+    eventually(request[TxStatus](getTransactionStatusLocal(tx), restPort2) is TxNotFound)
 
     clique.stop()
   }
@@ -81,7 +79,7 @@ class BroadcastTxTest extends AlephiumActorSpec {
     val tx1 =
       transfer(publicKey, transferAddress, transferAmount, privateKey, restPort(masterPortClique1))
     checkTx(tx1, restPort(masterPortClique1), MemPooled)
-    checkTx(tx1, restPort(masterPortClique2), NotFound)
+    checkTx(tx1, restPort(masterPortClique2), TxNotFound)
 
     clique2.startMining()
 

@@ -66,7 +66,7 @@ class WalletServiceSpec extends AlephiumFutureSpec {
     minerAddresses2.foreach(address => newMinerAddresses.contains(address))
   }
 
-  //Regression test as we had one bug with this mnemonic and the way we were getting the private keys from the secret storage
+  // Regression test as we had one bug with this mnemonic and the way we were getting the private keys from the secret storage
   it should "correctly derive miner addresses" in new Fixture {
     val mnemonic = Mnemonic
       .from(
@@ -80,7 +80,7 @@ class WalletServiceSpec extends AlephiumFutureSpec {
 
     val minerAddresses = walletService.getMinerAddresses(walletName).rightValue
 
-    minerAddresses.length is 2 //was equal to 4 before the fix
+    minerAddresses.length is 2 // was equal to 4 before the fix
   }
 
   it should "fail to start if secret dir path is invalid" in new Fixture {
@@ -140,7 +140,7 @@ class WalletServiceSpec extends AlephiumFutureSpec {
       )
 
     walletService.unlockWallet(wrongWalletName, "", None).leftValue is notFound
-    walletService.getBalances(wrongWalletName, None).futureValue.leftValue is notFound
+    walletService.getBalances(wrongWalletName).futureValue.leftValue is notFound
     walletService.getAddresses(wrongWalletName).leftValue is notFound
     walletService.getMinerAddresses(wrongWalletName).leftValue is notFound
     walletService
@@ -151,7 +151,7 @@ class WalletServiceSpec extends AlephiumFutureSpec {
     walletService.deriveNextMinerAddresses(wrongWalletName).leftValue is notFound
     walletService.changeActiveAddress(wrongWalletName, address).leftValue is notFound
 
-    //We curently  do an optimist lock
+    // We curently  do an optimist lock
     walletService.lockWallet(wrongWalletName) isE ()
   }
 

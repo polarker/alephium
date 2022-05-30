@@ -16,32 +16,16 @@
 
 package org.alephium.api.model
 
-import akka.util.ByteString
+import org.alephium.protocol.vm.{GasBox, GasPrice}
 
-import org.alephium.protocol.model.{ContractOutputRef, TxInput, TxOutputRef}
-import org.alephium.protocol.vm.UnlockScript
-import org.alephium.serde.serialize
+trait BuildTxCommon {
+  def gasAmount: Option[GasBox]
 
-sealed trait Input {
-  def outputRef: OutputRef
+  def gasPrice: Option[GasPrice]
 }
 
-object Input {
+trait GasInfo {
+  def gasAmount: GasBox
 
-  @upickle.implicits.key("asset")
-  final case class Asset(outputRef: OutputRef, unlockScript: ByteString) extends Input
-
-  @upickle.implicits.key("contract")
-  final case class Contract(outputRef: OutputRef) extends Input
-
-  def apply(outputRef: TxOutputRef, unlockScript: UnlockScript): Asset = {
-    Asset(OutputRef.from(outputRef), serialize(unlockScript))
-  }
-
-  def from(input: TxInput): Asset = {
-    apply(input.outputRef, input.unlockScript)
-  }
-
-  def from(input: ContractOutputRef): Contract =
-    Contract(OutputRef.from(input))
+  def gasPrice: GasPrice
 }

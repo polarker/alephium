@@ -137,7 +137,6 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
              |
              |      i = i + 1
              |    }
-             |    return
              |  }
              |}
              |""".stripMargin
@@ -163,14 +162,14 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
 
       val raw =
         s"""
-         |// comment
-         |AssetScript P2sh {
-         |  pub fn main(pubKey1: ByteVec) -> () {
-         |    verifyAbsoluteLocktime!(1630879601000)
-         |    verifyTxSignature!(pubKey1)
-         |  }
-         |}
-         |""".stripMargin
+           |// comment
+           |AssetScript P2sh {
+           |  pub fn main(pubKey1: ByteVec) -> () {
+           |    verifyAbsoluteLocktime!(1630879601000)
+           |    verifyTxSignature!(pubKey1)
+           |  }
+           |}
+           |""".stripMargin
 
       val script = Compiler.compileAssetScript(raw).rightValue
       val lockup = LockupScript.p2sh(script)
@@ -193,7 +192,6 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |  pub fn bar(a: U256, b: U256) -> () {
            |    let mut c = 0u
            |    c = a - b
-           |    return
            |  }
            |}
            |""".stripMargin
@@ -219,26 +217,23 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
     {
       def simpleScript(i: Int): String = {
         s"""
-          |TxScript Main {
-          |  pub fn main() -> () {
-          |    let mut c = 0u
-          |    let mut d = 0u
-          |    let mut e = 0u
-          |    let mut f = 0u
-          |
-          |    let mut i = 0u
-          |    while (i <= $i) {
-          |      c = 50 + 60
-          |      d = 60 - 50
-          |      e = c + d
-          |      f = c * d
-          |
-          |      i = i + 1
-          |    }
-          |    return
-          |  }
-          |}
-          |""".stripMargin
+           |TxScript Main nonPayable {
+           |  let mut c = 0u
+           |  let mut d = 0u
+           |  let mut e = 0u
+           |  let mut f = 0u
+           |
+           |  let mut i = 0u
+           |  while (i <= $i) {
+           |    c = 50 + 60
+           |    d = 60 - 50
+           |    e = c + d
+           |    f = c * d
+           |
+           |    i = i + 1
+           |  }
+           |}
+           |""".stripMargin
       }
 
       estimateTxScript(simpleScript(1)).rightValue is GasBox.unsafe(468)
@@ -253,9 +248,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
       estimateTxScript(
         s"""
            |TxScript Main {
-           |  pub fn main() -> () {
-           |    verifyTxSignature!(#${pubKey.toHexString})
-           |  }
+           |  verifyTxSignature!(#${pubKey.toHexString})
            |}
            |""".stripMargin
       ).leftValue is "Please use binary search to set the gas manually as signature is required in tx script or contract"
@@ -268,9 +261,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
       estimateTxScript(
         s"""
            |TxScript Main {
-           |  pub fn main() -> () {
-           |    assert!(1 == 2)
-           |  }
+           |  assert!(1 == 2)
            |}
            |""".stripMargin
       ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailed"

@@ -22,46 +22,50 @@ import org.alephium.protocol.model
 import org.alephium.protocol.vm
 import org.alephium.util
 
-sealed trait Val {
-  def toVmVal: vm.Val
-}
+sealed trait Val
 
 object Val {
+  sealed trait Primitive extends Val {
+    def toVmVal: vm.Val
+  }
 
   def from(value: vm.Val): Val = value match {
-    case vm.Val.Bool(v)    => Bool(v)
-    case vm.Val.I256(v)    => I256(v)
-    case vm.Val.U256(v)    => U256(v)
-    case vm.Val.ByteVec(v) => ByteVec(v)
+    case vm.Val.Bool(v)    => ValBool(v)
+    case vm.Val.I256(v)    => ValI256(v)
+    case vm.Val.U256(v)    => ValU256(v)
+    case vm.Val.ByteVec(v) => ValByteVec(v)
     case vm.Val.Address(lockupScript) =>
-      Address(model.Address.from(lockupScript))
+      ValAddress(model.Address.from(lockupScript))
   }
 
-  @upickle.implicits.key("bool")
-  final case class Bool(value: Boolean) extends Val {
-    override def toVmVal: vm.Val = vm.Val.Bool(value)
-  }
-
-  @upickle.implicits.key("i256")
-  final case class I256(value: util.I256) extends Val {
-    override def toVmVal: vm.Val = vm.Val.I256(value)
-  }
-
-  @upickle.implicits.key("u256")
-  final case class U256(value: util.U256) extends Val {
-    override def toVmVal: vm.Val = vm.Val.U256(value)
-  }
-
-  @upickle.implicits.key("bytevec")
-  final case class ByteVec(value: ByteString) extends Val {
-    override def toVmVal: vm.Val = vm.Val.ByteVec(value)
-  }
-
-  @upickle.implicits.key("address")
-  final case class Address(value: model.Address) extends Val {
-    override def toVmVal: vm.Val = vm.Val.Address(value.lockupScript)
-  }
-
-  val True: Bool  = Bool(true)
-  val False: Bool = Bool(false)
+  val True: ValBool  = ValBool(true)
+  val False: ValBool = ValBool(false)
 }
+
+@upickle.implicits.key("Bool")
+final case class ValBool(value: Boolean) extends Val.Primitive {
+  override def toVmVal: vm.Val = vm.Val.Bool(value)
+}
+
+@upickle.implicits.key("I256")
+final case class ValI256(value: util.I256) extends Val.Primitive {
+  override def toVmVal: vm.Val = vm.Val.I256(value)
+}
+
+@upickle.implicits.key("U256")
+final case class ValU256(value: util.U256) extends Val.Primitive {
+  override def toVmVal: vm.Val = vm.Val.U256(value)
+}
+
+@upickle.implicits.key("ByteVec")
+final case class ValByteVec(value: ByteString) extends Val.Primitive {
+  override def toVmVal: vm.Val = vm.Val.ByteVec(value)
+}
+
+@upickle.implicits.key("Address")
+final case class ValAddress(value: model.Address) extends Val.Primitive {
+  override def toVmVal: vm.Val = vm.Val.Address(value.lockupScript)
+}
+
+@upickle.implicits.key("Array")
+final case class ValArray(value: util.AVector[Val]) extends Val

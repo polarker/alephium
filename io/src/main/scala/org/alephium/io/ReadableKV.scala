@@ -16,8 +16,10 @@
 
 package org.alephium.io
 
-trait MutableTrie[K, V, T] extends ReadableTrie[K, V] {
-  def remove(key: K): IOResult[T]
+trait ReadableKV[K, V] {
+  def get(key: K): IOResult[V]
 
-  def put(key: K, value: V): IOResult[T]
+  def getOpt(key: K): IOResult[Option[V]]
+
+  def exists(key: K): IOResult[Boolean]
 }

@@ -20,34 +20,34 @@ import scala.collection.mutable
 
 import org.alephium.util.discard
 
-abstract class CachedTrie[K, V, C >: Modified[V] <: Cache[V]] extends MutableTrie[K, V, Unit] {
-  def underlying: ReadableTrie[K, V]
+abstract class CachedKV[K, V, C >: Modified[V] <: Cache[V]] extends MutableKV[K, V, Unit] {
+  def underlying: ReadableKV[K, V]
 
   def caches: mutable.Map[K, C]
 
   def get(key: K): IOResult[V] = {
     getOpt(key).flatMap {
-      case None        => Left(IOError.keyNotFound(key, "CachedTrie.get"))
+      case None        => Left(IOError.keyNotFound(key, "CachedKV.get"))
       case Some(value) => Right(value)
     }
   }
 
   def getOpt(key: K): IOResult[Option[V]] = {
     (caches.get(key): @unchecked) match {
-      case None                    => getOptFromUnderlying(key)
-      case Some(t: ValueExists[V]) => Right(Some(t.value))
-      case Some(Removed())         => Right(None)
+      case None                               => getOptFromUnderlying(key)
+      case Some(t: ValueExists[V] @unchecked) => Right(Some(t.value))
+      case Some(Removed())                    => Right(None)
     }
   }
 
   protected def getOptFromUnderlying(key: K): IOResult[Option[V]]
 
   // we don't cache this function as it is usually used for removal
-  def exist(key: K): IOResult[Boolean] = {
+  def exists(key: K): IOResult[Boolean] = {
     (caches.get(key): @unchecked) match {
-      case None                    => underlying.exist(key)
-      case Some(_: ValueExists[V]) => Right(true)
-      case Some(Removed())         => Right(false)
+      case None                               => underlying.exists(key)
+      case Some(_: ValueExists[V] @unchecked) => Right(true)
+      case Some(Removed())                    => Right(false)
     }
   }
 
@@ -61,7 +61,7 @@ abstract class CachedTrie[K, V, C >: Modified[V] <: Cache[V]] extends MutableTri
   }
 
   protected def removeForUnderlying(key: K): IOResult[Unit] = {
-    underlying.exist(key).flatMap {
+    underlying.exists(key).flatMap {
       case true  => Right(discard(caches.addOne(key -> Removed())))
       case false => Left(IOError.keyNotFound(key, "CachedTrie.removeForUnderlying"))
     }
@@ -76,9 +76,39 @@ abstract class CachedTrie[K, V, C >: Modified[V] <: Cache[V]] extends MutableTri
   }
 
   protected def putForUnderlying(key: K, value: V): IOResult[Unit] = {
-    underlying.exist(key).map {
+    underlying.exists(key).map {
       case true  => discard(caches.addOne(key -> Updated(value)))
       case false => discard(caches.addOne(key -> Inserted(value)))
     }
+  }
+}
+
+object CachedKV {
+  def getOptFromUnderlying[K, V](
+      storage: KeyValueStorage[K, V],
+      caches: mutable.Map[K, Cache[V]],
+      key: K
+  ): IOResult[Option[V]] = {
+    storage.getOpt(key).map { valueOpt =>
+      valueOpt.foreach(value => caches.addOne(key -> Cached(value)))
+      valueOpt
+    }
+  }
+
+  def persist[K, V](
+      storage: KeyValueStorage[K, V],
+      caches: mutable.Map[K, Cache[V]]
+  ): IOResult[KeyValueStorage[K, V]] = {
+    storage
+      .putBatch { putAccumulate =>
+        caches.foreach {
+          case (_, Cached(_))         => Right(())
+          case (key, Updated(value))  => putAccumulate(key, value)
+          case (key, Inserted(value)) => putAccumulate(key, value)
+          case (_, Removed()) =>
+            throw new RuntimeException("Unexpected `Remove` action")
+        }
+      }
+      .map(_ => storage)
   }
 }

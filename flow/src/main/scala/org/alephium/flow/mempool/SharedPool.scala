@@ -70,7 +70,7 @@ class SharedPool private (
     _add(tx, timeStamp) != 0
   }
 
-  @SuppressWarnings(Array("org.wartremover.warts.TraversableOps"))
+  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   def _add(tx: TransactionTemplate, timeStamp: TimeStamp): Int = {
     if (isFull()) {
       val lowestWeightTxId = txs.min
@@ -103,8 +103,7 @@ class SharedPool private (
   }
 
   def _remove(txId: Hash): Unit = {
-    txs.get(txId).foreach { tx =>
-      txs.remove(txId)
+    txs.remove(txId).foreach { tx =>
       timestamps.remove(txId)
       sharedTxIndex.remove(tx)
     }

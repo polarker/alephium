@@ -14,8 +14,21 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.protocol.vm
 
+import scala.collection.mutable
+
+import org.alephium.io._
 import org.alephium.util.AVector
 
-final case class ContractStateResult(fields: AVector[Val])
+final class StagingLogStates(
+    val underlying: CachedLogStates,
+    val caches: mutable.LinkedHashMap[LogStatesId, Modified[LogStates]]
+) extends StagingKV[LogStatesId, LogStates] {
+  def getNewLogs(): AVector[LogStates] = {
+    caches.foldLeft(AVector.empty[LogStates]) {
+      case (acc, (_, updated: ValueExists[LogStates] @unchecked)) => acc :+ updated.value
+      case (acc, _)                                               => acc
+    }
+  }
+}

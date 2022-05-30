@@ -16,16 +16,32 @@
 
 package org.alephium.api.model
 
-import org.alephium.protocol.PublicKey
+import org.alephium.protocol.Hash
+import org.alephium.protocol.config.GroupConfig
+import org.alephium.protocol.model.UnsignedTransaction
 import org.alephium.protocol.vm.{GasBox, GasPrice}
+import org.alephium.serde.serialize
+import org.alephium.util.Hex
 
-@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-final case class BuildContract(
-    fromPublicKey: PublicKey,
-    code: String,
-    state: Option[String] = None,
-    issueTokenAmount: Option[Amount] = None,
-    gas: Option[GasBox] = None,
-    gasPrice: Option[GasPrice] = None,
-    utxosLimit: Option[Int] = None
-) extends UtxoBasedModel
+final case class BuildExecuteScriptTxResult(
+    fromGroup: Int,
+    toGroup: Int,
+    unsignedTx: String,
+    gasAmount: GasBox,
+    gasPrice: GasPrice,
+    txId: Hash
+) extends GasInfo
+    with ChainIndexInfo
+object BuildExecuteScriptTxResult {
+  def from(
+      unsignedTx: UnsignedTransaction
+  )(implicit groupConfig: GroupConfig): BuildExecuteScriptTxResult =
+    BuildExecuteScriptTxResult(
+      unsignedTx.fromGroup.value,
+      unsignedTx.toGroup.value,
+      Hex.toHexString(serialize(unsignedTx)),
+      unsignedTx.gasAmount,
+      unsignedTx.gasPrice,
+      unsignedTx.hash
+    )
+}

@@ -16,6 +16,7 @@
 
 package org.alephium.app
 
+import akka.util.ByteString
 import org.scalatest.Assertion
 import sttp.model.StatusCode
 
@@ -24,7 +25,7 @@ import org.alephium.flow.gasestimation._
 import org.alephium.json.Json._
 import org.alephium.protocol._
 import org.alephium.protocol.model._
-import org.alephium.protocol.vm._
+import org.alephium.protocol.vm.{Val => _, _}
 import org.alephium.serde.deserialize
 import org.alephium.util._
 
@@ -50,40 +51,29 @@ class SmartContractTest extends AlephiumActorSpec {
 
     def contract(
         code: String,
-        state: Option[String],
+        initialFields: Option[AVector[vm.Val]],
         issueTokenAmount: Option[U256],
         gas: Option[Int] = Some(100000),
         gasPrice: Option[GasPrice] = None
-    ): BuildContractResult = {
-      val compileResult = request[CompileResult](compileContract(code), restPort)
-      val buildResult = request[BuildContractResult](
-        buildContract(
+    ): BuildDeployContractTxResult = {
+      val compileResult = request[CompileContractResult](compileContract(code), restPort)
+      val buildResult = request[BuildDeployContractTxResult](
+        buildDeployContractTx(
           fromPublicKey = publicKey,
-          code = compileResult.code,
+          code = compileResult.bytecode,
           gas,
           gasPrice,
-          state = state,
+          initialFields = initialFields,
           issueTokenAmount = issueTokenAmount
         ),
         restPort
       )
-      submitTx(buildResult.unsignedTx, buildResult.hash)
+      submitTx(buildResult.unsignedTx, buildResult.txId)
       buildResult
     }
 
     def submitTx(unsignedTx: String, txId: Hash): Hash = {
-      val signature: Signature =
-        SignatureSchema.sign(txId.bytes, PrivateKey.unsafe(Hex.unsafe(privateKey)))
-      val txResult = request[TxResult](
-        submitTransaction(s"""
-          {
-            "unsignedTx": "$unsignedTx",
-            "signature":"${signature.toHexString}"
-          }"""),
-        restPort
-      )
-      confirmTx(txResult, restPort)
-      txResult.txId
+      submitTxWithPort(unsignedTx, txId, restPort)
     }
 
     def script(
@@ -91,29 +81,17 @@ class SmartContractTest extends AlephiumActorSpec {
         alphAmount: Option[Amount] = None,
         gas: Option[Int] = Some(100000),
         gasPrice: Option[GasPrice] = None
-    ) = {
-      val buildResult = buildScript(code, alphAmount, gas, gasPrice)
-      submitTx(buildResult.unsignedTx, buildResult.hash)
-      buildResult
+    ): BuildExecuteScriptTxResult = {
+      scriptWithPort(code, restPort, alphAmount, gas, gasPrice)
     }
 
-    def buildScript(
+    def buildExecuteScriptTx(
         code: String,
         alphAmount: Option[Amount],
         gas: Option[Int],
         gasPrice: Option[GasPrice]
-    ): BuildScriptResult = {
-      val compileResult = request[CompileResult](compileScript(code), restPort)
-      request[BuildScriptResult](
-        buildScript(
-          fromPublicKey = publicKey,
-          code = compileResult.code,
-          alphAmount,
-          gas,
-          gasPrice
-        ),
-        restPort
-      )
+    ): BuildExecuteScriptTxResult = {
+      buildExecuteScriptTxWithPort(code, restPort, alphAmount, gas, gasPrice)
     }
 
     def estimateBuildContractGas(
@@ -124,10 +102,10 @@ class SmartContractTest extends AlephiumActorSpec {
       val unlockScript = UnlockScript.p2pkh(PublicKey.from(Hex.unsafe(publicKey)).value)
       val lockupScript = LockupScript.p2pkh(PublicKey.from(Hex.unsafe(publicKey)).value)
 
-      val compileResult = request[CompileResult](compileContract(code), restPort)
+      val compileResult = request[CompileContractResult](compileContract(code), restPort)
       val script = ServerUtils
-        .buildContract(
-          compileResult.code,
+        .buildDeployContractTx(
+          compileResult.bytecode,
           Address.fromBase58(address).value,
           state,
           dustUtxoAmount,
@@ -149,8 +127,10 @@ class SmartContractTest extends AlephiumActorSpec {
       val unlockScript = UnlockScript.p2pkh(PublicKey.from(Hex.unsafe(publicKey)).value)
       val lockupScript = LockupScript.p2pkh(PublicKey.from(Hex.unsafe(publicKey)).value)
 
-      val compileResult = request[CompileResult](compileScript(code), restPort)
-      val script        = deserialize[StatefulScript](Hex.from(compileResult.code).value).rightValue
+      val compileResult = request[CompileScriptResult](compileScript(code), restPort)
+      val script = deserialize[StatefulScript](
+        Hex.unsafe(compileResult.bytecodeTemplate)
+      ).rightValue
 
       val blockFlow    = clique.servers(group.group % 2).node.blockFlow
       val allUtxos     = blockFlow.getUsableUtxos(lockupScript, 10000).rightValue
@@ -160,8 +140,8 @@ class SmartContractTest extends AlephiumActorSpec {
       GasEstimation.estimate(script, gasEstimator).rightValue
     }
 
-    def decodeTx(str: String): Tx = {
-      request[Tx](decodeUnsignedTransaction(str), restPort)
+    def decodeTx(str: String): UnsignedTx = {
+      request[DecodeUnsignedTxResult](decodeUnsignedTransaction(str), restPort).unsignedTx
     }
 
     def verifySpentUTXOs(unsignedTx: String, hashes: Set[String]) = {
@@ -185,22 +165,41 @@ class SmartContractTest extends AlephiumActorSpec {
     val restPort = clique.masterRestPort
     val contract =
       s"""
-         |TxContract Foo() {
+         |TxContract Foo(a: Bool, b: I256, c: U256, d: ByteVec, e: Address) {
          |  pub fn foo() -> () {
          |    return
          |  }
          |}
          |""".stripMargin
 
-    val compileResult = request[CompileResult](compileContract(contract), restPort)
+    val compileResult = request[CompileContractResult](compileContract(contract), restPort)
+    val validFields = Some(
+      AVector[vm.Val](
+        vm.Val.True,
+        vm.Val.I256(I256.unsafe(1000)),
+        vm.Val.U256(U256.unsafe(1000)),
+        vm.Val.ByteVec(ByteString(0, 0)),
+        vm.Val.Address(
+          Address.fromBase58("25HAxb2jhQeLUFcTL8XWpz9m1odVcD2LgscQtuGhRBerR").get.lockupScript
+        )
+      )
+    )
     unitRequest(
-      buildContract(publicKey, compileResult.code),
+      buildDeployContractTx(
+        publicKey,
+        compileResult.bytecode,
+        initialFields = validFields
+      ),
       restPort
     )
 
-    val invalidState: Option[String] = Some("[1000u]")
+    val invalidFields = Some(AVector[vm.Val](vm.Val.True))
     requestFailed(
-      buildContract(publicKey, compileResult.code, state = invalidState),
+      buildDeployContractTx(
+        publicKey,
+        compileResult.bytecode,
+        initialFields = invalidFields
+      ),
       restPort,
       StatusCode.BadRequest
     )
@@ -213,7 +212,7 @@ class SmartContractTest extends AlephiumActorSpec {
       contract(
         SwapContracts.tokenContract,
         gas = None,
-        state = Some("[0u]"),
+        initialFields = Some(AVector[vm.Val](vm.Val.U256(U256.unsafe(0)))),
         issueTokenAmount = Some(1024)
       )
 
@@ -227,7 +226,7 @@ class SmartContractTest extends AlephiumActorSpec {
     )
 
     gasWithoutScript.addUnsafe(scriptGas) is unsignedTx.gasAmount
-    unsignedTx.gasAmount is GasBox.unsafe(57062)
+    unsignedTx.gasAmount is GasBox.unsafe(57065)
 
     clique.stop()
   }
@@ -237,15 +236,15 @@ class SmartContractTest extends AlephiumActorSpec {
       contract(
         SwapContracts.tokenContract,
         gas = Some(100000),
-        state = Some("[0u]"),
+        initialFields = Some(AVector[vm.Val](vm.Val.U256(U256.unsafe(0)))),
         issueTokenAmount = Some(1024)
       )
-    val tokenContractKey = tokenContractBuildResult.contractId
+    val tokenContractKey = tokenContractBuildResult.contractAddress.contractId
 
     val tokenWithdrawScript = {
       SwapContracts.tokenWithdrawTxScript(address, tokenContractKey, U256.unsafe(1024))
     }
-    val tokenWithdrawTxScriptResult = buildScript(tokenWithdrawScript, None, None, None)
+    val tokenWithdrawTxScriptResult = buildExecuteScriptTx(tokenWithdrawScript, None, None, None)
 
     val rawUnsignedTx = Hex.from(tokenWithdrawTxScriptResult.unsignedTx).value
     val unsignedTx    = deserialize[UnsignedTransaction](rawUnsignedTx).rightValue
@@ -269,10 +268,10 @@ class SmartContractTest extends AlephiumActorSpec {
       contract(
         SwapContracts.tokenContract,
         gas = Some(100000),
-        state = Some("[0u]"),
+        initialFields = Some(AVector[vm.Val](vm.Val.U256(U256.unsafe(0)))),
         issueTokenAmount = Some(1024)
       )
-    val tokenContractKey = tokenContractBuildResult.contractId
+    val tokenContractKey = tokenContractBuildResult.contractAddress.contractId
 
     info("Transfer 1024 token back to self")
     script(SwapContracts.tokenWithdrawTxScript(address, tokenContractKey, U256.unsafe(1024)))
@@ -280,10 +279,16 @@ class SmartContractTest extends AlephiumActorSpec {
     info("Create the ALPH/token swap contract")
     val swapContractBuildResult = contract(
       SwapContracts.swapContract,
-      Some(s"[#${tokenContractKey.toHexString},0,0]"),
+      Some(
+        AVector[vm.Val](
+          vm.Val.ByteVec(tokenContractKey.bytes),
+          vm.Val.U256(U256.Zero),
+          vm.Val.U256(U256.Zero)
+        )
+      ),
       issueTokenAmount = Some(10000)
     )
-    val swapContractKey = swapContractBuildResult.contractId
+    val swapContractKey = swapContractBuildResult.contractAddress.contractId
 
     info("Add liquidity to the swap contract")
     script(
@@ -297,11 +302,11 @@ class SmartContractTest extends AlephiumActorSpec {
     )
 
     info("Swap ALPH with tokens")
-    script(SwapContracts.swapTokenForAlphTxScript(address, swapContractKey, ALPH.alph(10)))
+    script(SwapContracts.swapAlphForTokenTxScript(address, swapContractKey, ALPH.alph(10)))
 
     info("Swap tokens with ALPH")
     script(
-      SwapContracts.swapAlphForTokenTxScript(
+      SwapContracts.swapTokenForAlphTxScript(
         address,
         swapContractKey,
         tokenContractKey,
@@ -358,10 +363,10 @@ class SmartContractTest extends AlephiumActorSpec {
       contract(
         SwapContracts.tokenContract,
         gas = Some(100000),
-        state = Some("[0u]"),
+        initialFields = Some(AVector[vm.Val](vm.Val.U256(U256.Zero))),
         issueTokenAmount = Some(1024)
       )
-    val tokenContractKey = tokenContractBuildResult.contractId
+    val tokenContractKey = tokenContractBuildResult.contractAddress.contractId
 
     checkUTXOs { currentUTXOs =>
       // Create the token contract
@@ -413,10 +418,16 @@ class SmartContractTest extends AlephiumActorSpec {
     info("Create the ALPH/token swap contract")
     val swapContractBuildResult = contract(
       SwapContracts.swapContract,
-      Some(s"[#${tokenContractKey.toHexString},0,0]"),
+      Some(
+        AVector[vm.Val](
+          vm.Val.ByteVec(tokenContractKey.bytes),
+          vm.Val.U256(U256.Zero),
+          vm.Val.U256(U256.Zero)
+        )
+      ),
       issueTokenAmount = Some(10000)
     )
-    val swapContractKey = swapContractBuildResult.contractId
+    val swapContractKey = swapContractBuildResult.contractAddress.contractId
 
     checkUTXOs { currentUTXOs =>
       // Create the swap contract
@@ -477,7 +488,7 @@ class SmartContractTest extends AlephiumActorSpec {
 
     info("Swap ALPH with tokens")
     script(
-      SwapContracts.swapTokenForAlphTxScript(address, swapContractKey, ALPH.alph(100))
+      SwapContracts.swapAlphForTokenTxScript(address, swapContractKey, ALPH.alph(100))
     )
 
     checkUTXOs { currentUTXOs =>
@@ -502,7 +513,7 @@ class SmartContractTest extends AlephiumActorSpec {
 
     info("Swap tokens with ALPH")
     script(
-      SwapContracts.swapAlphForTokenTxScript(
+      SwapContracts.swapTokenForAlphTxScript(
         address,
         swapContractKey,
         tokenContractKey,
@@ -540,54 +551,54 @@ class SmartContractTest extends AlephiumActorSpec {
 
 object SwapContracts {
   val tokenContract = s"""
-    |TxContract Token(mut x: U256) {
-    |
-    | pub payable fn withdraw(address: Address, amount: U256) -> () {
-    |   transferTokenFromSelf!(address, selfTokenId!(), amount)
-    | }
-    |}
+                         |TxContract Token(mut x: U256) {
+                         |
+                         | pub payable fn withdraw(address: Address, amount: U256) -> () {
+                         |   transferTokenFromSelf!(address, selfTokenId!(), amount)
+                         | }
+                         |}
     """.stripMargin
 
-  def tokenWithdrawTxScript(address: String, tokenContractKey: Hash, tokenAmount: U256) = s"""
-    |TxScript Main {
-    |  pub payable fn main() -> () {
-    |    let token = Token(#${tokenContractKey.toHexString})
-    |    token.withdraw(@${address}, $tokenAmount)
-    |  }
-    |}
-    |
-    |$tokenContract
-    |""".stripMargin
+  def tokenWithdrawTxScript(address: String, tokenContractKey: Hash, tokenAmount: U256) =
+    s"""
+       |TxScript Main payable {
+       |  let token = Token(#${tokenContractKey.toHexString})
+       |  token.withdraw(@${address}, $tokenAmount)
+       |}
+       |
+       |$tokenContract
+       |""".stripMargin
 
-  val swapContract = s"""
-    |// Simple swap contract purely for testing
-    |
-    |TxContract Swap(tokenId: ByteVec, mut alphReserve: U256, mut tokenReserve: U256) {
-    |
-    |  pub payable fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
-    |    transferAlphToSelf!(lp, alphAmount)
-    |    transferTokenToSelf!(lp, tokenId, tokenAmount)
-    |    alphReserve = alphAmount
-    |    tokenReserve = tokenAmount
-    |  }
-    |
-    |  pub payable fn swapToken(buyer: Address, alphAmount: U256) -> () {
-    |    let tokenAmount = tokenReserve - alphReserve * tokenReserve / (alphReserve + alphAmount)
-    |    transferAlphToSelf!(buyer, alphAmount)
-    |    transferTokenFromSelf!(buyer, tokenId, tokenAmount)
-    |    alphReserve = alphReserve + alphAmount
-    |    tokenReserve = tokenReserve - tokenAmount
-    |  }
-    |
-    |  pub payable fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
-    |    let alphAmount = alphReserve - alphReserve * tokenReserve / (tokenReserve + tokenAmount)
-    |    transferTokenToSelf!(buyer, tokenId, tokenAmount)
-    |    transferAlphFromSelf!(buyer, alphAmount)
-    |    alphReserve = alphReserve - alphAmount
-    |    tokenReserve = tokenReserve + tokenAmount
-    |  }
-    |}
-    |""".stripMargin
+  val swapContract =
+    s"""
+       |// Simple swap contract purely for testing
+       |
+       |TxContract Swap(tokenId: ByteVec, mut alphReserve: U256, mut tokenReserve: U256) {
+       |
+       |  pub payable fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
+       |    transferAlphToSelf!(lp, alphAmount)
+       |    transferTokenToSelf!(lp, tokenId, tokenAmount)
+       |    alphReserve = alphAmount
+       |    tokenReserve = tokenAmount
+       |  }
+       |
+       |  pub payable fn swapToken(buyer: Address, alphAmount: U256) -> () {
+       |    let tokenAmount = tokenReserve - alphReserve * tokenReserve / (alphReserve + alphAmount)
+       |    transferAlphToSelf!(buyer, alphAmount)
+       |    transferTokenFromSelf!(buyer, tokenId, tokenAmount)
+       |    alphReserve = alphReserve + alphAmount
+       |    tokenReserve = tokenReserve - tokenAmount
+       |  }
+       |
+       |  pub payable fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
+       |    let alphAmount = alphReserve - alphReserve * tokenReserve / (tokenReserve + tokenAmount)
+       |    transferTokenToSelf!(buyer, tokenId, tokenAmount)
+       |    transferAlphFromSelf!(buyer, alphAmount)
+       |    alphReserve = alphReserve - alphAmount
+       |    tokenReserve = tokenReserve + tokenAmount
+       |  }
+       |}
+       |""".stripMargin
 
   def addLiquidityTxScript(
       address: String,
@@ -596,44 +607,39 @@ object SwapContracts {
       tokenAmount: U256,
       swapContractKey: Hash
   ) = s"""
-    |TxScript Main {
-    |  pub payable fn main() -> () {
-    |    approveAlph!(@${address}, $alphAmount)
-    |    approveToken!(@${address}, #${tokenId.toHexString}, $tokenAmount)
-    |    let swap = Swap(#${swapContractKey.toHexString})
-    |    swap.addLiquidity(@${address}, $alphAmount, $tokenAmount)
-    |  }
-    |}
-    |
-    |$swapContract
-    |""".stripMargin
+         |TxScript Main payable {
+         |  approveAlph!(@${address}, $alphAmount)
+         |  approveToken!(@${address}, #${tokenId.toHexString}, $tokenAmount)
+         |  let swap = Swap(#${swapContractKey.toHexString})
+         |  swap.addLiquidity(@${address}, $alphAmount, $tokenAmount)
+         |}
+         |
+         |$swapContract
+         |""".stripMargin
 
-  def swapAlphForTokenTxScript(
+  def swapTokenForAlphTxScript(
       address: String,
       swapContractKey: Hash,
       tokenId: Hash,
       tokenAmount: U256
   ) = s"""
-    |TxScript Main {
-    |  pub payable fn main() -> () {
-    |    approveToken!(@${address}, #${tokenId.toHexString}, $tokenAmount)
-    |    let swap = Swap(#${swapContractKey.toHexString})
-    |    swap.swapAlph(@${address}, $tokenAmount)
-    |  }
-    |}
-    |
-    |$swapContract
-    |""".stripMargin
+         |TxScript Main payable {
+         |  approveToken!(@${address}, #${tokenId.toHexString}, $tokenAmount)
+         |  let swap = Swap(#${swapContractKey.toHexString})
+         |  swap.swapAlph(@${address}, $tokenAmount)
+         |}
+         |
+         |$swapContract
+         |""".stripMargin
 
-  def swapTokenForAlphTxScript(address: String, swapContractKey: Hash, alphAmount: U256) = s"""
-    |TxScript Main {
-    |  pub payable fn main() -> () {
-    |    approveAlph!(@${address}, $alphAmount)
-    |    let swap = Swap(#${swapContractKey.toHexString})
-    |    swap.swapToken(@${address}, $alphAmount)
-    |  }
-    |}
-    |
-    |$swapContract
-    |""".stripMargin
+  def swapAlphForTokenTxScript(address: String, swapContractKey: Hash, alphAmount: U256) =
+    s"""
+       |TxScript Main payable {
+       |  approveAlph!(@${address}, $alphAmount)
+       |  let swap = Swap(#${swapContractKey.toHexString})
+       |  swap.swapToken(@${address}, $alphAmount)
+       |}
+       |
+       |$swapContract
+       |""".stripMargin
 }

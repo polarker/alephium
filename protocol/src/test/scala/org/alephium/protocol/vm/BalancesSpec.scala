@@ -19,11 +19,9 @@ package org.alephium.protocol.vm
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-import akka.util.ByteString
-
 import org.alephium.protocol.ALPH
-import org.alephium.protocol.config.{CompilerConfig, GroupConfig, NetworkConfig}
-import org.alephium.protocol.model.{NetworkId, TxGenerators, TxOutput}
+import org.alephium.protocol.config.{CompilerConfig, GroupConfig, NetworkConfigFixture}
+import org.alephium.protocol.model.{TxGenerators, TxOutput}
 import org.alephium.util.{AlephiumSpec, AVector, U256}
 
 class BalancesSpec extends AlephiumSpec {
@@ -69,7 +67,7 @@ class BalancesSpec extends AlephiumSpec {
       ArrayBuffer(
         (
           lockupScript,
-          balancesPerLockup.copy(tokenAmounts = mutable.Map((tokenId -> ALPH.alph(2))))
+          balancesPerLockup.copy(tokenAmounts = mutable.Map(tokenId -> ALPH.alph(2)))
         )
       )
     )
@@ -82,7 +80,7 @@ class BalancesSpec extends AlephiumSpec {
         (
           lockupScript,
           balancesPerLockup.copy(tokenAmounts =
-            mutable.Map((tokenId -> ALPH.alph(2)), (tokenId2 -> ALPH.alph(1)))
+            mutable.Map(tokenId -> ALPH.alph(2), tokenId2 -> ALPH.alph(1))
           )
         )
       )
@@ -95,10 +93,10 @@ class BalancesSpec extends AlephiumSpec {
         (
           lockupScript,
           balancesPerLockup.copy(tokenAmounts =
-            mutable.Map((tokenId -> ALPH.alph(2)), (tokenId2 -> ALPH.alph(1)))
+            mutable.Map(tokenId -> ALPH.alph(2), tokenId2 -> ALPH.alph(1))
           )
         ),
-        (lockupScript2, BalancesPerLockup(U256.Zero, mutable.Map((tokenId -> ALPH.alph(1))), 0))
+        (lockupScript2, BalancesPerLockup(U256.Zero, mutable.Map(tokenId -> ALPH.alph(1)), 0))
       )
     )
 
@@ -125,7 +123,7 @@ class BalancesSpec extends AlephiumSpec {
       ArrayBuffer(
         (
           lockupScript,
-          balancesPerLockup.copy(tokenAmounts = mutable.Map((tokenId -> U256.Zero)))
+          balancesPerLockup.copy(tokenAmounts = mutable.Map(tokenId -> U256.Zero))
         )
       )
     )
@@ -150,7 +148,7 @@ class BalancesSpec extends AlephiumSpec {
           lockupScript,
           balancesPerLockup.copy(
             alphAmount = ALPH.alph(2),
-            tokenAmounts = mutable.Map((tokenId -> ALPH.alph(2)))
+            tokenAmounts = mutable.Map(tokenId -> ALPH.alph(2))
           )
         )
       )
@@ -164,7 +162,7 @@ class BalancesSpec extends AlephiumSpec {
         (
           lockupScript,
           balancesPerLockup
-            .copy(alphAmount = ALPH.alph(2), tokenAmounts = mutable.Map((tokenId -> ALPH.alph(2))))
+            .copy(alphAmount = ALPH.alph(2), tokenAmounts = mutable.Map(tokenId -> ALPH.alph(2)))
         ),
         (lockupScript2, balancesPerLockup)
       )
@@ -181,7 +179,7 @@ class BalancesSpec extends AlephiumSpec {
           lockupScript,
           balancesPerLockup.copy(
             alphAmount = U256.Zero,
-            tokenAmounts = mutable.Map((tokenId -> U256.Zero))
+            tokenAmounts = mutable.Map(tokenId -> U256.Zero)
           )
         )
       )
@@ -235,7 +233,7 @@ class BalancesSpec extends AlephiumSpec {
           lockupScript2,
           balancesPerLockup.copy(
             alphAmount = ALPH.alph(2),
-            tokenAmounts = mutable.Map((tokenId -> ALPH.alph(2)))
+            tokenAmounts = mutable.Map(tokenId -> ALPH.alph(2))
           )
         )
       )
@@ -261,7 +259,7 @@ class BalancesSpec extends AlephiumSpec {
     )
   }
 
-  trait Fixture extends TxGenerators {
+  trait Fixture extends TxGenerators with NetworkConfigFixture.Default {
     implicit override val compilerConfig: CompilerConfig =
       new CompilerConfig {
         override def loopUnrollingLimit: Int = 1000
@@ -274,16 +272,11 @@ class BalancesSpec extends AlephiumSpec {
 
     val tokenId    = hashGen.sample.get
     val scopeDepth = 1
-    val tokens     = mutable.Map((tokenId -> ALPH.oneAlph))
+    val tokens     = mutable.Map(tokenId -> ALPH.oneAlph)
     val balancesPerLockup =
       BalancesPerLockup(ALPH.oneAlph, tokens, scopeDepth)
     val lockupScript = lockupScriptGen.sample.get
 
     val balances = Balances(ArrayBuffer((lockupScript, balancesPerLockup)))
-
-    implicit def networkConfig: NetworkConfig = new NetworkConfig {
-      override def networkId: NetworkId       = NetworkId.AlephiumTestNet
-      override def noPreMineProof: ByteString = ByteString.empty
-    }
   }
 }

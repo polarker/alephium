@@ -32,7 +32,7 @@ import org.alephium.util.{AVector, Bytes}
 //scalastyle:off magic.number
 object BIP32 {
   def masterKey(prefix: String, seed: ByteString): ExtendedPrivateKey = {
-    val i        = hmacSha512(ByteString.fromArrayUnsafe(prefix.getBytes(StandardCharsets.UTF_8)), seed)
+    val i = hmacSha512(ByteString.fromArrayUnsafe(prefix.getBytes(StandardCharsets.UTF_8)), seed)
     val (il, ir) = i.splitAt(32)
     ExtendedPrivateKey(SecP256K1PrivateKey.unsafe(il), ir, AVector.ofSize(5))
   }
@@ -50,7 +50,7 @@ object BIP32 {
   def hmacSha512(key: ByteString, data: ByteString): ByteString = {
     val mac = new HMac(new SHA512Digest())
     mac.init(new KeyParameter(key.toArray))
-    mac.update(data.toArray, 0, data.length.toInt)
+    mac.update(data.toArray, 0, data.length)
     val out = new Array[Byte](64)
     mac.doFinal(out, 0)
     ByteString.fromArrayUnsafe(out)

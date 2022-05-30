@@ -41,11 +41,11 @@ trait DiscoveryServerState extends SessionManager {
   def selfCliqueInfo: CliqueInfo
   def selfCliqueId: CliqueId = selfCliqueInfo.id
 
-  lazy val maxSentPeers                                          = 20
-  lazy val selfPeerId: PeerId                                    = selfCliqueInfo.selfInterBrokerInfo.peerId
-  lazy val selfPeerInfoOpt: Option[BrokerInfo]                   = selfCliqueInfo.selfBrokerInfo
+  lazy val maxSentPeers                        = 20
+  lazy val selfPeerId: PeerId                  = selfCliqueInfo.selfInterBrokerInfo.peerId
+  lazy val selfPeerInfoOpt: Option[BrokerInfo] = selfCliqueInfo.selfBrokerInfo
   lazy val selfCliqueBrokerInfosOpt: Option[AVector[BrokerInfo]] = selfCliqueInfo.interBrokers
-  lazy val tableInitialSize                                      = selfCliqueBrokerInfosOpt.map(_.length).getOrElse(0)
+  lazy val tableInitialSize = selfCliqueBrokerInfosOpt.map(_.length).getOrElse(0)
 
   import DiscoveryServer._
 
@@ -189,6 +189,7 @@ trait DiscoveryServerState extends SessionManager {
 
   def unsetUnreachable(remote: InetAddress): Unit = {
     unreachables.remove(remote)
+    ()
   }
 
   def mightReachableSlow(remote: InetSocketAddress): Boolean = {
@@ -360,7 +361,7 @@ trait DiscoveryServerState extends SessionManager {
     removeBrokers(peersToRemove)
   }
 
-  @SuppressWarnings(Array("org.wartremover.warts.TraversableOps"))
+  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   private def tryInsert(peerInfo: BrokerInfo): Unit = {
     val myself   = selfCliqueId
     val furthest = table.keys.maxBy(peerId => myself.hammingDist(peerId.cliqueId))
@@ -395,8 +396,7 @@ trait SessionManager {
   }
 
   def validateSessionId(id: Id, brokerInfo: BrokerInfo): Boolean = {
-    sessions.get(id).exists { session =>
-      sessions.remove(id)
+    sessions.remove(id).exists { session =>
       pendings.remove(brokerInfo.peerId)
       session.remote == brokerInfo.address
     }

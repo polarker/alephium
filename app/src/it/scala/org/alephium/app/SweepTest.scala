@@ -17,7 +17,6 @@
 package org.alephium.app
 
 import org.alephium.api.model._
-import org.alephium.json.Json._
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.model.defaultGasFee
 import org.alephium.util._
@@ -27,7 +26,7 @@ abstract class SweepTest(isMiner: Boolean) extends AlephiumActorSpec {
 
   it should "sweep amounts from the active address" in new SweepFixture {
     val transfer =
-      request[Transfer.Results](sweepActiveAddress(walletName, transferAddress), restPort)
+      request[TransferResults](sweepActiveAddress(walletName, transferAddress), restPort)
     transfer.results.length is 1
 
     eventually {
@@ -44,13 +43,13 @@ abstract class SweepTest(isMiner: Boolean) extends AlephiumActorSpec {
     }
 
     val transfer1 =
-      request[Transfer.Results](sweepActiveAddress(walletName, transferAddress), restPort)
+      request[TransferResults](sweepActiveAddress(walletName, transferAddress), restPort)
     transfer1.results.length is 0
   }
 
   it should "sweep amounts from all addresses" in new SweepFixture {
     val transfer =
-      request[Transfer.Results](sweepAllAddresses(walletName, transferAddress), restPort)
+      request[TransferResults](sweepAllAddresses(walletName, transferAddress), restPort)
     transfer.results.length is numberOfAddresses
 
     eventually {
@@ -64,7 +63,7 @@ abstract class SweepTest(isMiner: Boolean) extends AlephiumActorSpec {
     }
 
     val transfer1 =
-      request[Transfer.Results](sweepAllAddresses(walletName, transferAddress), restPort)
+      request[TransferResults](sweepAllAddresses(walletName, transferAddress), restPort)
     transfer1.results.length is 0
   }
 
@@ -81,7 +80,7 @@ abstract class SweepTest(isMiner: Boolean) extends AlephiumActorSpec {
     val numberOfAddresses: Int = if (isMiner) 4 else 1
 
     val walletName = "miner-wallet"
-    request[WalletCreation.Result](createWallet(password, walletName, isMiner), restPort)
+    request[WalletCreationResult](createWallet(password, walletName, isMiner), restPort)
 
     val addressesResponse = request[Addresses](getAddresses(walletName), restPort)
     val addresses         = addressesResponse.addresses.map(_.address)
