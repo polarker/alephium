@@ -54,6 +54,8 @@ sealed trait TransactionAbstract {
       AssetOutputRef.from(output, TxOutputRef.key(id, index))
     }
   }
+
+  def isEntryMethodPayable: Boolean = unsigned.scriptOpt.exists(_.entryMethod.isPayable)
 }
 
 final case class Transaction(
