@@ -55,7 +55,7 @@ sealed trait TransactionAbstract {
     }
   }
 
-  def isEntryMethodPayable: Boolean = unsigned.scriptOpt.exists(_.entryMethod.isPayable)
+  def isEntryMethodPayable: Boolean = unsigned.scriptOpt.exists(_.entryMethod.useApprovedAssets)
 }
 
 final case class Transaction(
