@@ -347,9 +347,9 @@ trait TxGenerators
       }
 
       val initialBalances = Balances(alphAmount, tokenTable.toMap)
-      val outputNum       = min(alphAmount / minAmount, inputs.length * 2, ALPH.MaxTxOutputNum).v.toInt
-      val splitBalances   = split(initialBalances, outputNum)
-      val selectedIndex   = Gen.choose(0, outputNum - 1).sample.get
+      val outputNum = min(alphAmount / minAmount, inputs.length * 2, ALPH.MaxTxOutputNum).v.toInt
+      val splitBalances = split(initialBalances, outputNum)
+      val selectedIndex = Gen.choose(0, outputNum - 1).sample.get
       val outputs = splitBalances.mapWithIndex[AssetOutput] { case (balance, index) =>
         val lockupScript =
           if (index equals selectedIndex) {
@@ -534,6 +534,18 @@ trait NoIndexModelGeneratorsLike extends ModelGenerators {
 
   def chainGenOf(length: Int): Gen[AVector[Block]] =
     chainIndexGen.flatMap(chainGenOf(_, length))
+
+  def generateContract()
+      : Gen[(StatefulContract.HalfDecoded, AVector[Val], ContractOutputRef, ContractOutput)] = {
+    lazy val counterStateGen: Gen[AVector[Val]] =
+      Gen.choose(0L, Long.MaxValue / 1000).map(n => AVector(Val.U256(U256.unsafe(n))))
+    for {
+      groupIndex    <- groupIndexGen
+      outputRef     <- contractOutputRefGen(groupIndex)
+      output        <- contractOutputGen(scriptGen = p2cLockupGen(groupIndex))
+      contractState <- counterStateGen
+    } yield (counterContract.toHalfDecoded(), contractState, outputRef, output)
+  }
 }
 
 trait NoIndexModelGenerators

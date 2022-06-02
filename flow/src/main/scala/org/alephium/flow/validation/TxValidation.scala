@@ -32,6 +32,8 @@ trait TxValidation {
   import ValidationStatus._
 
   implicit def groupConfig: GroupConfig
+  implicit def networkConfig: NetworkConfig
+  implicit def logConfig: LogConfig
 
   private def validateTxTemplate(
       tx: TransactionTemplate,
@@ -317,12 +319,19 @@ trait TxValidation {
 object TxValidation {
   import ValidationStatus._
 
-  def build(implicit groupConfig: GroupConfig, networkConfig: NetworkConfig): TxValidation =
+  def build(implicit
+      groupConfig: GroupConfig,
+      networkConfig: NetworkConfig,
+      logConfig: LogConfig
+  ): TxValidation =
     new Impl()
 
   // scalastyle:off number.of.methods
-  class Impl(implicit val groupConfig: GroupConfig, networkConfig: NetworkConfig)
-      extends TxValidation {
+  class Impl(implicit
+      val groupConfig: GroupConfig,
+      val networkConfig: NetworkConfig,
+      val logConfig: LogConfig
+  ) extends TxValidation {
     protected[validation] def checkVersion(tx: Transaction): TxValidationResult[Unit] = {
       if (tx.unsigned.version == DefaultTxVersion) {
         validTx(())
@@ -482,7 +491,7 @@ object TxValidation {
       }
     }
 
-    @SuppressWarnings(Array("org.wartremover.warts.TraversableOps"))
+    @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
     protected[validation] def getChainIndex(
         tx: TransactionAbstract
     ): TxValidationResult[ChainIndex] = {
@@ -581,7 +590,7 @@ object TxValidation {
         tx: Transaction,
         preOutputs: AVector[TxOutput]
     ): TxValidationResult[Unit] = {
-      if (tx.unsigned.scriptOpt.exists(_.entryMethod.isPayable)) {
+      if (tx.isEntryMethodPayable) {
         validTx(()) // the balance is validated in VM execution
       } else {
         for {

@@ -48,11 +48,19 @@ trait Endpoints
 
   private val timeIntervalQuery: EndpointInput[TimeInterval] =
     query[TimeStamp]("fromTs")
-      .and(query[TimeStamp]("toTs"))
+      .and(query[Option[TimeStamp]]("toTs"))
       .map { case (from, to) => TimeInterval(from, to) }(timeInterval =>
-        (timeInterval.from, timeInterval.to)
+        (timeInterval.from, timeInterval.toOpt)
       )
       .validate(TimeInterval.validator)
+
+  private val counterQuery: EndpointInput[CounterRange] =
+    query[Int]("start")
+      .and(query[Option[Int]]("end"))
+      .map { case (start, endOpt) => CounterRange(start, endOpt) }(counterQuery =>
+        (counterQuery.start, counterQuery.endOpt)
+      )
+      .validate(CounterRange.validator)
 
   private lazy val chainIndexQuery: EndpointInput[ChainIndex] =
     query[GroupIndex]("fromGroup")
@@ -91,6 +99,9 @@ trait Endpoints
       .in("contracts")
       .tag("Contracts")
 
+  private val contractsUnsignedTxEndpoint: BaseEndpoint[Unit, Unit] =
+    contractsEndpoint.in("unsigned-tx")
+
   private val blockflowEndpoint: BaseEndpoint[Unit, Unit] =
     baseEndpoint
       .in("blockflow")
@@ -101,11 +112,36 @@ trait Endpoints
       .in("utils")
       .tag("Utils")
 
+  private val eventsEndpoint: BaseEndpoint[Unit, Unit] =
+    baseEndpoint
+      .in("events")
+      .tag("Events")
+
+  private val contractEventsEndpoint: BaseEndpoint[Unit, Unit] =
+    eventsEndpoint
+      .in("contract")
+
+  private val eventsByTxIdEndpoint: BaseEndpoint[Unit, Unit] =
+    eventsEndpoint
+      .in("tx-id")
+
   val getNodeInfo: BaseEndpoint[Unit, NodeInfo] =
     infosEndpoint.get
       .in("node")
       .out(jsonBody[NodeInfo])
       .summary("Get info about that node")
+
+  val getNodeVersion: BaseEndpoint[Unit, NodeVersion] =
+    infosEndpoint.get
+      .in("version")
+      .out(jsonBody[NodeVersion])
+      .summary("Get version about that node")
+
+  val getChainParams: BaseEndpoint[Unit, ChainParams] =
+    infosEndpoint.get
+      .in("chain-params")
+      .out(jsonBody[ChainParams])
+      .summary("Get key params about your blockchain")
 
   val getSelfClique: BaseEndpoint[Unit, SelfClique] =
     infosEndpoint.get
@@ -189,20 +225,18 @@ trait Endpoints
       .out(jsonBody[Boolean])
       .summary("Check if the block is in main chain")
 
-  val getBalance: BaseEndpoint[(Address.Asset, Option[Int]), Balance] =
+  val getBalance: BaseEndpoint[Address.Asset, Balance] =
     addressesEndpoint.get
       .in(path[Address.Asset]("address"))
       .in("balance")
-      .in(query[Option[Int]]("utxosLimit"))
       .out(jsonBodyWithAlph[Balance])
       .summary("Get the balance of an address")
 
   // TODO: query based on token id?
-  val getUTXOs: BaseEndpoint[(Address.Asset, Option[Int]), UTXOs] =
+  val getUTXOs: BaseEndpoint[Address.Asset, UTXOs] =
     addressesEndpoint.get
       .in(path[Address.Asset]("address"))
       .in("utxos")
-      .in(query[Option[Int]]("utxosLimit"))
       .out(jsonBody[UTXOs])
       .summary("Get the UTXOs of an address")
 
@@ -219,7 +253,7 @@ trait Endpoints
       .in("groupLocal")
       .out(jsonBody[Group])
       .summary("Get the group of an address. Checks locally for contract addressses")
-  //have to be lazy to let `groupConfig` being initialized
+  // have to be lazy to let `groupConfig` being initialized
   lazy val getHashesAtHeight: BaseEndpoint[(ChainIndex, Int), HashesAtHeight] =
     blockflowEndpoint.get
       .in("hashes")
@@ -228,7 +262,7 @@ trait Endpoints
       .out(jsonBody[HashesAtHeight])
       .summary("Get all block's hashes at given height for given groups")
 
-  //have to be lazy to let `groupConfig` being initialized
+  // have to be lazy to let `groupConfig` being initialized
   lazy val getChainInfo: BaseEndpoint[ChainIndex, ChainInfo] =
     blockflowEndpoint.get
       .in("chain-info")
@@ -236,7 +270,7 @@ trait Endpoints
       .out(jsonBody[ChainInfo])
       .summary("Get infos about the chain from the given groups")
 
-  //have to be lazy to let `groupConfig` being initialized
+  // have to be lazy to let `groupConfig` being initialized
   lazy val listUnconfirmedTransactions: BaseEndpoint[Unit, AVector[UnconfirmedTransactions]] =
     transactionsEndpoint.get
       .in("unconfirmed")
@@ -268,11 +302,11 @@ trait Endpoints
       .out(jsonBody[TxResult])
       .summary("Submit a signed transaction")
 
-  val buildMultisigAddress: BaseEndpoint[BuildMultisigAddress, BuildMultisigAddress.Result] =
+  val buildMultisigAddress: BaseEndpoint[BuildMultisigAddress, BuildMultisigAddressResult] =
     multisigEndpoint.post
       .in("address")
       .in(jsonBodyWithAlph[BuildMultisigAddress])
-      .out(jsonBody[BuildMultisigAddress.Result])
+      .out(jsonBody[BuildMultisigAddressResult])
       .summary("Create the multisig address and unlock script")
 
   val buildMultisig: BaseEndpoint[BuildMultisig, BuildTransactionResult] =
@@ -299,11 +333,21 @@ trait Endpoints
       .out(jsonBody[TxStatus])
       .summary("Get tx status")
 
-  val decodeUnsignedTransaction: BaseEndpoint[DecodeTransaction, Tx] =
+  lazy val getTransactionStatusLocal
+      : BaseEndpoint[(Hash, Option[GroupIndex], Option[GroupIndex]), TxStatus] =
+    transactionsEndpoint.get
+      .in("local-status")
+      .in(query[Hash]("txId"))
+      .in(query[Option[GroupIndex]]("fromGroup"))
+      .in(query[Option[GroupIndex]]("toGroup"))
+      .out(jsonBody[TxStatus])
+      .summary("Get tx status, only from the local broker")
+
+  val decodeUnsignedTransaction: BaseEndpoint[DecodeUnsignedTx, DecodeUnsignedTxResult] =
     transactionsEndpoint.post
-      .in("decode")
-      .in(jsonBody[DecodeTransaction])
-      .out(jsonBody[Tx])
+      .in("decode-unsigned-tx")
+      .in(jsonBody[DecodeUnsignedTx])
+      .out(jsonBody[DecodeUnsignedTxResult])
       .summary("Decode an unsigned transaction")
 
   val minerAction: BaseEndpoint[MinerAction, Boolean] =
@@ -325,40 +369,40 @@ trait Endpoints
       .in(jsonBody[MinerAddresses])
       .summary("Update miner's addresses, but better to use user.conf instead")
 
-  val compileScript: BaseEndpoint[Compile.Script, CompileResult] =
+  val compileScript: BaseEndpoint[Compile.Script, CompileScriptResult] =
     contractsEndpoint.post
       .in("compile-script")
       .in(jsonBody[Compile.Script])
-      .out(jsonBody[CompileResult])
+      .out(jsonBody[CompileScriptResult])
       .summary("Compile a script")
 
-  val buildScript: BaseEndpoint[BuildScript, BuildScriptResult] =
-    contractsEndpoint.post
-      .in("build-script")
-      .in(jsonBody[BuildScript])
-      .out(jsonBody[BuildScriptResult])
+  val buildExecuteScriptTx: BaseEndpoint[BuildExecuteScriptTx, BuildExecuteScriptTxResult] =
+    contractsUnsignedTxEndpoint.post
+      .in("execute-script")
+      .in(jsonBody[BuildExecuteScriptTx])
+      .out(jsonBody[BuildExecuteScriptTxResult])
       .summary("Build an unsigned script")
 
-  val compileContract: BaseEndpoint[Compile.Contract, CompileResult] =
+  val compileContract: BaseEndpoint[Compile.Contract, CompileContractResult] =
     contractsEndpoint.post
       .in("compile-contract")
       .in(jsonBody[Compile.Contract])
-      .out(jsonBody[CompileResult])
+      .out(jsonBody[CompileContractResult])
       .summary("Compile a smart contract")
 
-  val buildContract: BaseEndpoint[BuildContract, BuildContractResult] =
-    contractsEndpoint.post
-      .in("build-contract")
-      .in(jsonBody[BuildContract])
-      .out(jsonBody[BuildContractResult])
+  val buildDeployContractTx: BaseEndpoint[BuildDeployContractTx, BuildDeployContractTxResult] =
+    contractsUnsignedTxEndpoint.post
+      .in("deploy-contract")
+      .in(jsonBody[BuildDeployContractTx])
+      .out(jsonBody[BuildDeployContractTxResult])
       .summary("Build an unsigned contract")
 
-  lazy val contractState: BaseEndpoint[(Address.Contract, GroupIndex), ContractStateResult] =
+  lazy val contractState: BaseEndpoint[(Address.Contract, GroupIndex), ContractState] =
     contractsEndpoint.get
       .in(path[Address.Contract]("address"))
       .in("state")
       .in(query[GroupIndex]("group"))
-      .out(jsonBody[ContractStateResult])
+      .out(jsonBody[ContractState])
       .summary("Get contract state")
 
   lazy val testContract: BaseEndpoint[TestContract, TestContractResult] =
@@ -398,6 +442,29 @@ trait Endpoints
     utilsEndpoint.put
       .in("check-hash-indexing")
       .summary("Check and repair the indexing of block hashes")
+
+  lazy val getContractEvents
+      : BaseEndpoint[(Address.Contract, CounterRange, Option[GroupIndex]), ContractEvents] =
+    contractEventsEndpoint.get
+      .in(path[Address.Contract]("contractAddress"))
+      .in(counterQuery)
+      .in(query[Option[GroupIndex]]("group"))
+      .out(jsonBody[ContractEvents])
+      .summary("Get events for a contract within a counter range")
+
+  val getContractEventsCurrentCount: BaseEndpoint[Address.Contract, Int] =
+    contractEventsEndpoint.get
+      .in(path[Address.Contract]("contractAddress"))
+      .in("current-count")
+      .out(jsonBody[Int])
+      .summary("Get current value of the events counter for a contract")
+
+  lazy val getEventsByTxId: BaseEndpoint[(Hash, Option[GroupIndex]), ContractEventsByTxId] =
+    eventsByTxIdEndpoint.get
+      .in(path[Hash]("txId"))
+      .in(query[Option[GroupIndex]]("group"))
+      .out(jsonBody[ContractEventsByTxId])
+      .summary("Get events for a TxScript")
 }
 
 object Endpoints {

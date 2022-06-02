@@ -583,7 +583,7 @@ trait FlowFixture
       numAssets: Int = 2,
       numContracts: Int = 2
   ): Assertion = {
-    val worldState    = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
+    val worldState = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
     val contractState = worldState.getContractState(key).fold(throw _, identity)
 
     contractState.fields is fields
@@ -615,7 +615,7 @@ trait FlowFixture
     val worldState  = blockFlow.getBestPersistedWorldState(chainIndex.from).rightValue
     val prevOutputs = worldState.getPreOutputs(tx0).rightValue
     val blockEnv =
-      BlockEnv(networkConfig.networkId, TimeStamp.now(), consensusConfig.maxMiningTarget)
+      BlockEnv(networkConfig.networkId, TimeStamp.now(), consensusConfig.maxMiningTarget, None)
     val txValidation = TxValidation.build
     val gasLeft      = txValidation.checkGasAndWitnesses(tx0, prevOutputs, blockEnv).rightValue
     val gasUsed      = initialGas.use(gasLeft).rightValue
@@ -646,10 +646,8 @@ trait FlowFixture
     val scriptRaw =
       s"""
          |TxScript Foo {
-         |  pub payable fn main() -> () {
-         |    approveAlph!(@${address.toBase58}, ${alphAmount.v})
-         |    $creation
-         |  }
+         |  approveAlph!(@${address.toBase58}, ${alphAmount.v})
+         |  $creation
          |}
          |""".stripMargin
     Compiler.compileTxScript(scriptRaw).rightValue

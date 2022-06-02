@@ -63,7 +63,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
           cachedWorldState,
           preOutputs.map(_.referredOutput),
           None,
-          BlockEnv(networkConfig.networkId, headerTs, Target.Max)
+          BlockEnv(networkConfig.networkId, headerTs, Target.Max, None)
         )
       } yield ()
     }
@@ -72,7 +72,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
         tx: Transaction,
         preOutputs: AVector[TxOutput]
     ): TxValidationResult[GasBox] = {
-      val blockEnv = BlockEnv(networkConfig.networkId, TimeStamp.now(), Target.Max)
+      val blockEnv = BlockEnv(networkConfig.networkId, TimeStamp.now(), Target.Max, None)
       checkGasAndWitnesses(tx, preOutputs, blockEnv)
     }
 
@@ -367,7 +367,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
   }
 
   it should "check gas bounds" in new Fixture {
-    implicit val validator = checkGasBound
+    implicit val validator = checkGasBound(_)
 
     val tx = transactionGen(1, 1).sample.value
     tx.pass()
@@ -388,7 +388,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
 
   it should "check ALPH balance stats" in new Fixture {
     forAll(transactionGenWithPreOutputs()) { case (tx, _) =>
-      implicit val validator = checkOutputStats
+      implicit val validator = checkOutputStats(_)
 
       // balance overflow
       val alphAmount = tx.alphAmountInOutputs.value
@@ -558,7 +558,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
 
   it should "validate token balances" in new Fixture {
     forAll(transactionGenWithPreOutputs(tokensNumGen = Gen.choose(1, 10)), Gen.prob(0.5)) {
-      case ((tx, preOutputs), isPayable) =>
+      case ((tx, preOutputs), useAssets) =>
         implicit val validator = nestedValidator(
           checkTokenBalance(_, preOutputs.map(_.referredOutput)),
           preOutputs
@@ -571,7 +571,8 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
         val invalidTxWithScript = {
           val method = Method[StatefulContext](
             isPublic = true,
-            isPayable = isPayable,
+            useApprovedAssets = useAssets,
+            useContractAssets = useAssets,
             argsLength = 0,
             localsLength = 0,
             returnLength = 0,
@@ -582,7 +583,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
           invalidTx.updateUnsigned(_.copy(scriptOpt = Some(script)))
         }
 
-        if (!isPayable) {
+        if (!useAssets) {
           invalidTxWithScript.fail(InvalidTokenBalance)
         }
     }
@@ -736,7 +737,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     def tx: Transaction
     lazy val initialGas = minimalGas
     lazy val blockEnv =
-      BlockEnv(NetworkId.AlephiumMainNet, TimeStamp.now(), consensusConfig.maxMiningTarget)
+      BlockEnv(NetworkId.AlephiumMainNet, TimeStamp.now(), consensusConfig.maxMiningTarget, None)
     lazy val prevOutputs = blockFlow
       .getBestPersistedWorldState(groupIndex)
       .rightValue
@@ -787,10 +788,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
   it should "charge gas for tx script size" in new ScriptFixture {
     val rawScript =
       s"""
+         |@use(approvedAssets = false)
          |TxScript P2sh {
-         |  pub fn main() -> () {
-         |    return
-         |  }
+         |  return
          |}
          |""".stripMargin
 
@@ -812,10 +812,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
   it should "match generated contract inputs and outputs" in new ScriptFixture {
     val rawScript =
       s"""
+         |@use(approvedAssets = false)
          |TxScript Main {
-         |  pub fn main() -> () {
-         |    return
-         |  }
+         |  return
          |}
          |""".stripMargin
 
@@ -828,8 +827,8 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     tx.pass()
 
     val contractId = Hash.generate
-    val output     = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(contractId))).sample.get
-    val outputRef  = ContractOutputRef.unsafe(output.hint, contractId)
+    val output = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(contractId))).sample.get
+    val outputRef = ContractOutputRef.unsafe(output.hint, contractId)
     tx.copy(contractInputs = AVector(outputRef)).fail(InvalidContractInputs)
 
     tx.copy(generatedOutputs = AVector(assetOutputGen.sample.get)).fail(InvalidGeneratedOutputs)
@@ -840,10 +839,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     info("valid script")
     val rawScript =
       s"""
+         |@use(approvedAssets = false)
          |TxScript Main {
-         |  pub fn main() -> () {
-         |    return
-         |  }
+         |  return
          |}
          |""".stripMargin
 
@@ -862,9 +860,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     val invalidExecutionRawScript =
       s"""
          |TxScript Main {
-         |  pub fn main() -> () {
-         |    assert!(1 == 2)
-         |  }
+         |  assert!(1 == 2)
          |}
          |""".stripMargin
     // scalastyle:on no.equal
@@ -879,10 +875,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
   it should "check script execution flag, inter group" in new ScriptFixture {
     val rawScript =
       s"""
+         |@use(approvedAssets = false)
          |TxScript Main {
-         |  pub fn main() -> () {
-         |    return
-         |  }
+         |  return
          |}
          |""".stripMargin
 

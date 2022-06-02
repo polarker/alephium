@@ -222,17 +222,16 @@ class TransactionSpec
 
       val script =
         s"""
-         |TxScript Main {
-         | pub payable fn main() -> () {
-         |   verifyTxSignature!(#${pubKey1.toHexString})
-         |   transferAlphFromSelf!(@$address1, 1)
-         |   transferTokenToSelf!(@$address1, #${tokenId.toHexString}, 42)
-         |
-         |   verifyTxSignature!(#${pubKey2.toHexString})
-         |   transferAlphFromSelf!(@$address2, 5)
-         | }
-         |}
-         |""".stripMargin
+           |@use(approvedAssets = true, contractAssets = true)
+           |TxScript Main {
+           |  verifyTxSignature!(#${pubKey1.toHexString})
+           |  transferAlphFromSelf!(@$address1, 1)
+           |  transferTokenToSelf!(@$address1, #${tokenId.toHexString}, 42)
+           |
+           |  verifyTxSignature!(#${pubKey2.toHexString})
+           |  transferAlphFromSelf!(@$address2, 5)
+           |}
+           |""".stripMargin
 
       val tx = {
         val unsignedTx = unsignedTransaction(
@@ -338,15 +337,15 @@ class TransactionSpec
       val script = {
         val raw =
           s"""
-           |// comment
-           |AssetScript P2sh {
-           |  pub fn main(pubKey1: ByteVec, pubKey2: ByteVec) -> () {
-           |    verifyAbsoluteLocktime!(1630879601000)
-           |    verifyTxSignature!(pubKey1)
-           |    verifyTxSignature!(pubKey2)
-           |  }
-           |}
-           |""".stripMargin
+             |// comment
+             |AssetScript P2sh {
+             |  pub fn main(pubKey1: ByteVec, pubKey2: ByteVec) -> () {
+             |    verifyAbsoluteLocktime!(1630879601000)
+             |    verifyTxSignature!(pubKey1)
+             |    verifyTxSignature!(pubKey2)
+             |  }
+             |}
+             |""".stripMargin
 
         Compiler.compileAssetScript(raw).rightValue
       }
@@ -397,13 +396,12 @@ class TransactionSpec
       val script = {
         val raw =
           s"""
-           |TxScript Main {
-           |  pub payable fn main() -> () {
-           |    verifyTxSignature!(#${pubKey1.toHexString})
-           |    transferAlphFromSelf!(@$contractAddress, 1000)
-           |  }
-           |}
-           |""".stripMargin
+             |@use(approvedAssets = true, contractAssets = true)
+             |TxScript Main {
+             |  verifyTxSignature!(#${pubKey1.toHexString})
+             |  transferAlphFromSelf!(@$contractAddress, 1000)
+             |}
+             |""".stripMargin
 
         Compiler.compileTxScript(raw).rightValue
       }

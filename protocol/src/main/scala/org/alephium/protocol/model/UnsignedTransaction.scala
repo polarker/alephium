@@ -16,6 +16,8 @@
 
 package org.alephium.protocol.model
 
+import akka.util.ByteString
+
 import org.alephium.macros.HashSerde
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.{GroupConfig, NetworkConfig}
@@ -26,12 +28,18 @@ import org.alephium.util.{AVector, TimeStamp, U256}
 /** Up to one new token might be issued in each transaction exception for the coinbase transaction
   * The id of the new token will be hash of the first input
   *
-  * @param version the version of the tx
-  * @param networkId the id of the chain which can accept the tx
-  * @param scriptOpt optional script for invoking stateful contracts
-  * @param gasAmount the amount of gas can be used for tx execution
-  * @param inputs a vector of TxInput
-  * @param fixedOutputs a vector of TxOutput. ContractOutput are put in front of AssetOutput
+  * @param version
+  *   the version of the tx
+  * @param networkId
+  *   the id of the chain which can accept the tx
+  * @param scriptOpt
+  *   optional script for invoking stateful contracts
+  * @param gasAmount
+  *   the amount of gas can be used for tx execution
+  * @param inputs
+  *   a vector of TxInput
+  * @param fixedOutputs
+  *   a vector of TxOutput. ContractOutput are put in front of AssetOutput
   */
 @HashSerde
 final case class UnsignedTransaction(
@@ -158,8 +166,14 @@ object UnsignedTransaction {
       changeOutputOpt <- calculateChangeOutput(alphRemainder, tokensRemainder, fromLockupScript)
     } yield {
       var txOutputs = outputs.map {
-        case TxOutputInfo(toLockupScript, amount, tokens, lockTimeOpt) =>
-          TxOutput.asset(amount, toLockupScript, tokens, lockTimeOpt)
+        case TxOutputInfo(toLockupScript, amount, tokens, lockTimeOpt, additionalDataOpt) =>
+          AssetOutput(
+            amount,
+            toLockupScript,
+            lockTimeOpt.getOrElse(TimeStamp.zero),
+            tokens,
+            additionalDataOpt.getOrElse(ByteString.empty)
+          )
       }
 
       changeOutputOpt.foreach { changeOutput =>
@@ -321,6 +335,18 @@ object UnsignedTransaction {
       lockupScript: LockupScript.Asset,
       alphAmount: U256,
       tokens: AVector[(TokenId, U256)],
-      lockTime: Option[TimeStamp]
+      lockTime: Option[TimeStamp],
+      additionalDataOpt: Option[ByteString]
   )
+
+  object TxOutputInfo {
+    def apply(
+        lockupScript: LockupScript.Asset,
+        alphAmount: U256,
+        tokens: AVector[(TokenId, U256)],
+        lockTime: Option[TimeStamp]
+    ): TxOutputInfo = {
+      TxOutputInfo(lockupScript, alphAmount, tokens, lockTime, None)
+    }
+  }
 }

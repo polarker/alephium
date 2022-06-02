@@ -20,19 +20,21 @@ import java.net.{InetAddress, InetSocketAddress}
 
 import akka.util.ByteString
 import org.scalacheck.Gen
-import org.scalatest.{Assertion, EitherValues}
+import org.scalatest.EitherValues
 
+import org.alephium.api.{model => api}
 import org.alephium.api.UtilJson._
 import org.alephium.api.model._
 import org.alephium.json.Json._
 import org.alephium.protocol._
-import org.alephium.protocol.model._
-import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript}
+import org.alephium.protocol.model.{AssetOutput => _, ContractOutput => _, _}
+import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, StatefulContract}
+import org.alephium.protocol.vm.lang.TypeSignatureFixture
 import org.alephium.util._
 import org.alephium.util.Hex.HexStringSyntax
 
 //scalastyle:off file.size.limit
-class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues with NumericHelpers {
+class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues with NumericHelpers {
   val defaultUtxosLimit: Int = 1024
 
   val zeroHash: String = BlockHash.zero.toHexString
@@ -51,8 +53,7 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
       Hash.zero,
       ByteString.empty
     )
-  val dummyAddress     = new InetSocketAddress("127.0.0.1", 9000)
-  val (priKey, pubKey) = SignatureSchema.secureGeneratePriPub()
+  val dummyAddress = new InetSocketAddress("127.0.0.1", 9000)
   val dummyCliqueInfo =
     CliqueInfo.unsafe(
       CliqueId.generate,
@@ -63,8 +64,6 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
     )
   val dummyPeerInfo = BrokerInfo.unsafe(CliqueId.generate, 1, 3, dummyAddress)
 
-  val blockflowFetchMaxAge = Duration.unsafe(1000)
-
   val apiKey = Hash.generate.toHexString
 
   val inetAddress = InetAddress.getByName("127.0.0.1")
@@ -72,31 +71,23 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
   def generateAddress(): Address.Asset = Address.p2pkh(PublicKey.generate)
   def generateContractAddress(): Address.Contract =
     Address.Contract(LockupScript.p2c("uomjgUz6D4tLejTkQtbNJMY8apAjTm1bgQf7em1wDV7S").get)
-  def checkData[T: Reader: Writer](
-      data: T,
-      jsonRaw: String,
-      dropWhiteSpace: Boolean = true
-  ): Assertion = {
-    write(data) is jsonRaw.filterNot(v => dropWhiteSpace && v.isWhitespace)
-    read[T](jsonRaw) is data
-  }
 
   def blockEntryJson(blockEntry: BlockEntry): String = {
     s"""
-      |{
-      |  "hash":"${blockEntry.hash.toHexString}",
-      |  "timestamp":${blockEntry.timestamp.millis},
-      |  "chainFrom":${blockEntry.chainFrom},
-      |  "chainTo":${blockEntry.chainTo},
-      |  "height":${blockEntry.height},
-      |  "deps":${write(blockEntry.deps.map(_.toHexString))},
-      |  "transactions":${write(blockEntry.transactions)},
-      |  "nonce":"${Hex.toHexString(blockEntry.nonce)}",
-      |  "version":${blockEntry.version},
-      |  "depStateHash":"${blockEntry.depStateHash.toHexString}",
-      |  "txsHash":"${blockEntry.txsHash.toHexString}",
-      |  "target":"${Hex.toHexString(blockEntry.target)}"
-      |}""".stripMargin
+       |{
+       |  "hash":"${blockEntry.hash.toHexString}",
+       |  "timestamp":${blockEntry.timestamp.millis},
+       |  "chainFrom":${blockEntry.chainFrom},
+       |  "chainTo":${blockEntry.chainTo},
+       |  "height":${blockEntry.height},
+       |  "deps":${write(blockEntry.deps.map(_.toHexString))},
+       |  "transactions":${write(blockEntry.transactions)},
+       |  "nonce":"${Hex.toHexString(blockEntry.nonce)}",
+       |  "version":${blockEntry.version},
+       |  "depStateHash":"${blockEntry.depStateHash.toHexString}",
+       |  "txsHash":"${blockEntry.txsHash.toHexString}",
+       |  "target":"${Hex.toHexString(blockEntry.target)}"
+       |}""".stripMargin
   }
   def parseFail[A: Reader](jsonRaw: String): String = {
     scala.util.Try(read[A](jsonRaw)).toEither.swap.rightValue.getMessage
@@ -145,7 +136,6 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
   it should "encode/decode NodeInfo" in {
     val nodeInfo =
       NodeInfo(
-        ReleaseVersion(0, 0, 0),
         NodeInfo.BuildInfo("1.2.3", "07b7f3e044"),
         true,
         Some(dummyAddress)
@@ -153,7 +143,6 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
     val jsonRaw = {
       s"""
          |{
-         |  "version": "v0.0.0",
          |  "buildInfo": { "releaseVersion": "1.2.3", "commit": "07b7f3e044" },
          |  "upnp": true,
          |  "externalAddress": { "addr": "127.0.0.1", "port": 9000 }
@@ -162,23 +151,42 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
     checkData(nodeInfo, jsonRaw)
   }
 
+  it should "encode/decode NodeVersion" in {
+    val nodeVersion = NodeVersion(ReleaseVersion(0, 0, 0))
+    val jsonRaw =
+      s"""
+         |{
+         |  "version": "v0.0.0"
+         |}""".stripMargin
+    checkData(nodeVersion, jsonRaw)
+  }
+
+  it should "encode/decode ChainParams" in {
+    val chainParams = ChainParams(NetworkId.AlephiumMainNet, 18, 1, 2)
+    val jsonRaw =
+      s"""
+         |{
+         |  "networkId": 0,
+         |  "numZerosAtLeastInHash": 18,
+         |  "groupNumPerBroker": 1,
+         |  "groups": 2
+         |}""".stripMargin
+    checkData(chainParams, jsonRaw)
+  }
+
   it should "encode/decode SelfClique" in {
     val cliqueId = CliqueId.generate
     val peerAddress =
       PeerAddress(inetAddress, 9001, 9002, 9003)
     val selfClique =
-      SelfClique(cliqueId, NetworkId.AlephiumMainNet, 18, AVector(peerAddress), true, false, 1, 2)
+      SelfClique(cliqueId, AVector(peerAddress), true, false)
     val jsonRaw =
       s"""
          |{
          |  "cliqueId": "${cliqueId.toHexString}",
-         |  "networkId": 0,
-         |  "numZerosAtLeastInHash": 18,
          |  "nodes": [{"address":"127.0.0.1","restPort":9001,"wsPort":9002,"minerApiPort":9003}],
          |  "selfReady": true,
-         |  "synced": false,
-         |  "groupNumPerBroker": 1,
-         |  "groups": 2
+         |  "synced": false
          |}""".stripMargin
     checkData(selfClique, jsonRaw)
   }
@@ -196,32 +204,18 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
   it should "encode/decode GetBalance" in {
     val address    = generateAddress()
     val addressStr = address.toBase58
-    val request    = GetBalance(address, None)
+    val request    = GetBalance(address)
     val jsonRaw    = s"""{"address":"$addressStr"}"""
     checkData(request, jsonRaw)
-
-    val request2 = GetBalance(address, Some(10))
-    val jsonRaw2 = s"""{"address":"$addressStr","utxosLimit":10}"""
-    checkData(request2, jsonRaw2)
   }
 
-  it should "encode/decode Input" in {
+  it should "encode/decode AssetInput" in {
     val key       = Hash.generate
     val outputRef = OutputRef(1234, key)
-
-    {
-      val data: Input = Input.Contract(outputRef)
-      val jsonRaw =
-        s"""{"type":"contract","outputRef":{"hint":1234,"key":"${key.toHexString}"}}"""
-      checkData(data, jsonRaw)
-    }
-
-    {
-      val data: Input = Input.Asset(outputRef, hex"abcd")
-      val jsonRaw =
-        s"""{"type":"asset","outputRef":{"hint":1234,"key":"${key.toHexString}"},"unlockScript":"abcd"}"""
-      checkData(data, jsonRaw)
-    }
+    val data      = AssetInput(outputRef, hex"abcd")
+    val jsonRaw =
+      s"""{"outputRef":{"hint":1234,"key":"${key.toHexString}"},"unlockScript":"abcd"}"""
+    checkData(data, jsonRaw)
   }
 
   it should "encode/decode Token" in {
@@ -238,60 +232,68 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
   }
 
   it should "encode/decode Output with big amount" in {
-    val address    = generateAddress()
-    val addressStr = address.toBase58
-    val amount     = Amount(U256.unsafe(15).mulUnsafe(U256.unsafe(Number.quintillion)))
-    val amountStr  = "15000000000000000000"
-    val tokenId1   = Hash.hash("token1")
-    val tokenId2   = Hash.hash("token2")
+    val amount    = Amount(U256.unsafe(15).mulUnsafe(U256.unsafe(Number.quintillion)))
+    val amountStr = "15000000000000000000"
+    val tokenId1  = Hash.hash("token1")
+    val tokenId2  = Hash.hash("token2")
     val tokens =
       AVector(Token(tokenId1, U256.unsafe(42)), Token(tokenId2, U256.unsafe(1000)))
+    val hint = 1234
+    val key  = hashGen.sample.get
 
     {
-      val request: Output = Output.Contract(amount, address, tokens)
-      val jsonRaw         = s"""
-        |{
-        |  "type": "contract",
-        |  "amount": "$amountStr",
-        |  "address": "$addressStr",
-        |  "tokens": [
-        |    {
-        |      "id": "${tokenId1.toHexString}",
-        |      "amount": "42"
-        |    },
-        |    {
-        |      "id": "${tokenId2.toHexString}",
-        |      "amount": "1000"
-        |    }
-        |  ]
-        |}
-        """.stripMargin
-      checkData(request, jsonRaw)
-    }
-
-    {
-      val request: Output =
-        Output.Asset(amount, address, AVector.empty, TimeStamp.unsafe(1234), ByteString.empty)
+      val address         = generateContractAddress()
+      val addressStr      = address.toBase58
+      val request: Output = ContractOutput(hint, key, amount, address, tokens)
       val jsonRaw = s"""
-        |{
-        |  "type": "asset",
-        |  "amount": "$amountStr",
-        |  "address": "$addressStr",
-        |  "tokens": [],
-        |  "lockTime": 1234,
-        |  "additionalData": ""
-        |}
+                       |{
+                       |  "type": "ContractOutput",
+                       |  "hint": $hint,
+                       |  "key": "${key.toHexString}",
+                       |  "alphAmount": "$amountStr",
+                       |  "address": "$addressStr",
+                       |  "tokens": [
+                       |    {
+                       |      "id": "${tokenId1.toHexString}",
+                       |      "amount": "42"
+                       |    },
+                       |    {
+                       |      "id": "${tokenId2.toHexString}",
+                       |      "amount": "1000"
+                       |    }
+                       |  ]
+                       |}
         """.stripMargin
       checkData(request, jsonRaw)
     }
-  }
 
-  it should "encode/decode Tx" in {
-    val hash = Hash.generate
-    val tx   = Tx(hash, AVector.empty, AVector.empty, 1, U256.unsafe(100))
-    val jsonRaw =
-      s"""{"id":"${hash.toHexString}","inputs":[],"outputs":[],"gasAmount":1,"gasPrice":"100"}"""
-    checkData(tx, jsonRaw)
+    {
+      val address    = generateAddress()
+      val addressStr = address.toBase58
+      val request: Output =
+        AssetOutput(
+          hint,
+          key,
+          amount,
+          address,
+          AVector.empty,
+          TimeStamp.unsafe(1234),
+          ByteString.empty
+        )
+      val jsonRaw = s"""
+                       |{
+                       |  "type": "AssetOutput",
+                       |  "hint": $hint,
+                       |  "key": "${key.toHexString}",
+                       |  "alphAmount": "$amountStr",
+                       |  "address": "$addressStr",
+                       |  "tokens": [],
+                       |  "lockTime": 1234,
+                       |  "message": ""
+                       |}
+        """.stripMargin
+      checkData(request, jsonRaw)
+    }
   }
 
   it should "encode/decode GetGroup" in {
@@ -333,15 +335,15 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
       val transfer =
         BuildTransaction(fromPublicKey, AVector(Destination(toAddress, Amount(1))))
       val jsonRaw = s"""
-        |{
-        |  "fromPublicKey": "${fromPublicKey.toHexString}",
-        |  "destinations": [
-        |    {
-        |      "address": "${toAddress.toBase58}",
-        |      "amount": "1"
-        |    }
-        |  ]
-        |}
+                       |{
+                       |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "destinations": [
+                       |    {
+                       |      "address": "${toAddress.toBase58}",
+                       |      "alphAmount": "1"
+                       |    }
+                       |  ]
+                       |}
         """.stripMargin
       checkData(transfer, jsonRaw)
     }
@@ -352,23 +354,21 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
         AVector(Destination(toAddress, Amount(1), None, Some(TimeStamp.unsafe(1234)))),
         None,
         Some(GasBox.unsafe(1)),
-        Some(GasPrice(1)),
-        Some(defaultUtxosLimit)
+        Some(GasPrice(1))
       )
       val jsonRaw = s"""
-        |{
-        |  "fromPublicKey": "${fromPublicKey.toHexString}",
-        |  "destinations": [
-        |    {
-        |      "address": "${toAddress.toBase58}",
-        |      "amount": "1",
-        |      "lockTime": 1234
-        |    }
-        |  ],
-        |  "gas": 1,
-        |  "gasPrice": "1",
-        |  "utxosLimit": 1024
-        |}
+                       |{
+                       |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "destinations": [
+                       |    {
+                       |      "address": "${toAddress.toBase58}",
+                       |      "alphAmount": "1",
+                       |      "lockTime": 1234
+                       |    }
+                       |  ],
+                       |  "gasAmount": 1,
+                       |  "gasPrice": "1"
+                       |}
         """.stripMargin
       checkData(transfer, jsonRaw)
     }
@@ -391,24 +391,24 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
         Some(GasPrice(1))
       )
       val jsonRaw = s"""
-        |{
-        |  "fromPublicKey": "${fromPublicKey.toHexString}",
-        |  "destinations": [
-        |    {
-        |      "address": "${toAddress.toBase58}",
-        |      "amount": "1",
-        |      "tokens": [
-        |        {
-        |          "id": "${tokenId1.toHexString}",
-        |          "amount": "10"
-        |        }
-        |      ],
-        |      "lockTime": 1234
-        |    }
-        |  ],
-        |  "gas": 1,
-        |  "gasPrice": "1"
-        |}
+                       |{
+                       |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "destinations": [
+                       |    {
+                       |      "address": "${toAddress.toBase58}",
+                       |      "alphAmount": "1",
+                       |      "tokens": [
+                       |        {
+                       |          "id": "${tokenId1.toHexString}",
+                       |          "amount": "10"
+                       |        }
+                       |      ],
+                       |      "lockTime": 1234
+                       |    }
+                       |  ],
+                       |  "gasAmount": 1,
+                       |  "gasPrice": "1"
+                       |}
         """.stripMargin
       checkData(transfer, jsonRaw)
     }
@@ -431,24 +431,24 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
         Some(GasPrice(1))
       )
       val jsonRaw = s"""
-        |{
-        |  "fromPublicKey": "${fromPublicKey.toHexString}",
-        |  "destinations": [
-        |    {
-        |      "address": "${toAddress.toBase58}",
-        |      "amount": "1",
-        |      "tokens": [
-        |        {
-        |          "id": "${tokenId1.toHexString}",
-        |          "amount": "10"
-        |        }
-        |      ],
-        |      "lockTime": 1234
-        |    }
-        |  ],
-        |  "gas": 1,
-        |  "gasPrice": "1"
-        |}
+                       |{
+                       |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "destinations": [
+                       |    {
+                       |      "address": "${toAddress.toBase58}",
+                       |      "alphAmount": "1",
+                       |      "tokens": [
+                       |        {
+                       |          "id": "${tokenId1.toHexString}",
+                       |          "amount": "10"
+                       |        }
+                       |      ],
+                       |      "lockTime": 1234
+                       |    }
+                       |  ],
+                       |  "gasAmount": 1,
+                       |  "gasPrice": "1"
+                       |}
         """.stripMargin
       checkData(transfer, jsonRaw)
     }
@@ -472,30 +472,30 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
         Some(GasPrice(1))
       )
       val jsonRaw = s"""
-        |{
-        |  "fromPublicKey": "${fromPublicKey.toHexString}",
-        |  "destinations": [
-        |    {
-        |      "address": "${toAddress.toBase58}",
-        |      "amount": "1",
-        |      "tokens": [
-        |        {
-        |          "id": "${tokenId1.toHexString}",
-        |          "amount": "10"
-        |        }
-        |      ],
-        |      "lockTime": 1234
-        |    }
-        |  ],
-        |  "utxos": [
-        |    {
-        |      "hint": 1,
-        |      "key": "${otxoKey1.toHexString}"
-        |    }
-        |  ],
-        |  "gas": 1,
-        |  "gasPrice": "1"
-        |}
+                       |{
+                       |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "destinations": [
+                       |    {
+                       |      "address": "${toAddress.toBase58}",
+                       |      "alphAmount": "1",
+                       |      "tokens": [
+                       |        {
+                       |          "id": "${tokenId1.toHexString}",
+                       |          "amount": "10"
+                       |        }
+                       |      ],
+                       |      "lockTime": 1234
+                       |    }
+                       |  ],
+                       |  "utxos": [
+                       |    {
+                       |      "hint": 1,
+                       |      "key": "${otxoKey1.toHexString}"
+                       |    }
+                       |  ],
+                       |  "gasAmount": 1,
+                       |  "gasPrice": "1"
+                       |}
         """.stripMargin
       checkData(transfer, jsonRaw)
     }
@@ -529,33 +529,33 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
     checkData(transfer, jsonRaw)
   }
 
-  it should "encode/decode TxStatus" in {
+  it should "encode/decode PeerStatus" in {
     val blockHash         = BlockHash.generate
     val status0: TxStatus = Confirmed(blockHash, 0, 1, 2, 3)
     val jsonRaw0 =
-      s"""{"type":"confirmed","blockHash":"${blockHash.toHexString}","txIndex":0,"chainConfirmations":1,"fromGroupConfirmations":2,"toGroupConfirmations":3}"""
+      s"""{"type":"Confirmed","blockHash":"${blockHash.toHexString}","txIndex":0,"chainConfirmations":1,"fromGroupConfirmations":2,"toGroupConfirmations":3}"""
     checkData(status0, jsonRaw0)
 
-    checkData[PeerStatus](PeerStatus.Penalty(10), s"""{"type":"penalty","value":10}""")
+    checkData[PeerStatus](PeerStatus.Penalty(10), s"""{"type":"Penalty","value":10}""")
     checkData[PeerStatus](
       PeerStatus.Banned(TimeStamp.unsafe(1L)),
-      s"""{"type":"banned","until":1}"""
+      s"""{"type":"Banned","until":1}"""
     )
   }
 
-  it should "encode/decode PeerStatus" in {
-    checkData(MemPooled: TxStatus, s"""{"type":"mem-pooled"}""")
-    checkData(NotFound: TxStatus, s"""{"type":"not-found"}""")
+  it should "encode/decode TxStatus" in {
+    checkData(MemPooled: TxStatus, s"""{"type":"MemPooled"}""")
+    checkData(TxNotFound: TxStatus, s"""{"type":"TxNotFound"}""")
   }
 
   it should "encode/decode MisbehaviorAction" in {
     checkData(
       MisbehaviorAction.Ban(AVector(inetAddress)),
-      s"""{"type":"ban","peers":["127.0.0.1"]}"""
+      s"""{"type":"Ban","peers":["127.0.0.1"]}"""
     )
     checkData(
       MisbehaviorAction.Unban(AVector(inetAddress)),
-      s"""{"type":"unban","peers":["127.0.0.1"]}"""
+      s"""{"type":"Unban","peers":["127.0.0.1"]}"""
     )
   }
 
@@ -636,93 +636,95 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
 
   it should "encode/decode BuildContract" in {
     val publicKey = PublicKey.generate
-    val buildContract = BuildContract(
+    val buildDeployContractTx = BuildDeployContractTx(
       fromPublicKey = publicKey,
-      code = "0000",
-      state = Some("10u"),
+      bytecode = ByteString(0, 0),
       issueTokenAmount = Some(Amount(1)),
-      gas = Some(GasBox.unsafe(1)),
-      gasPrice = Some(GasPrice(1)),
-      utxosLimit = Some(defaultUtxosLimit)
+      gasAmount = Some(GasBox.unsafe(1)),
+      gasPrice = Some(GasPrice(1))
     )
     val jsonRaw =
       s"""
          |{
          |  "fromPublicKey": "${publicKey.toHexString}",
-         |  "code": "0000",
-         |  "state": "10u",
+         |  "bytecode": "0000",
          |  "issueTokenAmount": "1",
-         |  "gas": 1,
-         |  "gasPrice": "1",
-         |  "utxosLimit": 1024
+         |  "gasAmount": 1,
+         |  "gasPrice": "1"
          |}
          |""".stripMargin
-    checkData(buildContract, jsonRaw)
+    checkData(buildDeployContractTx, jsonRaw)
   }
 
-  it should "encode/decode BuildContractResult" in {
+  it should "encode/decode BuildDeployContractTxResult" in {
     val txId       = Hash.generate
     val contractId = Hash.generate
-    val buildContractResult = BuildContractResult(
-      unsignedTx = "0000",
-      hash = txId,
-      contractId = contractId,
+    val buildDeployContractTxResult = BuildDeployContractTxResult(
       fromGroup = 2,
-      toGroup = 3
+      toGroup = 2,
+      unsignedTx = "0000",
+      gasAmount = GasBox.unsafe(1),
+      gasPrice = GasPrice(1),
+      txId = txId,
+      contractAddress = Address.contract(contractId)
     )
     val jsonRaw =
       s"""
          |{
-         |  "unsignedTx": "0000",
-         |  "hash": "${txId.toHexString}",
-         |  "contractId": "${contractId.toHexString}",
          |  "fromGroup": 2,
-         |  "toGroup": 3
+         |  "toGroup": 2,
+         |  "unsignedTx": "0000",
+         |  "gasAmount":1,
+         |  "gasPrice":"1",
+         |  "txId": "${txId.toHexString}",
+         |  "contractAddress": "${Address.contract(contractId).toBase58}"
          |}
          |""".stripMargin
-    checkData(buildContractResult, jsonRaw)
+    checkData(buildDeployContractTxResult, jsonRaw)
   }
 
-  it should "encode/decode BuildScript" in {
+  it should "encode/decode BuildScriptTx" in {
     val publicKey = PublicKey.generate
-    val buildScript = BuildScript(
+    val buildExecuteScriptTx = BuildExecuteScriptTx(
       fromPublicKey = publicKey,
-      code = "0000",
-      gas = Some(GasBox.unsafe(1)),
-      gasPrice = Some(GasPrice(1)),
-      utxosLimit = Some(defaultUtxosLimit)
+      bytecode = ByteString(0, 0),
+      gasAmount = Some(GasBox.unsafe(1)),
+      gasPrice = Some(GasPrice(1))
     )
     val jsonRaw =
       s"""
          |{
          |  "fromPublicKey": "${publicKey.toHexString}",
-         |  "code": "0000",
-         |  "gas": 1,
-         |  "gasPrice": "1",
-         |  "utxosLimit": 1024
+         |  "bytecode": "0000",
+         |  "gasAmount": 1,
+         |  "gasPrice": "1"
          |}
          |""".stripMargin
-    checkData(buildScript, jsonRaw)
+    checkData(buildExecuteScriptTx, jsonRaw)
   }
 
-  it should "encode/decode BuildScriptResult" in {
+  it should "encode/decode BuildScriptTxResult" in {
     val txId = Hash.generate
-    val buildScriptResult = BuildScriptResult(
-      unsignedTx = "0000",
-      hash = txId,
+    val buildExecuteScriptTxResult = BuildExecuteScriptTxResult(
       fromGroup = 1,
-      toGroup = 2
+      toGroup = 1,
+      unsignedTx = "0000",
+      gasAmount = GasBox.unsafe(1),
+      gasPrice = GasPrice(1),
+      txId = txId
     )
     val jsonRaw =
       s"""
          |{
-         |  "unsignedTx": "0000",
-         |  "hash": "${txId.toHexString}",
          |  "fromGroup": 1,
-         |  "toGroup": 2
+         |  "toGroup": 1,
+         |  "unsignedTx": "0000",
+         |  "gasAmount":1,
+         |  "gasPrice":"1",
+         |  "txId": "${txId.toHexString}"
          |}
          |""".stripMargin
-    checkData(buildScriptResult, jsonRaw)
+    checkData(buildExecuteScriptTxResult, jsonRaw)
   }
 
   it should "encode/decode VerifySignature" in {
@@ -733,82 +735,149 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
     val verifySignature =
       VerifySignature(data, signature, publicKey)
     val jsonRaw = s"""
-        |{
-        |  "data": "${Hex.toHexString(data)}",
-        |  "signature": "${signature.toHexString}",
-        |  "publicKey": "${publicKey.toHexString}"
-        |}
+                     |{
+                     |  "data": "${Hex.toHexString(data)}",
+                     |  "signature": "${signature.toHexString}",
+                     |  "publicKey": "${publicKey.toHexString}"
+                     |}
         """.stripMargin
     checkData(verifySignature, jsonRaw)
   }
 
-  it should "encode/decode Val.Bool" in {
-    checkData[Val](Val.True, """{"type": "bool", "value": true}""")
-    checkData[Val](Val.False, """{"type": "bool", "value": false}""")
+  it should "encode/decode AssetState" in {
+    val asset1   = AssetState(U256.unsafe(100))
+    val jsonRaw1 = s"""{"alphAmount": "100"}"""
+    checkData(asset1, jsonRaw1)
+
+    val asset2 = AssetState.from(U256.unsafe(100), AVector(Token(Hash.zero, U256.unsafe(123))))
+    val jsonRaw2 =
+      s"""
+         |{
+         |  "alphAmount": "100",
+         |  "tokens":[{"id": "0000000000000000000000000000000000000000000000000000000000000000","amount":"123"}]
+         |}""".stripMargin
+    checkData(asset2, jsonRaw2)
   }
 
-  it should "encode/decode Val.ByteVec" in {
-    val bytes = Hash.generate.bytes
-    checkData[Val](
-      Val.ByteVec(bytes),
-      s"""{"type": "bytevec", "value": "${Hex.toHexString(bytes)}"}"""
-    )
-  }
-
-  it should "encode/decode Val.U256" in {
-    checkData[Val](Val.U256(U256.MaxValue), s"""{"type": "u256", "value": "${U256.MaxValue}"}""")
-  }
-
-  it should "encode/decode Val.I256" in {
-    checkData[Val](Val.I256(I256.MinValue), s"""{"type": "i256", "value": "${I256.MinValue}"}""")
-  }
-
-  it should "encode/decode Val.Address" in {
-    val address = generateContractAddress()
-    checkData[Val](
-      Val.Address(address),
-      s"""{"type": "address", "value": "${address.toBase58}"}"""
-    )
-  }
-
-  it should "encode/decode ContractStateResult" in {
-    val u256     = Val.U256(U256.MaxValue)
-    val i256     = Val.I256(I256.MaxValue)
+  it should "encode/decode ContractState" in {
+    val u256     = ValU256(U256.MaxValue)
+    val i256     = ValI256(I256.MaxValue)
     val bool     = Val.True
-    val byteVec  = Val.ByteVec(U256.MaxValue.toBytes)
-    val address1 = Val.Address(generateContractAddress())
-    val address2 = Val.Address(generateAddress())
-    val jsonRaw  = s"""
+    val byteVec  = ValByteVec(U256.MaxValue.toBytes)
+    val address1 = ValAddress(generateContractAddress())
+    val state = ContractState(
+      generateContractAddress(),
+      StatefulContract.forSMT.toContract().rightValue,
+      codeHash = Hash.zero,
+      initialStateHash = Hash.zero,
+      AVector(u256, i256, bool, byteVec, address1),
+      AssetState.from(ALPH.alph(1), AVector(Token(Hash.zero, ALPH.alph(2))))
+    )
+    val jsonRaw =
+      s"""
+         |{
+         |  "address": "uomjgUz6D4tLejTkQtbNJMY8apAjTm1bgQf7em1wDV7S",
+         |  "bytecode": "00010700000000000118",
+         |  "codeHash": "0000000000000000000000000000000000000000000000000000000000000000",
+         |  "initialStateHash": "0000000000000000000000000000000000000000000000000000000000000000",
+         |  "fields": [
+         |    {
+         |      "type": "U256",
+         |      "value": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+         |    },
+         |    {
+         |      "type": "I256",
+         |      "value": "57896044618658097711785492504343953926634992332820282019728792003956564819967"
+         |    },
+         |    {
+         |      "type": "Bool",
+         |      "value": true
+         |    },
+         |    {
+         |      "type": "ByteVec",
+         |      "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+         |    },
+         |    {
+         |      "type": "Address",
+         |      "value": "uomjgUz6D4tLejTkQtbNJMY8apAjTm1bgQf7em1wDV7S"
+         |    }
+         |  ],
+         |  "asset": {
+         |    "alphAmount": "1000000000000000000",
+         |    "tokens": [
+         |      {
+         |        "id": "0000000000000000000000000000000000000000000000000000000000000000",
+         |        "amount": "2000000000000000000"
+         |      }
+         |    ]
+         |  }
+         |}
+         |""".stripMargin
+    checkData(state, jsonRaw)
+  }
+
+  it should "encode/decode CompilerResult" in new TypeSignatureFixture {
+    val result0 = CompileContractResult.from(contract, contractAst)
+    val jsonRaw0 =
+      """
         |{
-        |  "fields": [
-        |     {
-        |       "type":"u256",
-        |       "value": "${u256.value}"
-        |     },
-        |     {
-        |       "type":"i256",
-        |       "value": "${i256.value}"
-        |     },
-        |     {
-        |       "type":"bool",
-        |       "value": ${bool.value}
-        |     },
-        |     {
-        |       "type":"bytevec",
-        |       "value": "${Hex.toHexString(byteVec.value)}"
-        |     },
-        |     {
-        |       "type":"address",
-        |       "value": "${address1.value.toBase58}"
-        |     },
-        |     {
-        |       "type":"address",
-        |       "value": "${address2.value.toBase58}"
-        |     }
-        |   ]
+        |  "bytecode": "07011d01010707060d05a000a001a003a0046116011602160316041605160602",
+        |  "codeHash": "4106809d4ed811457fad02bc19619ca8f2a4a47a56bca4519a28d3671d9c7241",
+        |  "fields": {
+        |    "signature": "TxContract Foo(aa:Bool,mut bb:U256,cc:I256,mut dd:ByteVec,ee:Address,ff:[[Bool;1];2])",
+        |    "names": ["aa","bb","cc","dd","ee","ff"],
+        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+        |  },
+        |  "functions": [
+        |    {
+        |      "name": "bar",
+        |      "signature": "@use(approvedAssets=true, contractAssets=true) pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])",
+        |      "argNames": ["a","b","c","d","e","f"],
+        |      "argTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+        |    }
+        |  ],
+        |  "events": [
+        |    {
+        |      "name": "Bar",
+        |      "signature": "event Bar(a:Bool,b:U256,d:ByteVec,e:Address)",
+        |      "fieldNames":["a","b","d","e"],
+        |      "fieldTypes": ["Bool", "U256", "ByteVec", "Address"]
+        |    }
+        |  ]
         |}
-        """.stripMargin
-    checkData(ContractStateResult(AVector(u256, i256, bool, byteVec, address1, address2)), jsonRaw)
+        |""".stripMargin
+    write(result0).filter(!_.isWhitespace) is jsonRaw0.filter(!_.isWhitespace)
+
+    val result1 = CompileScriptResult.from(script, scriptAst)
+    val jsonRaw1 =
+      """
+        |{
+        |  "bytecodeTemplate": "020103000000010201000707060716011602160316041605160602",
+        |  "fields": {
+        |    "signature": "TxScript Foo(aa:Bool,bb:U256,cc:I256,dd:ByteVec,ee:Address)",
+        |    "names": ["aa","bb","cc","dd","ee"],
+        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"]
+        |  },
+        |  "functions": [
+        |    {
+        |      "name": "main",
+        |      "signature": "@use(approvedAssets=true) pub main()->()",
+        |      "argNames": [],
+        |      "argTypes": [],
+        |      "returnTypes": []
+        |    },
+        |    {
+        |      "name": "bar",
+        |      "signature": "pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])",
+        |      "argNames": ["a","b","c","d","e","f"],
+        |      "argTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+    write(result1).filter(!_.isWhitespace) is jsonRaw1.filter(!_.isWhitespace)
   }
 
   behavior of "TimeInterval"
@@ -825,9 +894,101 @@ class ApiModelSpec extends AlephiumSpec with ApiModelCodec with EitherValues wit
   it should "validate the time span" in {
     val timestamp = TimeStamp.now()
     val timespan  = Duration.ofHoursUnsafe(1)
-    TimeInterval(timestamp, timestamp.plusMinutesUnsafe(61)).validateTimeSpan(timespan) is Left(
+    TimeInterval(timestamp, timestamp.plusMinutesUnsafe(61))
+      .validateTimeSpan(timespan) is Left(
       ApiError.BadRequest(s"Time span cannot be greater than ${timespan}")
     )
     TimeInterval(timestamp, timestamp.plusMinutesUnsafe(60)).validateTimeSpan(timespan) isE ()
+  }
+
+  it should "encode/decode FixedAssetOutput" in {
+    val jsonRaw =
+      s"""
+         |{
+         |  "hint": -383063803,
+         |  "key": "9f0e444c69f77a49bd0be89db92c38fe713e0963165cca12faf5712d7657120f",
+         |  "alphAmount": "1000000000000000000",
+         |  "address": "111111111111111111111111111111111",
+         |  "tokens": [],
+         |  "lockTime": 0,
+         |  "message": ""
+         |}
+         |""".stripMargin
+    checkData(FixedAssetOutput.fromProtocol(assetOutput, Hash.zero, 0), jsonRaw)
+  }
+
+  it should "endcode/decode Output" in {
+    val assetOutputJson =
+      s"""
+         |{
+         |  "type": "AssetOutput",
+         |  "hint": -383063803,
+         |  "key": "9f0e444c69f77a49bd0be89db92c38fe713e0963165cca12faf5712d7657120f",
+         |  "alphAmount": "1000000000000000000",
+         |  "address": "111111111111111111111111111111111",
+         |  "tokens": [],
+         |  "lockTime": 0,
+         |  "message": ""
+         |}
+         |""".stripMargin
+    checkData[Output](Output.from(assetOutput, Hash.zero, 0), assetOutputJson)
+
+    val contractOutputJson =
+      s"""
+         |{
+         |  "type": "ContractOutput",
+         |  "hint": -383063804,
+         |  "key": "9f0e444c69f77a49bd0be89db92c38fe713e0963165cca12faf5712d7657120f",
+         |  "alphAmount": "1000000000000000000",
+         |  "address": "tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq",
+         |  "tokens": []
+         |}
+         |""".stripMargin
+    checkData[Output](Output.from(contractOutput, Hash.zero, 0), contractOutputJson)
+  }
+
+  it should "encode/decode UnsignedTx" in {
+    val unsignedTx = UnsignedTx.fromProtocol(unsignedTransaction)
+    val jsonRaw =
+      s"""
+         |{
+         |  "txId": "${unsignedTransaction.hash.toHexString}",
+         |  "version": ${unsignedTransaction.version},
+         |  "networkId": ${unsignedTransaction.networkId.id},
+         |  "scriptOpt": ${write(unsignedTransaction.scriptOpt.map(Script.fromProtocol))},
+         |  "gasAmount": ${defaultGas.value},
+         |  "gasPrice": "${defaultGasPrice.value}",
+         |  "inputs": ${write(unsignedTx.inputs)},
+         |  "fixedOutputs": ${write(unsignedTx.fixedOutputs)}
+         |}""".stripMargin
+
+    checkData(unsignedTx, jsonRaw)
+  }
+
+  it should "encode/decode Transaction" in {
+    val tx = api.Transaction.fromProtocol(transaction)
+    val jsonRaw = s"""
+                     |{
+                     |  "unsigned": ${write(tx.unsigned)},
+                     |  "scriptExecutionOk": ${tx.scriptExecutionOk},
+                     |  "contractInputs": ${write(tx.contractInputs)},
+                     |  "generatedOutputs": ${write(tx.generatedOutputs)},
+                     |  "inputSignatures": ${write(tx.inputSignatures)},
+                     |  "scriptSignatures": ${write(tx.scriptSignatures)}
+                     |}""".stripMargin
+
+    checkData(tx, jsonRaw)
+  }
+
+  it should "encode/decode TransactionTemplate" in {
+    val tx = api.TransactionTemplate.fromProtocol(transactionTemplate)
+    val jsonRaw = s"""
+                     |{
+                     |  "unsigned": ${write(tx.unsigned)},
+                     |  "inputSignatures": ${write(tx.inputSignatures)},
+                     |  "scriptSignatures": ${write(tx.scriptSignatures)}
+                     |}""".stripMargin
+
+    checkData(tx, jsonRaw)
   }
 }

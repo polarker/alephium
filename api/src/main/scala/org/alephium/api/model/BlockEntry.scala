@@ -19,10 +19,10 @@ package org.alephium.api.model
 import akka.util.ByteString
 
 import org.alephium.protocol.{BlockHash, Hash}
-import org.alephium.protocol.model.Block
+import org.alephium.protocol.config.NetworkConfig
+import org.alephium.protocol.model.{Block, BlockDeps, BlockHeader, Nonce, Target}
 import org.alephium.util.{AVector, TimeStamp}
 
-@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class BlockEntry(
     hash: BlockHash,
     timestamp: TimeStamp,
@@ -30,13 +30,42 @@ final case class BlockEntry(
     chainTo: Int,
     height: Int,
     deps: AVector[BlockHash],
-    transactions: AVector[Tx],
+    transactions: AVector[Transaction],
     nonce: ByteString,
     version: Byte,
     depStateHash: Hash,
     txsHash: Hash,
     target: ByteString
-)
+) {
+  def toProtocol()(implicit networkConfig: NetworkConfig): Either[String, Block] = {
+    for {
+      header       <- toBlockHeader()
+      _            <- Either.cond(hash == header.hash, (), "Invalid hash")
+      transactions <- transactions.mapE(_.toProtocol())
+    } yield {
+      Block(
+        header,
+        transactions
+      )
+    }
+  }
+
+  def toBlockHeader(): Either[String, BlockHeader] =
+    for {
+      _nonce <- Nonce.from(nonce).toRight("Invalid nonce")
+    } yield {
+      BlockHeader(
+        _nonce,
+        version,
+        BlockDeps.unsafe(deps),
+        depStateHash,
+        txsHash,
+        timestamp,
+        Target.unsafe(target)
+      )
+    }
+}
+
 object BlockEntry {
   def from(block: Block, height: Int): BlockEntry =
     BlockEntry(
@@ -46,7 +75,7 @@ object BlockEntry {
       chainTo = block.header.chainIndex.to.value,
       height = height,
       deps = block.header.blockDeps.deps,
-      transactions = block.transactions.map(Tx.from(_)),
+      transactions = block.transactions.map(Transaction.fromProtocol(_)),
       nonce = block.header.nonce.value,
       version = block.header.version,
       depStateHash = block.header.depStateHash,

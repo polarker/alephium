@@ -19,7 +19,8 @@ package org.alephium.protocol.vm
 import scala.annotation.{switch, tailrec}
 
 import org.alephium.protocol.Hash
-import org.alephium.protocol.model.ContractId
+import org.alephium.protocol.model.{ContractId, HardFork}
+import org.alephium.protocol.vm.{createContractEventIndex, destroyContractEventIndex}
 import org.alephium.serde.deserialize
 import org.alephium.util.{AVector, Bytes}
 
@@ -35,9 +36,9 @@ abstract class Frame[Ctx <: StatelessContext] {
 
   def getCallerFrame(): ExeResult[Frame[Ctx]]
 
-  def balanceStateOpt: Option[BalanceState]
+  def balanceStateOpt: Option[MutBalanceState]
 
-  def getBalanceState(): ExeResult[BalanceState] =
+  def getBalanceState(): ExeResult[MutBalanceState] =
     balanceStateOpt.toRight(Right(EmptyBalanceForPayableMethod))
 
   def pcMax: Int = method.instrs.length
@@ -60,49 +61,34 @@ abstract class Frame[Ctx <: StatelessContext] {
 
   def popOpStack(): ExeResult[Val] = opStack.pop()
 
-  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def popOpStackBool(): ExeResult[Val.Bool] =
-    popOpStack().flatMap { elem =>
-      try Right(elem.asInstanceOf[Val.Bool])
-      catch {
-        case _: ClassCastException => failed(InvalidType(elem))
-      }
+    popOpStack().flatMap {
+      case elem: Val.Bool => Right(elem)
+      case elem           => failed(InvalidType(elem))
     }
 
-  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def popOpStackI256(): ExeResult[Val.I256] =
-    popOpStack().flatMap { elem =>
-      try Right(elem.asInstanceOf[Val.I256])
-      catch {
-        case _: ClassCastException => failed(InvalidType(elem))
-      }
+    popOpStack().flatMap {
+      case elem: Val.I256 => Right(elem)
+      case elem           => failed(InvalidType(elem))
     }
 
-  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def popOpStackU256(): ExeResult[Val.U256] =
-    popOpStack().flatMap { elem =>
-      try Right(elem.asInstanceOf[Val.U256])
-      catch {
-        case _: ClassCastException => failed(InvalidType(elem))
-      }
+    popOpStack().flatMap {
+      case elem: Val.U256 => Right(elem)
+      case elem           => failed(InvalidType(elem))
     }
 
-  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def popOpStackByteVec(): ExeResult[Val.ByteVec] =
-    popOpStack().flatMap { elem =>
-      try Right(elem.asInstanceOf[Val.ByteVec])
-      catch {
-        case _: ClassCastException => failed(InvalidType(elem))
-      }
+    popOpStack().flatMap {
+      case elem: Val.ByteVec => Right(elem)
+      case elem              => failed(InvalidType(elem))
     }
 
-  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def popOpStackAddress(): ExeResult[Val.Address] =
-    popOpStack().flatMap { elem =>
-      try Right(elem.asInstanceOf[Val.Address])
-      catch {
-        case _: ClassCastException => failed(InvalidType(elem))
-      }
+    popOpStack().flatMap {
+      case elem: Val.Address => Right(elem)
+      case elem              => failed(InvalidType(elem))
     }
 
   @inline
@@ -149,9 +135,14 @@ abstract class Frame[Ctx <: StatelessContext] {
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
       tokenAmount: Option[Val.U256]
-  ): ExeResult[Unit]
+  ): ExeResult[ContractId]
 
   def destroyContract(address: LockupScript): ExeResult[Unit]
+
+  def migrateContract(
+      newContractCode: StatefulContract,
+      newFieldsOpt: Option[AVector[Val]]
+  ): ExeResult[Unit]
 
   def callLocal(index: Byte): ExeResult[Option[Frame[Ctx]]] = {
     advancePC()
@@ -208,14 +199,18 @@ final class StatelessFrame(
   }
 
   // the following should not be used in stateless context
-  def balanceStateOpt: Option[BalanceState] = None
+  def balanceStateOpt: Option[MutBalanceState] = None
   def createContract(
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
       tokenAmount: Option[Val.U256]
-  ): ExeResult[Unit]                                          = StatelessFrame.notAllowed
+  ): ExeResult[ContractId] = StatelessFrame.notAllowed
   def destroyContract(address: LockupScript): ExeResult[Unit] = StatelessFrame.notAllowed
-  def getCallerFrame(): ExeResult[Frame[StatelessContext]]    = StatelessFrame.notAllowed
+  def migrateContract(
+      newContractCode: StatefulContract,
+      newFieldsOpt: Option[AVector[Val]]
+  ): ExeResult[Unit] = StatelessFrame.notAllowed
+  def getCallerFrame(): ExeResult[Frame[StatelessContext]] = StatelessFrame.notAllowed
   def callExternal(index: Byte): ExeResult[Option[Frame[StatelessContext]]] =
     StatelessFrame.notAllowed
 }
@@ -232,18 +227,73 @@ final class StatefulFrame(
     val locals: VarVector[Val],
     val returnTo: AVector[Val] => ExeResult[Unit],
     val ctx: StatefulContext,
-    val callerFrameOpt: Option[Frame[StatefulContext]],
-    val balanceStateOpt: Option[BalanceState]
+    val callerFrameOpt: Option[StatefulFrame],
+    val balanceStateOpt: Option[MutBalanceState]
 ) extends Frame[StatefulContext] {
-  def getCallerFrame(): ExeResult[Frame[StatefulContext]] = {
+  def getCallerFrame(): ExeResult[StatefulFrame] = {
     callerFrameOpt.toRight(Right(NoCaller))
   }
 
-  private def getNewFrameBalancesState(
+  def getNewFrameBalancesState(
       contractObj: ContractObj[StatefulContext],
       method: Method[StatefulContext]
-  ): ExeResult[Option[BalanceState]] = {
-    if (method.isPayable) {
+  ): ExeResult[Option[MutBalanceState]] = {
+    if (ctx.getHardFork() >= HardFork.Leman) {
+      getNewFrameBalancesStateSinceLeman(contractObj, method)
+    } else {
+      getNewFrameBalancesStatePreLeman(contractObj, method)
+    }
+  }
+
+  private def getNewFrameBalancesStateSinceLeman(
+      contractObj: ContractObj[StatefulContext],
+      method: Method[StatefulContext]
+  ): ExeResult[Option[MutBalanceState]] = {
+    if (method.useApprovedAssets) {
+      for {
+        currentBalances <- getBalanceState()
+        balanceStateOpt <- {
+          val newFrameBalances = currentBalances.useApproved()
+          contractObj.contractIdOpt match {
+            case Some(contractId) if method.useContractAssets =>
+              ctx
+                .useContractAssets(contractId)
+                .map { balancesPerLockup =>
+                  newFrameBalances.remaining
+                    .add(LockupScript.p2c(contractId), balancesPerLockup)
+                    .map(_ => newFrameBalances)
+                }
+            case _ =>
+              Right(Some(newFrameBalances))
+          }
+        }
+      } yield balanceStateOpt
+    } else if (method.useContractAssets) {
+      contractObj.contractIdOpt match {
+        case Some(contractId) =>
+          ctx
+            .useContractAssets(contractId)
+            .map { balancesPerLockup =>
+              val remaining = MutBalances.empty
+              remaining
+                .add(LockupScript.p2c(contractId), balancesPerLockup)
+                .map(_ => MutBalanceState(remaining, MutBalances.empty))
+            }
+        case _ =>
+          Right(None)
+      }
+    } else {
+      // Note that we don't check there is no approved assets for this branch
+      Right(None)
+    }
+  }
+
+  // TODO: remove this once Leman fork is activated
+  private def getNewFrameBalancesStatePreLeman(
+      contractObj: ContractObj[StatefulContext],
+      method: Method[StatefulContext]
+  ): ExeResult[Option[MutBalanceState]] = {
+    if (method.useApprovedAssets) {
       for {
         currentBalances <- getBalanceState()
         balanceStateOpt <- {
@@ -251,7 +301,7 @@ final class StatefulFrame(
           contractObj.contractIdOpt match {
             case Some(contractId) =>
               ctx
-                .useContractAsset(contractId)
+                .useContractAssets(contractId)
                 .map { balancesPerLockup =>
                   newFrameBalances.remaining.add(LockupScript.p2c(contractId), balancesPerLockup)
                   Some(newFrameBalances)
@@ -270,44 +320,82 @@ final class StatefulFrame(
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
       tokenAmount: Option[Val.U256]
-  ): ExeResult[Unit] = {
+  ): ExeResult[ContractId] = {
     for {
-      balanceState <- getBalanceState()
-      balances     <- balanceState.approved.useForNewContract().toRight(Right(InvalidBalances))
-      _            <- ctx.createContract(code, balances, fields, tokenAmount)
-    } yield ()
+      balanceState      <- getBalanceState()
+      balances          <- balanceState.approved.useForNewContract().toRight(Right(InvalidBalances))
+      createdContractId <- ctx.createContract(code, balances, fields, tokenAmount)
+      _ <- ctx.writeLog(
+        Some(createContractEventId),
+        AVector(
+          createContractEventIndex,
+          Val.Address(LockupScript.p2c(createdContractId))
+        )
+      )
+    } yield createdContractId
   }
 
   def destroyContract(address: LockupScript): ExeResult[Unit] = {
     for {
-      contractId   <- obj.getContractId()
-      callerFrame  <- getCallerFrame()
-      _            <- checkCallerForContractDestruction(contractId, callerFrame)
+      contractId  <- obj.getContractId()
+      callerFrame <- getCallerFrame()
+      _ <- callerFrame.checkNonRecursive(contractId, ContractDestructionShouldNotBeCalledFromSelf)
       balanceState <- getBalanceState()
       contractAssets <- balanceState
         .useAll(LockupScript.p2c(contractId))
         .toRight(Right(InvalidBalances))
       _ <- ctx.destroyContract(contractId, contractAssets, address)
+      _ <- ctx.writeLog(
+        Some(destroyContractEventId),
+        AVector(destroyContractEventIndex, Val.Address(LockupScript.p2c(contractId)))
+      )
       _ <- runReturn()
     } yield {
       pc -= 1 // because of the `advancePC` call following this instruction
     }
   }
 
-  private def checkCallerForContractDestruction(
-      contractId: ContractId,
-      callerFrame: Frame[StatefulContext]
+  private def checkNonRecursive(
+      targetContractId: ContractId,
+      error: ExeFailure
   ): ExeResult[Unit] = {
-    if (callerFrame.obj.isScript()) {
+    if (checkNonRecursive(targetContractId)) {
       okay
     } else {
-      callerFrame.obj.getContractId().flatMap { callerContractId =>
-        if (callerContractId == contractId) {
-          failed(ContractDestructionShouldNotBeCalledFromSelf)
+      failed(error)
+    }
+  }
+
+  @tailrec
+  private def checkNonRecursive(
+      targetContractId: ContractId
+  ): Boolean = {
+    obj.contractIdOpt match {
+      case Some(contractId) =>
+        if (contractId == targetContractId) {
+          false
         } else {
-          okay
+          callerFrameOpt match {
+            case Some(frame) => frame.checkNonRecursive(targetContractId)
+            case None        => true
+          }
         }
-      }
+      case None => true // Frame for TxScript
+    }
+  }
+
+  def migrateContract(
+      newContractCode: StatefulContract,
+      newFieldsOpt: Option[AVector[Val]]
+  ): ExeResult[Unit] = {
+    for {
+      contractId  <- obj.getContractId()
+      callerFrame <- getCallerFrame()
+      _           <- callerFrame.checkNonRecursive(contractId, UnexpectedRecursiveCallInMigration)
+      _           <- ctx.migrateContract(contractId, obj, newContractCode, newFieldsOpt)
+      _           <- runReturn() // return immediately as the code is upgraded
+    } yield {
+      pc -= 1
     }
   }
 
@@ -376,8 +464,8 @@ object Frame {
 
   def stateful(
       ctx: StatefulContext,
-      callerFrame: Option[Frame[StatefulContext]],
-      balanceStateOpt: Option[BalanceState],
+      callerFrame: Option[StatefulFrame],
+      balanceStateOpt: Option[MutBalanceState],
       obj: ContractObj[StatefulContext],
       method: Method[StatefulContext],
       operandStack: Stack[Val],
@@ -402,8 +490,8 @@ object Frame {
 
   def stateful(
       ctx: StatefulContext,
-      callerFrame: Option[Frame[StatefulContext]],
-      balanceStateOpt: Option[BalanceState],
+      callerFrame: Option[StatefulFrame],
+      balanceStateOpt: Option[MutBalanceState],
       obj: ContractObj[StatefulContext],
       method: Method[StatefulContext],
       args: AVector[Val],
