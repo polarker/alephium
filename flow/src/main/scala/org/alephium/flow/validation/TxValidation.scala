@@ -32,6 +32,8 @@ trait TxValidation {
   import ValidationStatus._
 
   implicit def groupConfig: GroupConfig
+  implicit def networkConfig: NetworkConfig
+  implicit def logConfig: LogConfig
 
   private def validateTxTemplate(
       tx: TransactionTemplate,
@@ -60,7 +62,7 @@ trait TxValidation {
       failedTx <- FlowUtils
         .convertFailedScriptTx(preOutputs, tx, script)
         .toRight(Right(InvalidRemainingBalancesForFailedScriptTx))
-      _ <- checkStateless(chainIndex, failedTx, checkDoubleSpending = true)
+      _ <- checkStateless(chainIndex, failedTx, checkDoubleSpending = true, blockEnv.getHardFork())
       _ <- checkStatefulExceptTxScript(failedTx, blockEnv, preOutputs.as[TxOutput], None)
       // the tx should succeed
       _ <- validateSuccessfulScriptTxTemplate(
@@ -99,7 +101,12 @@ trait TxValidation {
       )
       exeGas       = gasRemaining0.subUnsafe(exeResult.gasBox)
       successfulTx = FlowUtils.convertSuccessfulTx(tx, exeResult)
-      _ <- checkStateless(chainIndex, successfulTx, checkDoubleSpending = false) // checked already
+      _ <- checkStateless(
+        chainIndex,
+        successfulTx,
+        checkDoubleSpending = false,
+        blockEnv.getHardFork()
+      ) // checked already
       gasRemaining1 <- checkStatefulExceptTxScript(
         successfulTx,
         blockEnv,
@@ -123,7 +130,7 @@ trait TxValidation {
     assume(tx.unsigned.scriptOpt.isEmpty)
     val fullTx = FlowUtils.convertNonScriptTx(tx)
     for {
-      _          <- checkStateless(chainIndex, fullTx, checkDoubleSpending = true)
+      _ <- checkStateless(chainIndex, fullTx, checkDoubleSpending = true, blockEnv.getHardFork())
       preOutputs <- fromGetPreOutputs(groupView.getPreOutputs(tx.unsigned.inputs))
       _ <- checkStateful(
         chainIndex,
@@ -189,7 +196,7 @@ trait TxValidation {
       checkDoubleSpending: Boolean // for block txs, this has been checked in block validation
   ): TxValidationResult[Unit] = {
     for {
-      _          <- checkStateless(chainIndex, tx, checkDoubleSpending)
+      _          <- checkStateless(chainIndex, tx, checkDoubleSpending, blockEnv.getHardFork())
       preOutputs <- fromGetPreOutputs(groupView.getPreOutputs(tx))
       _ <- checkStateful(
         chainIndex,
@@ -235,7 +242,8 @@ trait TxValidation {
   protected[validation] def checkStateless(
       chainIndex: ChainIndex,
       tx: Transaction,
-      checkDoubleSpending: Boolean
+      checkDoubleSpending: Boolean,
+      hardFork: HardFork
   ): TxValidationResult[Unit] = {
     for {
       _ <- checkVersion(tx)
@@ -244,7 +252,7 @@ trait TxValidation {
       _ <- checkOutputNum(tx, chainIndex.isIntraGroup)
       _ <- checkScriptSigNum(tx, chainIndex.isIntraGroup)
       _ <- checkGasBound(tx)
-      _ <- checkOutputStats(tx)
+      _ <- checkOutputStats(tx, hardFork)
       _ <- checkChainIndex(tx, chainIndex)
       _ <- checkUniqueInputs(tx, checkDoubleSpending)
       _ <- checkOutputDataSize(tx)
@@ -293,7 +301,7 @@ trait TxValidation {
   protected[validation] def checkOutputNum(tx: Transaction, isIntraGroup: Boolean): TxValidationResult[Unit]
   protected[validation] def checkScriptSigNum(tx: Transaction, isIntraGroup: Boolean): TxValidationResult[Unit]
   protected[validation] def checkGasBound(tx: TransactionAbstract): TxValidationResult[Unit]
-  protected[validation] def checkOutputStats(tx: Transaction): TxValidationResult[U256]
+  protected[validation] def checkOutputStats(tx: Transaction, hardFork: HardFork): TxValidationResult[U256]
   protected[validation] def getChainIndex(tx: TransactionAbstract): TxValidationResult[ChainIndex]
   protected[validation] def checkChainIndex(tx: Transaction, expected: ChainIndex): TxValidationResult[Unit]
   protected[validation] def checkUniqueInputs(tx: Transaction, checkDoubleSpending: Boolean): TxValidationResult[Unit]
@@ -317,12 +325,19 @@ trait TxValidation {
 object TxValidation {
   import ValidationStatus._
 
-  def build(implicit groupConfig: GroupConfig, networkConfig: NetworkConfig): TxValidation =
+  def build(implicit
+      groupConfig: GroupConfig,
+      networkConfig: NetworkConfig,
+      logConfig: LogConfig
+  ): TxValidation =
     new Impl()
 
   // scalastyle:off number.of.methods
-  class Impl(implicit val groupConfig: GroupConfig, networkConfig: NetworkConfig)
-      extends TxValidation {
+  class Impl(implicit
+      val groupConfig: GroupConfig,
+      val networkConfig: NetworkConfig,
+      val logConfig: LogConfig
+  ) extends TxValidation {
     protected[validation] def checkVersion(tx: Transaction): TxValidationResult[Unit] = {
       if (tx.unsigned.version == DefaultTxVersion) {
         validTx(())
@@ -431,26 +446,36 @@ object TxValidation {
       }
     }
 
-    protected[validation] def checkOutputStats(tx: Transaction): TxValidationResult[U256] = {
+    protected[validation] def checkOutputStats(
+        tx: Transaction,
+        hardFork: HardFork
+    ): TxValidationResult[U256] = {
       for {
-        _      <- checkEachOutputStats(tx)
+        _      <- checkEachOutputStats(tx, hardFork)
         amount <- checkAlphOutputAmount(tx)
       } yield amount
     }
 
     protected[validation] def checkEachOutputStats(
-        tx: Transaction
+        tx: Transaction,
+        hardFork: HardFork
     ): TxValidationResult[Unit] = {
-      val ok = tx.unsigned.fixedOutputs.forall(checkOutputAmount) &&
-        tx.generatedOutputs.forall(checkOutputAmount)
+      val ok = tx.unsigned.fixedOutputs.forall(checkOutputAmount(_, hardFork)) &&
+        tx.generatedOutputs.forall(checkOutputAmount(_, hardFork))
       if (ok) validTx(()) else invalidTx(InvalidOutputStats)
     }
 
     @inline private def checkOutputAmount(
-        output: TxOutput
+        output: TxOutput,
+        hardFork: HardFork
     ): Boolean = {
-      output.amount >= dustUtxoAmount &&
-      output.tokens.length <= maxTokenPerUtxo &&
+      val (dustAmount, numTokenBound) = if (hardFork.isLemanEnabled()) {
+        (dustUtxoAmount, maxTokenPerUtxo)
+      } else {
+        (deprecatedDustUtxoAmount, deprecatedMaxTokenPerUtxo)
+      }
+      output.amount >= dustAmount &&
+      output.tokens.length <= numTokenBound &&
       output.tokens.forall(_._2.nonZero)
     }
 
@@ -482,7 +507,7 @@ object TxValidation {
       }
     }
 
-    @SuppressWarnings(Array("org.wartremover.warts.TraversableOps"))
+    @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
     protected[validation] def getChainIndex(
         tx: TransactionAbstract
     ): TxValidationResult[ChainIndex] = {
@@ -581,20 +606,26 @@ object TxValidation {
         tx: Transaction,
         preOutputs: AVector[TxOutput]
     ): TxValidationResult[Unit] = {
-      if (tx.unsigned.scriptOpt.exists(_.entryMethod.isPayable)) {
-        validTx(()) // the balance is validated in VM execution
-      } else {
-        for {
-          inputBalances  <- computeTokenBalances(preOutputs)
-          outputBalances <- computeTokenBalances(tx.allOutputs)
-          _ <- {
-            val ok = outputBalances.forall { case (tokenId, balance) =>
-              inputBalances.contains(tokenId) && inputBalances(tokenId) == balance
+      for {
+        inputBalances  <- computeTokenBalances(preOutputs)
+        outputBalances <- computeTokenBalances(tx.allOutputs)
+        _ <- {
+          val ok = {
+            if (tx.isEntryMethodPayable) {
+              // Token balance is validated in VM execution, but let's double check here
+              outputBalances.forall { case (tokenId, balance) =>
+                // either new token or no inflation
+                !inputBalances.contains(tokenId) || inputBalances(tokenId) >= balance
+              }
+            } else {
+              outputBalances.forall { case (tokenId, balance) =>
+                inputBalances.contains(tokenId) && inputBalances(tokenId) == balance
+              }
             }
-            if (ok) validTx(()) else invalidTx(InvalidTokenBalance)
           }
-        } yield ()
-      }
+          if (ok) validTx(()) else invalidTx(InvalidTokenBalance)
+        }
+      } yield ()
     }
 
     @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))

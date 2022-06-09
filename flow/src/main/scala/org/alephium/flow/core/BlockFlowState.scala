@@ -22,7 +22,7 @@ import scala.reflect.ClassTag
 import org.alephium.flow.core.BlockChain.TxIndex
 import org.alephium.flow.mempool.MemPool
 import org.alephium.flow.setting.ConsensusSetting
-import org.alephium.io.IOResult
+import org.alephium.io.{IOResult, KeyValueStorage}
 import org.alephium.protocol.{BlockHash, Hash}
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig, NetworkConfig}
 import org.alephium.protocol.model._
@@ -65,6 +65,11 @@ trait BlockFlowState extends FlowTipsUtil {
       val genesisBlock = genesisBlocks(group)(group)
       blockchainWithStateBuilder(genesisBlock, updateState)
     }
+  }
+
+  val logStorage: KeyValueStorage[LogStatesId, LogStates] = {
+    assume(intraGroupBlockChains.nonEmpty, "No intraGroupBlockChains")
+    intraGroupBlockChains.head.worldStateStorage.logStorage
   }
 
   protected[core] val outBlockChains: AVector[AVector[BlockChain]] =
@@ -172,6 +177,12 @@ trait BlockFlowState extends FlowTipsUtil {
       f: BlockChain => IOResult[T]
   ): IOResult[AVector[T]] = {
     outBlockChains.flatMapE { chains => chains.mapE(f) }
+  }
+
+  protected def concatIntraBlockChainsE[T: ClassTag](
+      f: BlockChain => IOResult[T]
+  ): IOResult[AVector[T]] = {
+    intraGroupBlockChains.mapE(f)
   }
 
   def getBlockChain(hash: BlockHash): BlockChain
@@ -513,10 +524,14 @@ object BlockFlowState {
     }
   }
 
-  final case class TxStatus(
+  sealed trait TxStatus
+
+  final case class Confirmed(
       index: TxIndex,
       chainConfirmations: Int,
       fromGroupConfirmations: Int,
       toGroupConfirmations: Int
-  )
+  ) extends TxStatus
+
+  final case object MemPooled extends TxStatus
 }

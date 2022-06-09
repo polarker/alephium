@@ -31,7 +31,7 @@ import org.alephium.protocol.BlockHash
 import org.alephium.protocol.config.{BrokerConfig, ConsensusConfig}
 import org.alephium.protocol.message.{Message, NewBlock, NewHeader}
 import org.alephium.protocol.model.{Block, ChainIndex}
-import org.alephium.protocol.vm.WorldState
+import org.alephium.protocol.vm.{LogConfig, WorldState}
 import org.alephium.util.{ActorRefT, EventBus, EventStream}
 
 object BlockChainHandler {
@@ -42,7 +42,8 @@ object BlockChainHandler {
   )(implicit
       brokerConfig: BrokerConfig,
       consensusConfig: ConsensusConfig,
-      networkSetting: NetworkSetting
+      networkSetting: NetworkSetting,
+      logConfig: LogConfig
   ): Props =
     Props(new BlockChainHandler(blockFlow, chainIndex, eventBus))
 
@@ -50,9 +51,9 @@ object BlockChainHandler {
   final case class Validate(block: Block, broker: ActorRefT[ChainHandler.Event], origin: DataOrigin)
       extends Command
 
-  sealed trait Event                                                         extends ChainHandler.Event
-  final case class BlockAdded(hash: BlockHash)                               extends Event
-  case object BlockAddingFailed                                              extends Event
+  sealed trait Event                           extends ChainHandler.Event
+  final case class BlockAdded(hash: BlockHash) extends Event
+  case object BlockAddingFailed                extends Event
   final case class InvalidBlock(hash: BlockHash, reason: InvalidBlockStatus) extends Event
 
   val blocksTotal: Gauge = Gauge
@@ -87,7 +88,8 @@ class BlockChainHandler(
 )(implicit
     brokerConfig: BrokerConfig,
     val consensusConfig: ConsensusConfig,
-    networkSetting: NetworkSetting
+    networkSetting: NetworkSetting,
+    logConfig: LogConfig
 ) extends ChainHandler[Block, InvalidBlockStatus, Option[WorldState.Cached], BlockValidation](
       blockFlow,
       chainIndex,

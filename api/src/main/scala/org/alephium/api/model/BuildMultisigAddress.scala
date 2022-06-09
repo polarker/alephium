@@ -20,12 +20,9 @@ import org.alephium.protocol.PublicKey
 import org.alephium.protocol.model.Address
 import org.alephium.util.AVector
 
-@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class BuildMultisigAddress(
     keys: AVector[PublicKey],
     mrequired: Int
 )
 
-object BuildMultisigAddress {
-  final case class Result(address: Address)
-}
+final case class BuildMultisigAddressResult(address: Address)

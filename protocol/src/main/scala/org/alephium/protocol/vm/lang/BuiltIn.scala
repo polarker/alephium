@@ -16,6 +16,7 @@
 
 package org.alephium.protocol.vm.lang
 
+import org.alephium.protocol.model.ContractId
 import org.alephium.protocol.vm._
 import org.alephium.protocol.vm.lang.Compiler.{Error, FuncInfo}
 import org.alephium.util.AVector
@@ -89,6 +90,13 @@ object BuiltIn {
       Seq.empty,
       VerifyED25519
     )
+  val ethEcRecover: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "ethEcRecover",
+      Seq(Type.ByteVec, Type.ByteVec),
+      Seq(Type.ByteVec),
+      EthEcRecover
+    )
   val networkId: SimpleStatelessBuiltIn =
     SimpleStatelessBuiltIn("networkId", Seq.empty, Seq(Type.ByteVec), NetworkId)
   val blockTimeStamp: SimpleStatelessBuiltIn =
@@ -97,10 +105,10 @@ object BuiltIn {
     SimpleStatelessBuiltIn("blockTarget", Seq.empty, Seq(Type.U256), BlockTarget)
   val txId: SimpleStatelessBuiltIn =
     SimpleStatelessBuiltIn("txId", Seq.empty, Seq(Type.ByteVec), TxId)
-  val txCaller: SimpleStatelessBuiltIn =
-    SimpleStatelessBuiltIn("txCaller", Seq(Type.U256), Seq(Type.Address), TxCaller)
-  val txCallerSize: SimpleStatelessBuiltIn =
-    SimpleStatelessBuiltIn("txCallerSize", Seq.empty, Seq(Type.U256), TxCallerSize)
+  val txInputAddress: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn("txInputAddress", Seq(Type.U256), Seq(Type.Address), TxInputAddressAt)
+  val txInputsSize: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn("txInputsSize", Seq.empty, Seq(Type.U256), TxInputsSize)
   val verifyAbsoluteLocktime: SimpleStatelessBuiltIn =
     SimpleStatelessBuiltIn(
       "verifyAbsoluteLocktime",
@@ -192,6 +200,152 @@ object BuiltIn {
       IsContractAddress
     )
 
+  val byteVecSlice: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "byteVecSlice",
+      Seq[Type](Type.ByteVec, Type.U256, Type.U256),
+      Seq[Type](Type.ByteVec),
+      ByteVecSlice
+    )
+
+  val encodeToByteVec: BuiltIn[StatelessContext] = new BuiltIn[StatelessContext] {
+    val name: String = "encodeToByteVec"
+
+    override def isVariadic: Boolean = true
+
+    def getReturnType(inputType: Seq[Type]): Seq[Type] = Seq(Type.ByteVec)
+
+    def genCode(inputType: Seq[Type]): Seq[Instr[StatelessContext]] = Seq(Encode)
+  }
+
+  val zeros: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "zeros",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      Zeros
+    )
+
+  val u256To1Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To1Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To1Byte
+    )
+
+  val u256To2Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To2Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To2Byte
+    )
+
+  val u256To4Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To4Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To4Byte
+    )
+
+  val u256To8Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To8Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To8Byte
+    )
+
+  val u256To16Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To16Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To16Byte
+    )
+
+  val u256To32Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256To32Byte",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256To32Byte
+    )
+
+  val u256From1Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From1Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From1Byte
+    )
+
+  val u256From2Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From2Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From2Byte
+    )
+
+  val u256From4Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From4Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From4Byte
+    )
+
+  val u256From8Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From8Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From8Byte
+    )
+
+  val u256From16Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From16Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From16Byte
+    )
+
+  val u256From32Byte: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "u256From32Byte",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.U256),
+      U256From32Byte
+    )
+
+  val byteVecToAddress: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "byteVecToAddress",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.Address),
+      ByteVecToAddress
+    )
+
+  val contractIdToAddress: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "contractIdToAddress",
+      Seq[Type](Type.ByteVec),
+      Seq[Type](Type.Address),
+      ContractIdToAddress
+    )
+
+  val nullAddress: SimpleStatelessBuiltIn =
+    SimpleStatelessBuiltIn(
+      "nullAddress",
+      Seq.empty,
+      Seq[Type](Type.Address),
+      AddressConst(Val.Address(LockupScript.p2c(ContractId.zero)))
+    )
+
   val statelessFuncs: Map[String, FuncInfo[StatelessContext]] = Seq(
     blake2b,
     keccak256,
@@ -205,8 +359,8 @@ object BuiltIn {
     blockTimeStamp,
     blockTarget,
     txId,
-    txCaller,
-    txCallerSize,
+    txInputAddress,
+    txInputsSize,
     verifyAbsoluteLocktime,
     verifyRelativeLocktime,
     toI256,
@@ -214,7 +368,27 @@ object BuiltIn {
     toByteVec,
     size,
     isAssetAddress,
-    isContractAddress
+    isContractAddress,
+    /* Below are functions for Leman hard fork */
+    byteVecSlice,
+    encodeToByteVec,
+    zeros,
+    u256To1Byte,
+    u256To2Byte,
+    u256To4Byte,
+    u256To8Byte,
+    u256To16Byte,
+    u256To32Byte,
+    u256From1Byte,
+    u256From2Byte,
+    u256From4Byte,
+    u256From8Byte,
+    u256From16Byte,
+    u256From32Byte,
+    byteVecToAddress,
+    ethEcRecover,
+    contractIdToAddress,
+    nullAddress
   ).map(f => f.name -> f).toMap
 
   val approveAlph: SimpleStatefulBuiltIn =
@@ -290,11 +464,27 @@ object BuiltIn {
       TransferTokenToSelf
     )
 
+  val burnToken: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "burnToken",
+      Seq[Type](Type.Address, Type.ByteVec, Type.U256),
+      Seq.empty,
+      BurnToken
+    )
+
+  val lockApprovedAssets: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "lockApprovedAssets",
+      Seq[Type](Type.Address, Type.U256),
+      Seq.empty,
+      LockApprovedAssets
+    )
+
   val createContract: SimpleStatefulBuiltIn =
     SimpleStatefulBuiltIn(
       "createContract",
       Seq[Type](Type.ByteVec, Type.ByteVec),
-      Seq.empty,
+      Seq[Type](Type.ByteVec),
       CreateContract
     )
 
@@ -302,7 +492,7 @@ object BuiltIn {
     SimpleStatefulBuiltIn(
       "createContractWithToken",
       Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256),
-      Seq.empty,
+      Seq[Type](Type.ByteVec),
       CreateContractWithToken
     )
 
@@ -310,7 +500,7 @@ object BuiltIn {
     SimpleStatefulBuiltIn(
       "copyCreateContract",
       Seq[Type](Type.ByteVec, Type.ByteVec),
-      Seq.empty,
+      Seq[Type](Type.ByteVec),
       CopyCreateContract
     )
 
@@ -318,8 +508,40 @@ object BuiltIn {
     SimpleStatefulBuiltIn(
       "copyCreateContractWithToken",
       Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256),
-      Seq.empty,
+      Seq[Type](Type.ByteVec),
       CopyCreateContractWithToken
+    )
+
+  val createSubContract: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "createSubContract",
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec),
+      CreateSubContract
+    )
+
+  val createSubContractWithToken: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "createSubContractWithToken",
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
+      Seq[Type](Type.ByteVec),
+      CreateSubContractWithToken
+    )
+
+  val copyCreateSubContract: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "copyCreateSubContract",
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec),
+      CopyCreateSubContract
+    )
+
+  val copyCreateSubContractWithToken: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "copyCreateSubContractWithToken",
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
+      Seq[Type](Type.ByteVec),
+      CopyCreateSubContractWithToken
     )
 
   val destroySelf: SimpleStatefulBuiltIn =
@@ -328,6 +550,22 @@ object BuiltIn {
       Seq[Type](Type.Address),
       Seq.empty,
       DestroySelf
+    )
+
+  val migrate: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "migrate",
+      Seq[Type](Type.ByteVec),
+      Seq.empty,
+      MigrateSimple
+    )
+
+  val migrateWithFields: SimpleStatefulBuiltIn =
+    SimpleStatefulBuiltIn(
+      "migrateWithFields",
+      Seq[Type](Type.ByteVec, Type.ByteVec),
+      Seq.empty,
+      MigrateWithFields
     )
 
   val selfAddress: SimpleStatefulBuiltIn =
@@ -380,6 +618,22 @@ object BuiltIn {
       ContractCodeHash
     )
 
+  val subContractId: BuiltIn[StatefulContext] = new BuiltIn[StatefulContext] {
+    def name: String = "subContractId"
+
+    def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+      if (inputType == Seq(Type.ByteVec)) {
+        Seq(Type.ByteVec)
+      } else {
+        throw Error(s"Invalid argument type for subContractId, ByteVec expected")
+      }
+    }
+
+    def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = {
+      Seq(SelfContractId, ByteVecConcat, Blake2b, Blake2b)
+    }
+  }
+
   val statefulFuncs: Map[String, FuncInfo[StatefulContext]] =
     statelessFuncs ++ Seq(
       approveAlph,
@@ -393,11 +647,19 @@ object BuiltIn {
       transferToken,
       transferTokenFromSelf,
       transferTokenToSelf,
+      burnToken,
+      lockApprovedAssets,
       createContract,
       createContractWithToken,
       copyCreateContract,
       copyCreateContractWithToken,
+      createSubContract,
+      createSubContractWithToken,
+      copyCreateSubContract,
+      copyCreateSubContractWithToken,
       destroySelf,
+      migrate,
+      migrateWithFields,
       selfAddress,
       selfContractId,
       selfTokenId,
@@ -407,6 +669,7 @@ object BuiltIn {
       callerInitialStateHash,
       callerCodeHash,
       contractInitialStateHash,
-      contractCodeHash
+      contractCodeHash,
+      subContractId
     ).map(f => f.name -> f)
 }

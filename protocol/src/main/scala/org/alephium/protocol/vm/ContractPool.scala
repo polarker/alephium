@@ -20,28 +20,47 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 import org.alephium.io.IOError
-import org.alephium.protocol.model.{ContractId, ContractOutput, ContractOutputRef}
+import org.alephium.protocol.model.{ContractId, ContractOutput, ContractOutputRef, HardFork}
 import org.alephium.util.{AVector, EitherF}
 
 trait ContractPool extends CostStrategy {
   import ContractPool._
 
+  def getHardFork(): HardFork
+
   def worldState: WorldState.Staging
 
-  lazy val contractPool = mutable.Map.empty[ContractId, StatefulContractObject]
-  lazy val assetStatus  = mutable.Map.empty[ContractId, ContractAssetStatus]
+  lazy val contractPool      = mutable.Map.empty[ContractId, StatefulContractObject]
+  lazy val assetStatus       = mutable.Map.empty[ContractId, ContractAssetStatus]
+  lazy val contractBlockList = mutable.Set.empty[ContractId]
 
   lazy val contractInputs: ArrayBuffer[(ContractOutputRef, ContractOutput)] = ArrayBuffer.empty
 
-  def loadContractObj(contractKey: ContractId): ExeResult[StatefulContractObject] = {
-    contractPool.get(contractKey) match {
+  def loadContractObj(contractId: ContractId): ExeResult[StatefulContractObject] = {
+    contractPool.get(contractId) match {
       case Some(obj) => Right(obj)
       case None =>
         for {
-          obj <- loadFromWorldState(contractKey)
+          _   <- checkIfBlocked(contractId)
+          obj <- loadFromWorldState(contractId)
           _   <- chargeContractLoad(obj)
-          _   <- add(contractKey, obj)
+          _   <- add(contractId, obj)
         } yield obj
+    }
+  }
+
+  def blockContractLoad(contractId: ContractId): Unit = {
+    if (getHardFork().isLemanEnabled()) {
+      contractBlockList.add(contractId)
+      ()
+    }
+  }
+
+  def checkIfBlocked(contractId: ContractId): ExeResult[Unit] = {
+    if (getHardFork().isLemanEnabled() && contractBlockList.contains(contractId)) {
+      failed(ContractLoadDisallowed(contractId))
+    } else {
+      okay
     }
   }
 
@@ -54,14 +73,14 @@ trait ContractPool extends CostStrategy {
   }
 
   private var contractFieldSize = 0
-  private def add(contractKey: ContractId, obj: StatefulContractObject): ExeResult[Unit] = {
+  private def add(contractId: ContractId, obj: StatefulContractObject): ExeResult[Unit] = {
     contractFieldSize += obj.initialFields.length
     if (contractPool.size >= contractPoolMaxSize) {
       failed(ContractPoolOverflow)
     } else if (contractFieldSize > contractFieldMaxSize) {
       failed(ContractFieldOverflow)
     } else {
-      contractPool.addOne(contractKey -> obj)
+      contractPool.addOne(contractId -> obj)
       okay
     }
   }
@@ -72,17 +91,20 @@ trait ContractPool extends CostStrategy {
         worldState.removeContractState(contractId).left.map(e => Left(IOErrorRemoveContract(e)))
       _ <- markAssetFlushed(contractId)
     } yield {
-      contractPool.remove(contractId)
-      ()
+      removeContractFromCache(contractId)
     }
   }
 
+  def removeContractFromCache(contractId: ContractId): Unit = {
+    contractPool -= contractId
+  }
+
   def updateContractStates(): ExeResult[Unit] = {
-    EitherF.foreachTry(contractPool) { case (contractKey, contractObj) =>
+    EitherF.foreachTry(contractPool) { case (contractId, contractObj) =>
       if (contractObj.isUpdated) {
         for {
           _ <- chargeContractStateUpdate(contractObj)
-          _ <- updateState(contractKey, AVector.from(contractObj.fields))
+          _ <- updateState(contractId, AVector.from(contractObj.fields))
         } yield ()
       } else {
         Right(())
@@ -90,19 +112,19 @@ trait ContractPool extends CostStrategy {
     }
   }
 
-  private def updateState(contractKey: ContractId, state: AVector[Val]): ExeResult[Unit] = {
-    worldState.updateContractUnsafe(contractKey, state).left.map(e => Left(IOErrorUpdateState(e)))
+  private def updateState(contractId: ContractId, state: AVector[Val]): ExeResult[Unit] = {
+    worldState.updateContractUnsafe(contractId, state).left.map(e => Left(IOErrorUpdateState(e)))
   }
 
   // note: we don't charge gas here as it's charged by tx input already
-  def useContractAsset(contractId: ContractId): ExeResult[BalancesPerLockup] = {
+  def useContractAssets(contractId: ContractId): ExeResult[MutBalancesPerLockup] = {
     for {
       _ <- chargeContractInput()
       balances <- worldState
-        .useContractAsset(contractId)
+        .useContractAssets(contractId)
         .map { case (contractOutputRef, contractAsset) =>
           contractInputs.addOne(contractOutputRef -> contractAsset)
-          BalancesPerLockup.from(contractAsset)
+          MutBalancesPerLockup.from(contractAsset)
         }
         .left
         .map(e => Left(IOErrorLoadContract(e)))

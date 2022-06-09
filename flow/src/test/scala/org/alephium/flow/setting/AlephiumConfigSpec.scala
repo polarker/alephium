@@ -31,10 +31,12 @@ import net.ceedubs.ficus.readers.ValueReader
 
 import org.alephium.conf._
 import org.alephium.protocol.ALPH
+import org.alephium.protocol.Hash
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.mining.HashRate
 import org.alephium.protocol.model.{Address, GroupIndex, NetworkId}
-import org.alephium.util.{AlephiumSpec, AVector, Duration, Env}
+import org.alephium.protocol.vm.LogConfig
+import org.alephium.util.{AlephiumSpec, AVector, Duration, Env, Files, Hex, TimeStamp}
 
 class AlephiumConfigSpec extends AlephiumSpec {
   import ConfigUtils._
@@ -53,8 +55,8 @@ class AlephiumConfigSpec extends AlephiumSpec {
   }
 
   it should "load mainnet config" in {
-    lazy val rootPath = Platform.getRootPath(Env.Test)
-    val config        = AlephiumConfig.load(Env.Prod, rootPath, "alephium")
+    val rootPath = Files.tmpDir
+    val config   = AlephiumConfig.load(Env.Prod, rootPath, "alephium")
 
     config.broker.groups is 4
     config.consensus.numZerosAtLeastInHash is 37
@@ -66,6 +68,31 @@ class AlephiumConfigSpec extends AlephiumSpec {
     config.discovery.bootstrap.head is new InetSocketAddress("bootstrap0.alephium.org", 9973)
     config.genesis.allocations.length is 858
     config.genesis.allocations.sumBy(_.amount.value.v) is ALPH.alph(140000000).v
+    config.network.lemanHardForkTimestamp is TimeStamp.unsafe(9000000000000000000L)
+    config.genesisBlocks.flatMap(_.map(_.shortHex)).mkString("-") is
+      "634cb950-2c637231-2a7b9072-077cd3d3-c9844184-ecb22a45-d63f3b36-d392ac97-2c9d4d28-08906609-ced88aaa-b7f0541b-5f78e23c-c7a2b25d-6b8cdade-6fedfc7f"
+  }
+
+  it should "throw error when mainnet config has invalid hardfork timestamp" in new AlephiumConfigFixture {
+    override val configValues: Map[String, Any] = Map(
+      ("alephium.network.network-id", 0),
+      ("alephium.network.leman-hard-fork-timestamp", 0)
+    )
+    assertThrows[IllegalArgumentException](config.network.networkId is NetworkId.AlephiumMainNet)
+  }
+
+  ignore should "throw error when use leman hardfork for mainnet (1)" in new AlephiumConfigFixture {
+    override val configValues: Map[String, Any] = Map(
+      ("alephium.network.network-id", 0),
+      ("alephium.network.leman-hard-fork-timestamp", 0)
+    )
+    intercept[RuntimeException](buildNewConfig()).getMessage is
+      "The leman hardfork is not available for mainnet yet"
+  }
+
+  ignore should "throw error when use leman hardfork for mainnet (2)" in new AlephiumConfigFixture {
+    Configs.parseNetworkId(ConfigFactory.empty()).leftValue is
+      "The leman hardfork is not available for mainnet yet"
   }
 
   it should "load bootstrap config" in {
@@ -186,5 +213,57 @@ class AlephiumConfigSpec extends AlephiumSpec {
     Configs.checkRootPath(rootPath0, NetworkId.AlephiumTestNet).isLeft is true
     Configs.checkRootPath(rootPath1, NetworkId.AlephiumTestNet).isLeft is true
     Configs.checkRootPath(rootPath2, NetworkId.AlephiumTestNet) isE ()
+  }
+
+  it should "load logConfig" in {
+    {
+      info("With addresses")
+      def address(contractId: String) = {
+        Address.contract(Hash.unsafe(Hex.unsafe(contractId)))
+      }
+      val address1 = address("109b05391a240a0d21671720f62fe39138aaca562676053900b348a51e11ba25")
+      val address2 = address("1a21d30793fdf47bf07694017d0d721e94b78dffdc9c8e0b627833b66e5c75d8")
+      val logConfig = LogConfig(
+        enabled = true,
+        indexByTxId = true,
+        contractAddresses = Some(AVector(address1, address2))
+      )
+
+      val configs =
+        s"""
+           |{
+           |  event-log {
+           |    enabled = true
+           |    index-by-tx-id = true
+           |    contract-addresses = [
+           |      ${address1.toBase58}
+           |      ${address2.toBase58}
+           |    ]
+           |  }
+           |}
+           |""".stripMargin
+
+      ConfigFactory
+        .parseString(configs)
+        .as[LogConfig]("event-log")(ValueReader[LogConfig]) is logConfig
+    }
+
+    {
+      info("Without addresses")
+      val logConfig = LogConfig.allEnabled()
+      val configs =
+        s"""
+           |{
+           |  event-log {
+           |    enabled = true
+           |    index-by-tx-id = true
+           |  }
+           |}
+           |""".stripMargin
+
+      ConfigFactory
+        .parseString(configs)
+        .as[LogConfig]("event-log")(ValueReader[LogConfig]) is logConfig
+    }
   }
 }

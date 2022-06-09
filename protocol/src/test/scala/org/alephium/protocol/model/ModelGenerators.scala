@@ -254,7 +254,6 @@ trait TxGenerators
     with TxInputGenerators
     with TokenGenerators {
   implicit def networkConfig: NetworkConfig
-  implicit def compilerConfig: CompilerConfig
 
   lazy val createdHeightGen: Gen[Int] = Gen.choose(ALPH.GenesisHeight, Int.MaxValue)
 
@@ -347,9 +346,9 @@ trait TxGenerators
       }
 
       val initialBalances = Balances(alphAmount, tokenTable.toMap)
-      val outputNum       = min(alphAmount / minAmount, inputs.length * 2, ALPH.MaxTxOutputNum).v.toInt
-      val splitBalances   = split(initialBalances, outputNum)
-      val selectedIndex   = Gen.choose(0, outputNum - 1).sample.get
+      val outputNum = min(alphAmount / minAmount, inputs.length * 2, ALPH.MaxTxOutputNum).v.toInt
+      val splitBalances = split(initialBalances, outputNum)
+      val selectedIndex = Gen.choose(0, outputNum - 1).sample.get
       val outputs = splitBalances.mapWithIndex[AssetOutput] { case (balance, index) =>
         val lockupScript =
           if (index equals selectedIndex) {
@@ -386,7 +385,7 @@ trait TxGenerators
 
   def transactionGenWithPreOutputs(
       inputsNumGen: Gen[Int] = Gen.choose(1, 10),
-      tokensNumGen: Gen[Int] = Gen.choose(0, 10),
+      tokensNumGen: Gen[Int] = Gen.choose(0, maxTokenPerUtxo),
       chainIndexGen: Gen[ChainIndex] = chainIndexGen,
       scriptGen: IndexScriptPairGen = p2pkScriptGen,
       lockupGen: IndexLockupScriptGen = assetLockupGen,
@@ -410,7 +409,7 @@ trait TxGenerators
 
   def transactionGen(
       numInputsGen: Gen[Int] = Gen.choose(1, 10),
-      numTokensGen: Gen[Int] = Gen.choose(0, 10),
+      numTokensGen: Gen[Int] = Gen.choose(0, maxTokenPerUtxo),
       chainIndexGen: Gen[ChainIndex] = chainIndexGen,
       scriptGen: IndexScriptPairGen = p2pkScriptGen,
       lockupGen: IndexLockupScriptGen = assetLockupGen
@@ -534,6 +533,18 @@ trait NoIndexModelGeneratorsLike extends ModelGenerators {
 
   def chainGenOf(length: Int): Gen[AVector[Block]] =
     chainIndexGen.flatMap(chainGenOf(_, length))
+
+  def generateContract()
+      : Gen[(StatefulContract.HalfDecoded, AVector[Val], ContractOutputRef, ContractOutput)] = {
+    lazy val counterStateGen: Gen[AVector[Val]] =
+      Gen.choose(0L, Long.MaxValue / 1000).map(n => AVector(Val.U256(U256.unsafe(n))))
+    for {
+      groupIndex    <- groupIndexGen
+      outputRef     <- contractOutputRefGen(groupIndex)
+      output        <- contractOutputGen(scriptGen = p2cLockupGen(groupIndex))
+      contractState <- counterStateGen
+    } yield (counterContract.toHalfDecoded(), contractState, outputRef, output)
+  }
 }
 
 trait NoIndexModelGenerators
@@ -541,7 +552,6 @@ trait NoIndexModelGenerators
     with GroupConfigFixture.Default
     with ConsensusConfigFixture.Default
     with NetworkConfigFixture.Default
-    with CompilerConfigFixture.Default
 
 object ModelGenerators {
   final case class ScriptPair(

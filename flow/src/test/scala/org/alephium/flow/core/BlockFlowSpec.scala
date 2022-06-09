@@ -24,7 +24,7 @@ import org.scalatest.concurrent.{Eventually, IntegrationPatience}
 
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.core.BlockChain.TxIndex
-import org.alephium.flow.core.BlockFlowState.{BlockCache, TxStatus}
+import org.alephium.flow.core.BlockFlowState.{BlockCache, Confirmed}
 import org.alephium.flow.io.StoragesFixture
 import org.alephium.flow.setting.AlephiumConfigFixture
 import org.alephium.protocol.{ALPH, BlockHash, Generators}
@@ -610,7 +610,7 @@ class BlockFlowSpec extends AlephiumSpec {
         toPrivateKey.publicKey,
         toLockupScript,
         None,
-        ALPH.nanoAlph(1000),
+        dustUtxoAmount,
         None,
         defaultGasPrice,
         defaultUtxoLimit
@@ -624,7 +624,7 @@ class BlockFlowSpec extends AlephiumSpec {
           toPrivateKey.publicKey,
           toLockupScript,
           None,
-          ALPH.nanoAlph(1000),
+          dustUtxoAmount,
           None,
           defaultGasPrice,
           defaultUtxoLimit
@@ -635,8 +635,8 @@ class BlockFlowSpec extends AlephiumSpec {
   }
 
   it should "handle sequential txs" in new FlowFixture {
-    override val configValues                   = Map(("alephium.broker.broker-num", 1))
-    val fromGroup                               = GroupIndex.unsafe(Random.nextInt(groupConfig.groups))
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+    val fromGroup             = GroupIndex.unsafe(Random.nextInt(groupConfig.groups))
     val (fromPriKey, fromPubKey, initialAmount) = genesisKeys(fromGroup.value)
     val fromLockup                              = LockupScript.p2pkh(fromPubKey)
     val theMemPool                              = blockFlow.getMemPool(fromGroup)
@@ -714,6 +714,7 @@ class BlockFlowSpec extends AlephiumSpec {
             ALPH.GenesisTimestamp.plusMinutesUnsafe(1)
           )
           .rightValue
+          .map(_._2)
         val expected = brokerConfig.groupRange.flatMap { fromGroup =>
           (0 until groups0).map { toGroup =>
             AVector(blockFlow.genesisBlocks(fromGroup)(toGroup) -> 0)
@@ -743,7 +744,7 @@ class BlockFlowSpec extends AlephiumSpec {
         block.transactions.foreachWithIndex { case (tx, index) =>
           from is to
           blockFlow.getTxStatus(tx.id, ChainIndex.unsafe(from, to)) isE
-            Some(TxStatus(TxIndex(block.hash, index), 1, 1, 1))
+            Some(Confirmed(TxIndex(block.hash, index), 1, 1, 1))
         }
       }
     }
@@ -773,7 +774,7 @@ class BlockFlowSpec extends AlephiumSpec {
             count(newIndexes0.contains(ChainIndex.unsafe(to, to)))
           blockFlow.getTxStatus(tx.id, ChainIndex.unsafe(from, to)) isE
             Some(
-              TxStatus(
+              Confirmed(
                 TxIndex(block.hash, index),
                 chainConfirmations,
                 fromConfirmations,
@@ -789,7 +790,7 @@ class BlockFlowSpec extends AlephiumSpec {
       blocks.foreachWithIndex { case (block, to) =>
         block.transactions.foreachWithIndex { case (tx, index) =>
           blockFlow.getTxStatus(tx.id, ChainIndex.unsafe(from, to)) isE
-            Some(TxStatus(TxIndex(block.hash, index), 2, 2, 2))
+            Some(Confirmed(TxIndex(block.hash, index), 2, 2, 2))
         }
       }
     }
@@ -808,7 +809,7 @@ class BlockFlowSpec extends AlephiumSpec {
 
       addAndCheck(blockFlow0, block)
       blockFlow0.getTxStatus(block.transactions.head.id, chainIndex) isE
-        Some(TxStatus(TxIndex(block.hash, 0), 1, 1, 1))
+        Some(Confirmed(TxIndex(block.hash, 0), 1, 1, 1))
     }
   }
 
@@ -827,17 +828,17 @@ class BlockFlowSpec extends AlephiumSpec {
 
       addAndCheck(blockFlow0, block0)
       blockFlow0.getTxStatus(block0.transactions.head.id, chainIndex) isE
-        Some(TxStatus(TxIndex(block0.hash, 0), 1, 0, 0))
+        Some(Confirmed(TxIndex(block0.hash, 0), 1, 0, 0))
 
       val block1 = emptyBlock(blockFlow0, ChainIndex.unsafe(from, from))
       addAndCheck(blockFlow0, block1)
       blockFlow0.getTxStatus(block0.transactions.head.id, chainIndex) isE
-        Some(TxStatus(TxIndex(block0.hash, 0), 1, 1, 0))
+        Some(Confirmed(TxIndex(block0.hash, 0), 1, 1, 0))
 
       val block2 = emptyBlock(blockFlow0, ChainIndex.unsafe(to, to))
       addAndCheck(blockFlow0, block2)
       blockFlow0.getTxStatus(block0.transactions.head.id, chainIndex) isE
-        Some(TxStatus(TxIndex(block0.hash, 0), 1, 1, 1))
+        Some(Confirmed(TxIndex(block0.hash, 0), 1, 1, 1))
     }
   }
 

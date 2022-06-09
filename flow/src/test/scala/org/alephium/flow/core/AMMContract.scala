@@ -16,26 +16,32 @@
 
 package org.alephium.flow.core
 
-import org.alephium.flow.setting.CompilerSetting
 import org.alephium.protocol.vm.lang.Compiler
 
 object AMMContract {
-  implicit private val compilerConfig = CompilerSetting(1000)
-
   lazy val swapContract =
     s"""
        |// Simple swap contract purely for testing
        |
        |TxContract Swap(tokenId: ByteVec, mut alphReserve: U256, mut tokenReserve: U256) {
+       |  event AddLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256)
+       |  event SwapToken(buyer: Address, alphAmount: U256)
+       |  event SwapAlph(buyer: Address, tokenAmount: U256)
        |
-       |  pub payable fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
+       |  @using(preapprovedAssets = true, assetsInContract = true)
+       |  pub fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
+       |    emit AddLiquidity(lp, alphAmount, tokenAmount)
+       |
        |    transferAlphToSelf!(lp, alphAmount)
        |    transferTokenToSelf!(lp, tokenId, tokenAmount)
        |    alphReserve = alphReserve + alphAmount
        |    tokenReserve = tokenReserve + tokenAmount
        |  }
        |
-       |  pub payable fn swapToken(buyer: Address, alphAmount: U256) -> () {
+       |  @using(preapprovedAssets = true, assetsInContract = true)
+       |  pub fn swapToken(buyer: Address, alphAmount: U256) -> () {
+       |    emit SwapToken(buyer, alphAmount)
+       |
        |    let tokenAmount = tokenReserve - alphReserve * tokenReserve / (alphReserve + alphAmount)
        |    transferAlphToSelf!(buyer, alphAmount)
        |    transferTokenFromSelf!(buyer, tokenId, tokenAmount)
@@ -43,7 +49,10 @@ object AMMContract {
        |    tokenReserve = tokenReserve - tokenAmount
        |  }
        |
-       |  pub payable fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
+       |  @using(preapprovedAssets = true, assetsInContract = true)
+       |  pub fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
+       |    emit SwapAlph(buyer, tokenAmount)
+       |
        |    let alphAmount = alphReserve - alphReserve * tokenReserve / (tokenReserve + tokenAmount)
        |    transferTokenToSelf!(buyer, tokenId, tokenAmount)
        |    transferAlphFromSelf!(buyer, alphAmount)
@@ -57,18 +66,21 @@ object AMMContract {
   lazy val swapProxyContract: String =
     s"""
        |TxContract SwapProxy(swapContractId: ByteVec, tokenId: ByteVec) {
-       |  pub payable fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
+       |  @using(preapprovedAssets = true)
+       |  pub fn addLiquidity(lp: Address, alphAmount: U256, tokenAmount: U256) -> () {
        |    approveAlph!(lp, alphAmount)
        |    approveToken!(lp, tokenId, tokenAmount)
        |    Swap(swapContractId).addLiquidity(lp, alphAmount, tokenAmount)
        |  }
        |
-       |  pub payable fn swapToken(buyer: Address, alphAmount: U256) -> () {
+       |  @using(preapprovedAssets = true)
+       |  pub fn swapToken(buyer: Address, alphAmount: U256) -> () {
        |    approveAlph!(buyer, alphAmount)
        |    Swap(swapContractId).swapToken(buyer, alphAmount)
        |  }
        |
-       |  pub payable fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
+       |  @using(preapprovedAssets = true)
+       |  pub fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
        |    approveToken!(buyer, tokenId, tokenAmount)
        |    Swap(swapContractId).swapAlph(buyer, tokenAmount)
        |  }

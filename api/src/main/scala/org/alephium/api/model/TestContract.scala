@@ -19,62 +19,104 @@ package org.alephium.api.model
 import akka.util.ByteString
 
 import org.alephium.api.{badRequest, Try}
+import org.alephium.api.model.TestContract._
+import org.alephium.protocol.{vm, ALPH, BlockHash, Hash}
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.protocol.model.{Address, AssetOutput, ContractId, ContractOutput, GroupIndex}
-import org.alephium.protocol.vm
-import org.alephium.protocol.vm.{Val => _, _}
+import org.alephium.protocol.model.{Address, AssetOutput, ContractId, GroupIndex}
+import org.alephium.protocol.vm.{ContractState => _, Val => _, _}
 import org.alephium.util.{AVector, TimeStamp, U256}
 
 @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class TestContract(
-    group: Int = 0,
-    contractId: ContractId = ContractId.zero,
-    code: StatefulContract,
-    initialFields: AVector[Val] = AVector.empty,
-    initialAsset: TestContract.Asset,
-    testMethodIndex: Int = 0,
-    testArgs: AVector[Val] = AVector.empty,
-    existingContracts: AVector[TestContract.ExistingContract] = AVector.empty,
-    inputAssets: AVector[TestContract.InputAsset] = AVector.empty
+    group: Option[Int] = None,
+    blockHash: Option[BlockHash] = None,
+    txId: Option[Hash] = None,
+    address: Option[Address.Contract] = None,
+    bytecode: StatefulContract,
+    initialFields: Option[AVector[Val]] = None,
+    initialAsset: Option[AssetState] = None,
+    testMethodIndex: Option[Int] = None,
+    testArgs: Option[AVector[Val]] = None,
+    existingContracts: Option[AVector[ContractState]] = None,
+    inputAssets: Option[AVector[TestContract.InputAsset]] = None
 ) {
-  def groupIndex(implicit groupConfig: GroupConfig): Try[GroupIndex] = {
-    GroupIndex.from(group).toRight(badRequest("Invalid group index"))
+  def toComplete(): Try[TestContract.Complete] = {
+    val methodIndex = testMethodIndex.getOrElse(testMethodIndexDefault)
+    bytecode.methods.get(methodIndex) match {
+      case Some(method) =>
+        val testCode =
+          if (method.isPublic) {
+            bytecode
+          } else {
+            bytecode.copy(methods =
+              bytecode.methods.replace(methodIndex, method.copy(isPublic = true))
+            )
+          }
+        Right(
+          Complete(
+            group.getOrElse(groupDefault),
+            blockHash.getOrElse(BlockHash.random),
+            txId.getOrElse(Hash.random),
+            address.getOrElse(addressDefault).contractId,
+            code = testCode,
+            originalCodeHash = bytecode.hash,
+            initialFields.getOrElse(AVector.empty),
+            initialAsset.getOrElse(initialAssetDefault),
+            methodIndex,
+            testArgs.getOrElse(AVector.empty),
+            existingContracts.getOrElse(existingContractsDefault),
+            inputAssets.getOrElse(inputAssetsDefault)
+          )
+        )
+      case None => Left(badRequest(s"Invalid method index ${methodIndex}"))
+    }
   }
 }
 
 object TestContract {
-  @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-  final case class Asset(alphAmount: U256, tokens: AVector[Token] = AVector.empty) {
-    def toContractOutput(contractId: ContractId): ContractOutput = {
-      ContractOutput(
-        alphAmount,
-        LockupScript.p2c(contractId),
-        tokens.map(token => (token.id, token.amount))
-      )
-    }
-  }
-
-  object Asset {
-    def from(output: ContractOutput): Asset = {
-      Asset(output.amount, output.tokens.map(pair => Token(pair._1, pair._2)))
-    }
-  }
+  val groupDefault: Int                                = 0
+  val addressDefault: Address.Contract                 = Address.contract(ContractId.zero)
+  val initialFieldsDefault: AVector[Val]               = AVector.empty
+  val testMethodIndexDefault: Int                      = 0
+  val testArgsDefault: AVector[Val]                    = AVector.empty
+  val existingContractsDefault: AVector[ContractState] = AVector.empty
+  val inputAssetsDefault: AVector[InputAsset]          = AVector.empty
+  val initialAssetDefault: AssetState                  = AssetState(ALPH.alph(1))
 
   @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
-  final case class ExistingContract(
-      id: ContractId,
+  final case class Complete(
+      group: Int = groupDefault,
+      blockHash: BlockHash = BlockHash.random,
+      txId: Hash = Hash.random,
+      contractId: ContractId = addressDefault.contractId,
       code: StatefulContract,
-      fields: AVector[Val] = AVector.empty,
-      asset: Asset
-  )
+      originalCodeHash: Hash,
+      initialFields: AVector[Val] = initialFieldsDefault,
+      initialAsset: AssetState = initialAssetDefault,
+      testMethodIndex: Int = testMethodIndexDefault,
+      testArgs: AVector[Val] = testArgsDefault,
+      existingContracts: AVector[ContractState] = existingContractsDefault,
+      inputAssets: AVector[TestContract.InputAsset] = inputAssetsDefault
+  ) {
+    // We return original code hash when testing private methods
+    // We return the new code hash when the test code is migrated
+    def codeHash(hash: Hash): Hash = {
+      val codeMigrated = hash != code.hash
+      if (!codeMigrated) originalCodeHash else hash
+    }
 
-  final case class InputAsset(address: Address.Asset, asset: Asset) {
+    def groupIndex(implicit groupConfig: GroupConfig): Try[GroupIndex] = {
+      GroupIndex.from(group).toRight(badRequest("Invalid group index"))
+    }
+  }
+
+  final case class InputAsset(address: Address.Asset, asset: AssetState) {
     def toAssetOutput: AssetOutput =
       AssetOutput(
         asset.alphAmount,
         address.lockupScript,
         TimeStamp.zero,
-        asset.tokens.map(token => (token.id, token.amount)),
+        asset.flatTokens.map(token => (token.id, token.amount)),
         ByteString.empty
       )
 
@@ -89,7 +131,7 @@ object TestContract {
         U256Const(vm.Val.U256(alphAmount)),
         ApproveAlph
       )
-      val tokenInstrs = asset.tokens.flatMap[Instr[StatefulContext]] { token =>
+      val tokenInstrs = asset.flatTokens.flatMap[Instr[StatefulContext]] { token =>
         AVector(
           addressConst,
           BytesConst(vm.Val.ByteVec(token.id.bytes)),

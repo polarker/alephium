@@ -16,25 +16,26 @@
 
 package org.alephium.protocol.vm.lang
 
-import org.alephium.protocol.vm.StatelessContext
+import org.alephium.protocol.vm._
 import org.alephium.protocol.vm.lang.Ast.Ident
+import org.alephium.util.U256
 
 object ArrayTransformer {
   @inline def arrayVarName(baseName: String, idx: Int): String = s"_$baseName-$idx"
 
-  def initArgVars[Ctx <: StatelessContext](
+  def init[Ctx <: StatelessContext](
       state: Compiler.State[Ctx],
-      args: Seq[Ast.Argument]
-  ): Unit = {
-    args.foreach { case Ast.Argument(ident, tpe, isMutable) =>
-      tpe match {
-        case tpe: Type.FixedSizeArray =>
-          state.addVariable(ident, tpe, isMutable)
-          ArrayRef.init(state, tpe, ident.name, isMutable)
-        case _ =>
-          state.addVariable(ident, tpe, isMutable)
-      }
-    }
+      tpe: Type.FixedSizeArray,
+      baseName: String,
+      isMutable: Boolean,
+      isLocal: Boolean,
+      varInfoBuild: (Type, Boolean, Byte) => Compiler.VarInfo
+  ): ArrayRef[Ctx] = {
+    val offset = ConstantArrayVarOffset[Ctx](state.varIndex)
+    initArrayVars(state, tpe, baseName, isMutable, isLocal, varInfoBuild)
+    val ref = ArrayRef[Ctx](isLocal, tpe, offset)
+    state.addArrayRef(Ident(baseName), isMutable, ref)
+    ref
   }
 
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
@@ -42,19 +43,20 @@ object ArrayTransformer {
       state: Compiler.State[Ctx],
       tpe: Type.FixedSizeArray,
       baseName: String,
-      isMutable: Boolean
-  ): Seq[Ast.Ident] = {
+      isMutable: Boolean,
+      isLocal: Boolean,
+      varInfoBuild: (Type, Boolean, Byte) => Compiler.VarInfo
+  ): Unit = {
     tpe.baseType match {
       case baseType: Type.FixedSizeArray =>
-        (0 until tpe.size).flatMap { idx =>
+        (0 until tpe.size).foreach { idx =>
           val newBaseName = arrayVarName(baseName, idx)
-          initArrayVars(state, baseType, newBaseName, isMutable)
+          initArrayVars(state, baseType, newBaseName, isMutable, isLocal, varInfoBuild)
         }
       case baseType =>
-        (0 until tpe.size).map { idx =>
+        (0 until tpe.size).foreach { idx =>
           val ident = Ast.Ident(arrayVarName(baseName, idx))
-          state.addVariable(ident, baseType, isMutable)
-          ident
+          state.addVariable(ident, baseType, isMutable, isLocal, varInfoBuild)
         }
     }
   }
@@ -70,60 +72,166 @@ object ArrayTransformer {
 
   @inline def checkArrayIndex(index: Int, arraySize: Int): Unit = {
     if (index < 0 || index >= arraySize) {
-      throw Compiler.Error(s"Invalid index: $index, array size: $arraySize")
+      throw Compiler.Error(s"Invalid array index: $index, array size: $arraySize")
     }
   }
 
-  final case class ArrayRef(tpe: Type.FixedSizeArray, vars: Seq[Ast.Ident]) {
-    def isMultiDim(): Boolean = tpe.size != tpe.flattenSize()
+  sealed trait ArrayVarOffset[Ctx <: StatelessContext] {
+    def add(offset: ArrayVarOffset[Ctx]): ArrayVarOffset[Ctx]
+    def add(value: Int): ArrayVarOffset[Ctx]              = add(ConstantArrayVarOffset[Ctx](value))
+    def add(instrs: Seq[Instr[Ctx]]): ArrayVarOffset[Ctx] = add(VariableArrayVarOffset[Ctx](instrs))
+  }
 
-    def subArray(index: Int): ArrayRef = {
-      tpe.baseType match {
-        case baseType: Type.FixedSizeArray =>
-          checkArrayIndex(index, tpe.size)
-          val length = baseType.flattenSize()
-          val offset = index * length
-          ArrayRef(baseType, vars.slice(offset, offset + length))
-        case _ =>
-          throw Compiler.Error(s"Expect multi-dimension array type, have $tpe")
-      }
+  final case class ConstantArrayVarOffset[Ctx <: StatelessContext](value: Int)
+      extends ArrayVarOffset[Ctx] {
+    def add(offset: ArrayVarOffset[Ctx]): ArrayVarOffset[Ctx] = offset match {
+      case ConstantArrayVarOffset(v) => ConstantArrayVarOffset(value + v)
+      case VariableArrayVarOffset(instrs) =>
+        if (value == 0) {
+          offset
+        } else {
+          VariableArrayVarOffset(
+            instrs ++ Seq[Instr[Ctx]](ConstInstr.u256(Val.U256(U256.unsafe(value))), U256Add)
+          )
+        }
     }
+  }
 
+  final case class VariableArrayVarOffset[Ctx <: StatelessContext](instrs: Seq[Instr[Ctx]])
+      extends ArrayVarOffset[Ctx] {
+    def add(offset: ArrayVarOffset[Ctx]): ArrayVarOffset[Ctx] = offset match {
+      case ConstantArrayVarOffset(v) =>
+        if (v == 0) {
+          this
+        } else {
+          VariableArrayVarOffset(
+            instrs ++ Seq[Instr[Ctx]](ConstInstr.u256(Val.U256(U256.unsafe(v))), U256Add)
+          )
+        }
+      case VariableArrayVarOffset(codes) => VariableArrayVarOffset(instrs ++ codes :+ U256Add)
+    }
+  }
+
+  final case class ArrayRef[Ctx <: StatelessContext](
+      isLocal: Boolean,
+      tpe: Type.FixedSizeArray,
+      offset: ArrayVarOffset[Ctx]
+  ) {
     @scala.annotation.tailrec
-    def subArray(indexes: Seq[Int]): ArrayRef = {
+    def subArray(state: Compiler.State[Ctx], indexes: Seq[Ast.Expr[Ctx]]): ArrayRef[Ctx] = {
       if (indexes.isEmpty) {
         this
       } else {
-        subArray(indexes(0)).subArray(indexes.drop(1))
+        subArray(state, indexes(0)).subArray(state, indexes.drop(1))
       }
     }
 
-    @scala.annotation.tailrec
-    def getVariable(indexes: Seq[Int]): Ast.Ident = {
-      assume(indexes.nonEmpty)
-      if (indexes.size == 1) {
-        getVariable(indexes(0))
-      } else {
-        subArray(indexes(0)).getVariable(indexes.drop(1))
+    private def subArray(state: Compiler.State[Ctx], index: Ast.Expr[Ctx]): ArrayRef[Ctx] = {
+      val (baseType, flattenSize) = tpe.baseType match {
+        case baseType: Type.FixedSizeArray =>
+          val length = baseType.flattenSize()
+          (baseType, length)
+        case _ =>
+          throw Compiler.Error(s"Expect multi-dimension array type, have $tpe")
       }
+      val newOffset = calcOffset(state, index) match {
+        case ConstantArrayVarOffset(value) =>
+          offset.add(value * flattenSize)
+        case VariableArrayVarOffset(instrs) =>
+          offset.add(instrs ++ Seq(ConstInstr.u256(Val.U256.unsafe(flattenSize)), U256Mul))
+      }
+      ArrayRef(isLocal, baseType, newOffset)
     }
 
-    def getVariable(index: Int): Ast.Ident = {
-      checkArrayIndex(index, tpe.size)
-      vars(index)
-    }
-  }
-
-  object ArrayRef {
-    def init[Ctx <: StatelessContext](
+    private def calcOffset(
         state: Compiler.State[Ctx],
-        tpe: Type.FixedSizeArray,
-        baseName: String,
-        isMutable: Boolean
-    ): ArrayRef = {
-      val ref = ArrayRef(tpe, initArrayVars(state, tpe, baseName, isMutable))
-      state.addArrayRef(Ident(baseName), ref)
-      ref
+        index: Ast.Expr[Ctx]
+    ): ArrayVarOffset[Ctx] = {
+      Compiler.State.getAndCheckConstantIndex(index) match {
+        case Some(idx) =>
+          checkArrayIndex(idx, tpe.size)
+          ConstantArrayVarOffset(idx)
+        case None =>
+          val instrs = index.genCode(state) ++ Seq(
+            Dup,
+            ConstInstr.u256(Val.U256(U256.unsafe(tpe.size))),
+            U256Lt,
+            Assert
+          )
+          VariableArrayVarOffset(instrs)
+      }
+    }
+
+    @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
+    private def calcOffset(
+        state: Compiler.State[Ctx],
+        indexes: Seq[Ast.Expr[Ctx]]
+    ): ArrayVarOffset[Ctx] = {
+      assume(indexes.nonEmpty)
+      val subArrayRef = subArray(state, indexes.dropRight(1))
+      subArrayRef.offset.add(subArrayRef.calcOffset(state, indexes.last))
+    }
+
+    private def storeArrayIndexVar(
+        state: Compiler.State[Ctx],
+        instrs: Seq[Instr[Ctx]]
+    ): (Ast.Ident, Seq[Instr[Ctx]]) = {
+      val ident = state.getArrayIndexVar()
+      (ident, instrs ++ state.genStoreCode(ident).flatten)
+    }
+
+    def genLoadCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
+      val flattenSize = tpe.flattenSize()
+      offset match {
+        case VariableArrayVarOffset(instrs) =>
+          val (ident, codes) = storeArrayIndexVar(state, instrs)
+          val loadCodes = (0 until flattenSize).flatMap { idx =>
+            val calcOffsetCode = state.genLoadCode(ident) ++ Seq(
+              ConstInstr.u256(Val.U256(U256.unsafe(idx))),
+              U256Add
+            )
+            state.genLoadCode(VariableArrayVarOffset(calcOffsetCode), isLocal)
+          }
+          codes ++ loadCodes
+        case ConstantArrayVarOffset(value) =>
+          (0 until flattenSize).flatMap(idx =>
+            state.genLoadCode(
+              ConstantArrayVarOffset(value + idx),
+              isLocal
+            )
+          )
+      }
+    }
+
+    def genStoreCode(state: Compiler.State[Ctx]): Seq[Seq[Instr[Ctx]]] = {
+      val flattenSize = tpe.flattenSize()
+      offset match {
+        case VariableArrayVarOffset(instrs) =>
+          val (ident, codes) = storeArrayIndexVar(state, instrs)
+          val storeCodes = (0 until flattenSize) map { idx =>
+            val calcOffsetCode = state.genLoadCode(ident) ++ Seq(
+              ConstInstr.u256(Val.U256(U256.unsafe(idx))),
+              U256Add
+            )
+            state.genStoreCode(VariableArrayVarOffset(calcOffsetCode), isLocal)
+          }
+          storeCodes :+ codes
+        case ConstantArrayVarOffset(value) =>
+          (0 until flattenSize) map { idx =>
+            state.genStoreCode(ConstantArrayVarOffset(value + idx), isLocal)
+          }
+      }
+    }
+
+    def genLoadCode(state: Compiler.State[Ctx], indexes: Seq[Ast.Expr[Ctx]]): Seq[Instr[Ctx]] = {
+      state.genLoadCode(calcOffset(state, indexes), isLocal)
+    }
+
+    def genStoreCode(
+        state: Compiler.State[Ctx],
+        indexes: Seq[Ast.Expr[Ctx]]
+    ): Seq[Seq[Instr[Ctx]]] = {
+      Seq(state.genStoreCode(calcOffset(state, indexes), isLocal))
     }
   }
 }

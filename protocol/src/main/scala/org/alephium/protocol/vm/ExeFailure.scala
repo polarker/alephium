@@ -27,8 +27,8 @@ trait ExeFailure extends Product {
   def name: String = productPrefix
 }
 
-final case object CodeSizeTooLarge                             extends ExeFailure
-final case object FieldsSizeTooLarge                           extends ExeFailure
+case object CodeSizeTooLarge                                   extends ExeFailure
+case object FieldsSizeTooLarge                                 extends ExeFailure
 case object ExpectStatefulFrame                                extends ExeFailure
 case object InvalidFinalState                                  extends ExeFailure
 case object StackOverflow                                      extends ExeFailure
@@ -41,6 +41,9 @@ case object SignedDataIsNot32Bytes                             extends ExeFailur
 case object InvalidSignatureFormat                             extends ExeFailure
 case object InvalidSignature                                   extends ExeFailure
 case object InvalidTxInputIndex                                extends ExeFailure
+case object NoTxInput                                          extends ExeFailure
+case object TxInputAddressesAreNotIdentical                    extends ExeFailure
+case object AccessTxInputAddressInContract                     extends ExeFailure
 case object LockTimeOverflow                                   extends ExeFailure
 case object AbsoluteLockTimeVerificationFailed                 extends ExeFailure
 case object RelativeLockTimeVerificationFailed                 extends ExeFailure
@@ -52,12 +55,15 @@ case object InvalidVarIndex                                    extends ExeFailur
 case object InvalidVarType                                     extends ExeFailure
 case object InvalidFieldIndex                                  extends ExeFailure
 case object InvalidFieldLength                                 extends ExeFailure
+case object TooManyFields                                      extends ExeFailure
 case object InvalidFieldType                                   extends ExeFailure
 case object EmptyMethods                                       extends ExeFailure
 final case class InvalidType(v: Val)                           extends ExeFailure
-final case object InvalidMethod                                extends ExeFailure
+case object InvalidMethod                                      extends ExeFailure
+case object InvalidMethodModifierBeforeLeman                   extends ExeFailure
 final case class InvalidMethodIndex(index: Int)                extends ExeFailure
 final case class InvalidMethodArgLength(got: Int, expect: Int) extends ExeFailure
+case object InvalidLengthForEncodeInstr                        extends ExeFailure
 case object InsufficientArgs                                   extends ExeFailure
 case object ExternalPrivateMethodCall                          extends ExeFailure
 case object AssertionFailed                                    extends ExeFailure
@@ -68,24 +74,29 @@ final case class InvalidConversion(from: Val, to: Val.Type)    extends ExeFailur
 final case class SerdeErrorCreateContract(error: SerdeError)   extends ExeFailure
 final case class NonExistContract(contractId: ContractId)      extends ExeFailure
 case object ContractDestructionShouldNotBeCalledFromSelf       extends ExeFailure
+case object PayToContractAddressNotInCallerTrace               extends ExeFailure
 case object InvalidAddressTypeInContractDestroy                extends ExeFailure
 case object NonExistTxInput                                    extends ExeFailure
 case object InvalidContractAddress                             extends ExeFailure
 case object ExpectNonPayableMethod                             extends ExeFailure
 case object ExpectStatefulContractObj                          extends ExeFailure
-case object EmptyBalanceForPayableMethod                       extends ExeFailure
+case object NoBalanceAvailable                                 extends ExeFailure
 case object NotEnoughBalance                                   extends ExeFailure
+case object NoAssetsApproved                                   extends ExeFailure
 case object BalanceOverflow                                    extends ExeFailure
 case object NoAlphBalanceForTheAddress                         extends ExeFailure
 case object NoTokenBalanceForTheAddress                        extends ExeFailure
 case object InvalidBalances                                    extends ExeFailure
+case object LowerThanContractMinimalBalance                    extends ExeFailure
 case object UnableToPayGasFee                                  extends ExeFailure
 case object InvalidOutputBalances                              extends ExeFailure
 case object InvalidTokenId                                     extends ExeFailure
+case object InvalidContractId                                  extends ExeFailure
 case object ExpectAContract                                    extends ExeFailure
 case object OutOfGas                                           extends ExeFailure
 case object ContractPoolOverflow                               extends ExeFailure
 case object ContractFieldOverflow                              extends ExeFailure
+final case class ContractLoadDisallowed(id: ContractId)        extends ExeFailure
 case object ContractAssetAlreadyInUsing                        extends ExeFailure
 case object ContractAssetAlreadyFlushed                        extends ExeFailure
 case object ContractAssetUnloaded                              extends ExeFailure
@@ -93,12 +104,30 @@ case object EmptyContractAsset                                 extends ExeFailur
 case object NoCaller                                           extends ExeFailure
 final case class NegativeTimeStamp(millis: Long)               extends ExeFailure
 final case class InvalidTarget(value: BigInteger)              extends ExeFailure
+case object InvalidBytesSliceArg                               extends ExeFailure
+case object InvalidBytesSize                                   extends ExeFailure
+case object InvalidSizeForZeros                                extends ExeFailure
+final case class SerdeErrorByteVecToAddress(error: SerdeError) extends ExeFailure
+case object FailedInRecoverEthAddress                          extends ExeFailure
+case object UnexpectedRecursiveCallInMigration                 extends ExeFailure
+case object InvalidAssetAddress                                extends ExeFailure
+case object UnexpectedApprovedAssets                           extends ExeFailure
+final case class ContractAlreadyExists(contractId: ContractId) extends ExeFailure
+
+final case class UncaughtKeyNotFoundError(error: IOError.KeyNotFound) extends ExeFailure
+final case class UncaughtSerdeError(error: IOError.Serde)             extends ExeFailure
+
+final case class InactiveInstr[-Ctx <: StatelessContext](instr: Instr[Ctx]) extends ExeFailure
+final case class PartiallyEnabledInstr[-Ctx <: StatelessContext](instr: Instr[Ctx])
+    extends ExeFailure
 
 sealed trait IOFailure extends Product {
   def error: IOError
   def name: String = productPrefix
 }
-final case class IOErrorUpdateState(error: IOError)    extends IOFailure
-final case class IOErrorRemoveContract(error: IOError) extends IOFailure
-final case class IOErrorLoadContract(error: IOError)   extends IOFailure
-final case class IOErrorLoadOutputs(error: IOError)    extends IOFailure
+final case class IOErrorUpdateState(error: IOError)     extends IOFailure
+final case class IOErrorRemoveContract(error: IOError)  extends IOFailure
+final case class IOErrorLoadContract(error: IOError)    extends IOFailure
+final case class IOErrorLoadOutputs(error: IOError)     extends IOFailure
+final case class IOErrorMigrateContract(error: IOError) extends IOFailure
+final case class IOErrorWriteLog(error: IOError)        extends IOFailure
