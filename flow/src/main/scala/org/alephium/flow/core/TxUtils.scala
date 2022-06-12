@@ -20,7 +20,7 @@ import scala.annotation.tailrec
 
 import TxUtils._
 
-import org.alephium.flow.core.BlockFlowState.{BlockCache, TxStatus}
+import org.alephium.flow.core.BlockFlowState.{BlockCache, Confirmed, MemPooled, TxStatus}
 import org.alephium.flow.core.FlowUtils._
 import org.alephium.flow.core.UtxoSelectionAlgo.{AssetAmounts, ProvidedGas}
 import org.alephium.flow.gasestimation._
@@ -142,13 +142,13 @@ trait TxUtils { Self: FlowUtils =>
       utxosLimit: Int
   ): IOResult[Either[String, UnsignedTransaction]] = {
     val totalAmountsE = for {
-      _               <- checkOutputInfos(fromLockupScript.groupIndex, outputInfos)
-      _               <- checkProvidedGas(gasOpt, gasPrice)
-      totalAlphAmount <- checkTotalAlphAmount(outputInfos.map(_.alphAmount))
+      _                   <- checkOutputInfos(fromLockupScript.groupIndex, outputInfos)
+      _                   <- checkProvidedGas(gasOpt, gasPrice)
+      totalAttoAlphAmount <- checkTotalAttoAlphAmount(outputInfos.map(_.attoAlphAmount))
       totalAmountPerToken <- UnsignedTransaction.calculateTotalAmountPerToken(
         outputInfos.flatMap(_.tokens)
       )
-    } yield (totalAlphAmount, totalAmountPerToken)
+    } yield (totalAttoAlphAmount, totalAmountPerToken)
 
     totalAmountsE match {
       case Right((totalAmount, totalAmountPerToken)) =>
@@ -207,7 +207,7 @@ trait TxUtils { Self: FlowUtils =>
         _ <- checkUTXOsInSameGroup(utxoRefs)
         _ <- checkOutputInfos(fromLockupScript.groupIndex, outputInfos)
         _ <- checkProvidedGas(gasOpt, gasPrice)
-        _ <- checkTotalAlphAmount(outputInfos.map(_.alphAmount))
+        _ <- checkTotalAttoAlphAmount(outputInfos.map(_.attoAlphAmount))
         _ <- UnsignedTransaction.calculateTotalAmountPerToken(
           outputInfos.flatMap(_.tokens)
         )
@@ -305,7 +305,7 @@ trait TxUtils { Self: FlowUtils =>
       chain.getTxStatusUnsafe(txId).flatMap { chainStatus =>
         val confirmations = chainStatus.confirmations
         if (chainIndex.isIntraGroup) {
-          Some(TxStatus(chainStatus.index, confirmations, confirmations, confirmations))
+          Some(Confirmed(chainStatus.index, confirmations, confirmations, confirmations))
         } else {
           val confirmHash = chainStatus.index.hash
           val fromGroupConfirmations =
@@ -313,7 +313,12 @@ trait TxUtils { Self: FlowUtils =>
           val toGroupConfirmations =
             getToGroupConfirmationsUnsafe(confirmHash, chainIndex)
           Some(
-            TxStatus(chainStatus.index, confirmations, fromGroupConfirmations, toGroupConfirmations)
+            Confirmed(
+              chainStatus.index,
+              confirmations,
+              fromGroupConfirmations,
+              toGroupConfirmations
+            )
           )
         }
       }
@@ -389,6 +394,61 @@ trait TxUtils { Self: FlowUtils =>
       groupView <- getImmutableGroupView(groupIndex)
       failedTxs <- txs.filterE(tx => groupView.getPreOutputs(tx.unsigned.inputs).map(_.isEmpty))
     } yield failedTxs
+  }
+
+  def searchLocalTransactionStatus(
+      txId: Hash,
+      chainIndexes: AVector[ChainIndex]
+  ): Either[String, Option[TxStatus]] = {
+    @tailrec
+    def rec(
+        indexes: AVector[ChainIndex],
+        currentRes: Either[String, Option[TxStatus]]
+    ): Either[String, Option[TxStatus]] = {
+      indexes.headOption match {
+        case Some(index) =>
+          val res = getTransactionStatus(txId, index)
+          res match {
+            case Right(None) => rec(indexes.tail, res)
+            case Right(_)    => res
+            case Left(_)     => res
+          }
+        case None =>
+          currentRes
+      }
+    }
+    rec(chainIndexes, Right(None))
+  }
+
+  def getTransactionStatus(
+      txId: Hash,
+      chainIndex: ChainIndex
+  ): Either[String, Option[TxStatus]] = {
+    if (brokerConfig.contains(chainIndex.from)) {
+      for {
+        status <- getTxStatus(txId, chainIndex)
+          .map {
+            case Some(status) => Some(status)
+            case None         => if (isInMemPool(txId, chainIndex)) Some(MemPooled) else None
+          }
+          .left
+          .map(_.toString)
+      } yield status
+    } else {
+      Right(None)
+    }
+  }
+
+  def isInMemPool(txId: Hash, chainIndex: ChainIndex): Boolean = {
+    Self.blockFlow.getMemPool(chainIndex).contains(chainIndex, txId)
+  }
+
+  def checkTxChainIndex(chainIndex: ChainIndex, tx: Hash): Either[String, Unit] = {
+    if (brokerConfig.contains(chainIndex.from)) {
+      Right(())
+    } else {
+      Left(s"${tx.toHexString} belongs to other groups")
+    }
   }
 
   private def checkProvidedGas(gasOpt: Option[GasBox], gasPrice: GasPrice): Either[String, Unit] = {
@@ -482,17 +542,17 @@ object TxUtils {
       gasPrice: GasPrice
   ): Either[String, (AVector[TxOutputInfo], GasBox)] = {
     for {
-      totalAmount <- checkTotalAlphAmount(utxos.map(_.amount))
+      totalAmount <- checkTotalAttoAlphAmount(utxos.map(_.amount))
       totalAmountPerToken <- UnsignedTransaction.calculateTotalAmountPerToken(
         utxos.flatMap(_.tokens)
       )
       groupsOfTokens    = (totalAmountPerToken.length + maxTokenPerUtxo - 1) / maxTokenPerUtxo
       extraNumOfOutputs = Math.max(0, groupsOfTokens - 1)
-      gas               = gasOpt.getOrElse(GasEstimation.sweepAddress(utxos.length, extraNumOfOutputs + 1))
+      gas = gasOpt.getOrElse(GasEstimation.sweepAddress(utxos.length, extraNumOfOutputs + 1))
       totalAmountWithoutGas <- totalAmount
         .sub(gasPrice * gas)
         .toRight("Not enough balance for gas fee")
-      amountRequiredForExtraOutputs <- minimalAlphAmountPerTxOutput(maxTokenPerUtxo)
+      amountRequiredForExtraOutputs <- minimalAttoAlphAmountPerTxOutput(maxTokenPerUtxo)
         .mul(U256.unsafe(extraNumOfOutputs))
         .toRight("Too many tokens")
       amountOfFirstOutput <- totalAmountWithoutGas
@@ -500,7 +560,7 @@ object TxUtils {
         .toRight("Not enough ALPH balance for transaction outputs")
       firstOutputTokensNum = getFirstOutputTokensNum(totalAmountPerToken.length)
       _ <- amountOfFirstOutput
-        .sub(minimalAlphAmountPerTxOutput(firstOutputTokensNum))
+        .sub(minimalAttoAlphAmountPerTxOutput(firstOutputTokensNum))
         .toRight("Not enough ALPH balance for transaction outputs")
     } yield {
       val firstTokens  = totalAmountPerToken.take(firstOutputTokensNum)
@@ -509,7 +569,7 @@ object TxUtils {
       val restOfOutputs = restOfTokens.map { tokens =>
         TxOutputInfo(
           toLockupScript,
-          minimalAlphAmountPerTxOutput(maxTokenPerUtxo),
+          minimalAttoAlphAmountPerTxOutput(maxTokenPerUtxo),
           tokens,
           lockTimeOpt
         )
@@ -530,7 +590,7 @@ object TxUtils {
     }
   }
 
-  private[core] def checkTotalAlphAmount(
+  private[core] def checkTotalAttoAlphAmount(
       amounts: AVector[U256]
   ): Either[String, U256] = {
     amounts.foldE(U256.Zero) { case (acc, amount) =>

@@ -67,10 +67,6 @@ alephium {
     max-clique-from-same-ip = 2
   }
 
-  compiler {
-    loop-unrolling-limit = 1000
-  }
-
   api {
     network-interface = "127.0.0.1"
     blockflow-fetch-max-age = 30 minutes
@@ -89,6 +85,7 @@ alephium {
     clean-pending-pool-frequency = 60 minutes
     batch-broadcast-txs-frequency = 500 milli
     batch-download-txs-frequency = 500 milli
+    auto-mine-for-dev = false
   }
 
   wallet {
@@ -98,6 +95,10 @@ alephium {
 
   node {
     db-sync-write = false
+    event-log {
+      enabled = true
+      index-by-tx-id = true
+    }
   }
 }
 

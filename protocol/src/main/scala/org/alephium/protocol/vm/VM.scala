@@ -20,6 +20,7 @@ import scala.annotation.tailrec
 
 import akka.util.ByteString
 
+import org.alephium.protocol.config.NetworkConfig
 import org.alephium.protocol.model._
 import org.alephium.util.{AVector, EitherF}
 
@@ -54,7 +55,7 @@ sealed abstract class VM[Ctx <: StatelessContext](
   def startPayableFrame(
       obj: ContractObj[Ctx],
       ctx: Ctx,
-      balanceState: BalanceState,
+      balanceState: MutBalanceState,
       method: Method[Ctx],
       args: AVector[Val],
       operandStack: Stack[Val],
@@ -73,7 +74,7 @@ sealed abstract class VM[Ctx <: StatelessContext](
       startPayableFrame(
         obj,
         ctx,
-        BalanceState.from(balances),
+        MutBalanceState.from(balances),
         method,
         args,
         operandStack,
@@ -95,7 +96,7 @@ sealed abstract class VM[Ctx <: StatelessContext](
       _      <- if (method.isPublic) okay else failed(ExternalPrivateMethodCall)
       frame <- {
         val returnTo = returnToOpt.getOrElse(VM.noReturnTo)
-        if (method.isPayable) {
+        if (method.usePreapprovedAssets) {
           startPayableFrame(obj, ctx, method, args, operandStack, returnTo)
         } else {
           startNonPayableFrame(obj, ctx, method, args, operandStack, returnTo)
@@ -112,6 +113,7 @@ sealed abstract class VM[Ctx <: StatelessContext](
       returnToOpt: Option[AVector[Val] => ExeResult[Unit]]
   ): ExeResult[Unit] = {
     for {
+      _          <- obj.code.checkAssetsModifier(ctx)
       startFrame <- startFrame(obj, ctx, methodIndex, args, operandStack, returnToOpt)
       _          <- frameStack.push(startFrame)
       _          <- executeFrames()
@@ -175,6 +177,21 @@ object VM {
       initialGas.use(GasCall.fieldsBaseGas(estimatedSize))
     }
   }
+
+  def checkContractAttoAlphAmounts(
+      outputs: Iterable[TxOutput],
+      hardFork: HardFork
+  ): ExeResult[Unit] = {
+    val allChecked = outputs.forall {
+      case output: ContractOutput => output.amount >= minimalAlphInContract
+      case _                      => true
+    }
+    if (hardFork.isLemanEnabled() && !allChecked) {
+      failed(LowerThanContractMinimalBalance)
+    } else {
+      okay
+    }
+  }
 }
 
 final class StatelessVM(
@@ -199,7 +216,7 @@ final class StatelessVM(
   def startPayableFrame(
       obj: ContractObj[StatelessContext],
       ctx: StatelessContext,
-      balanceState: BalanceState,
+      balanceState: MutBalanceState,
       method: Method[StatelessContext],
       args: AVector[Val],
       operandStack: Stack[Val],
@@ -227,7 +244,7 @@ final class StatefulVM(
   def startPayableFrame(
       obj: ContractObj[StatefulContext],
       ctx: StatefulContext,
-      balanceState: BalanceState,
+      balanceState: MutBalanceState,
       method: Method[StatefulContext],
       args: AVector[Val],
       operandStack: Stack[Val],
@@ -239,7 +256,7 @@ final class StatefulVM(
       currentFrame: Frame[StatefulContext],
       previousFrame: Frame[StatefulContext]
   ): ExeResult[Unit] = {
-    if (currentFrame.method.isPayable) {
+    if (currentFrame.method.usesAssets()) {
       val resultOpt = for {
         currentBalances  <- currentFrame.balanceStateOpt
         previousBalances <- previousFrame.balanceStateOpt
@@ -255,7 +272,7 @@ final class StatefulVM(
     }
   }
 
-  protected def mergeBack(previous: Balances, current: Balances): Option[Unit] = {
+  protected def mergeBack(previous: MutBalances, current: MutBalances): Option[Unit] = {
     @tailrec
     def iter(index: Int): Option[Unit] = {
       if (index >= current.all.length) {
@@ -284,7 +301,7 @@ final class StatefulVM(
   }
 
   private def cleanBalances(lastFrame: Frame[StatefulContext]): ExeResult[Unit] = {
-    if (lastFrame.method.isPayable) {
+    if (lastFrame.method.usesAssets()) {
       val resultOpt = for {
         balances <- lastFrame.balanceStateOpt
         _        <- ctx.outputBalances.merge(balances.approved)
@@ -303,7 +320,7 @@ final class StatefulVM(
     }
   }
 
-  private def outputGeneratedBalances(outputBalances: Balances): ExeResult[Unit] = {
+  private def outputGeneratedBalances(outputBalances: MutBalances): ExeResult[Unit] = {
     EitherF.foreachTry(outputBalances.all) { case (lockupScript, balances) =>
       balances.toTxOutput(lockupScript).flatMap {
         case Some(output) => ctx.generateOutput(output)
@@ -322,7 +339,7 @@ object StatelessVM {
       initialGas: GasBox,
       script: StatelessScript,
       args: AVector[Val]
-  ): ExeResult[AssetScriptExecution] = {
+  )(implicit networkConfig: NetworkConfig): ExeResult[AssetScriptExecution] = {
     val context = StatelessContext(blockEnv, txEnv, initialGas)
     val obj     = script.toObject
     execute(context, obj, args)
@@ -370,32 +387,8 @@ object StatefulVM {
       preOutputs: AVector[AssetOutput],
       script: StatefulScript,
       gasRemaining: GasBox
-  ): ExeResult[TxScriptExecution] = {
-    runTxScript(worldState, blockEnv, tx, Some(preOutputs), script, gasRemaining)
-  }
-
-  def runTxScript(
-      worldState: WorldState.Staging,
-      blockEnv: BlockEnv,
-      tx: TransactionAbstract,
-      preOutputsOpt: Option[AVector[AssetOutput]],
-      script: StatefulScript,
-      gasRemaining: GasBox
-  ): ExeResult[TxScriptExecution] = {
-    for {
-      context <- StatefulContext.build(blockEnv, tx, gasRemaining, worldState, preOutputsOpt)
-      result  <- runTxScript(context, script)
-    } yield result
-  }
-
-  def runTxScript(
-      worldState: WorldState.Staging,
-      blockEnv: BlockEnv,
-      txEnv: TxEnv,
-      script: StatefulScript,
-      gasRemaining: GasBox
-  ): ExeResult[TxScriptExecution] = {
-    val context = StatefulContext(blockEnv, txEnv, worldState, gasRemaining)
+  )(implicit networkConfig: NetworkConfig, logConfig: LogConfig): ExeResult[TxScriptExecution] = {
+    val context = StatefulContext(blockEnv, tx, gasRemaining, worldState, preOutputs)
     runTxScript(context, script)
   }
 
@@ -422,6 +415,7 @@ object StatefulVM {
   private def prepareResult(context: StatefulContext): ExeResult[TxScriptExecution] = {
     for {
       _ <- checkRemainingSignatures(context)
+      _ <- VM.checkContractAttoAlphAmounts(context.generatedOutputs, context.getHardFork())
     } yield {
       TxScriptExecution(
         context.gasRemaining,
@@ -440,7 +434,7 @@ object StatefulVM {
     }
   }
 
-  private def default(ctx: StatefulContext): StatefulVM = {
+  private[vm] def default(ctx: StatefulContext): StatefulVM = {
     new StatefulVM(ctx, Stack.ofCapacity(frameStackMaxSize), Stack.ofCapacity(opStackMaxSize))
   }
 

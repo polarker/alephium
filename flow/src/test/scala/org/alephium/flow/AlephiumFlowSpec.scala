@@ -574,6 +574,21 @@ trait FlowFixture
     print(txOutputs.map(show).mkString("", ";", "\n"))
   }
 
+  def getTokenBalance(
+      blockFlow: BlockFlow,
+      lockupScript: LockupScript.Asset,
+      tokenId: TokenId
+  ): U256 = {
+    brokerConfig.contains(lockupScript.groupIndex) is true
+    val utxos = blockFlow.getUsableUtxos(lockupScript, defaultUtxoLimit).rightValue
+    utxos.fold(U256.Zero) { case (acc, utxo) =>
+      val sum = utxo.output.tokens.fold(U256.Zero) { case (acc, (id, amount)) =>
+        if (tokenId equals id) acc.addUnsafe(amount) else acc
+      }
+      acc.addUnsafe(sum)
+    }
+  }
+
   def checkState(
       blockFlow: BlockFlow,
       chainIndex: ChainIndex,
@@ -583,7 +598,7 @@ trait FlowFixture
       numAssets: Int = 2,
       numContracts: Int = 2
   ): Assertion = {
-    val worldState    = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
+    val worldState = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
     val contractState = worldState.getContractState(key).fold(throw _, identity)
 
     contractState.fields is fields
@@ -603,7 +618,13 @@ trait FlowFixture
     if (chainIndex.isIntraGroup) {
       block.nonCoinbase.foreach { tx =>
         tx.allOutputs.foreachWithIndex { case (output, index) =>
-          val outputRef = TxOutputRef.from(output, TxOutputRef.key(tx.id, index))
+          val outputRef = output match {
+            case assetOutput: AssetOutput =>
+              TxOutputRef.from(assetOutput, TxOutputRef.key(tx.id, index))
+            case contractOutput: ContractOutput =>
+              ContractOutputRef.unsafe(contractOutput.hint, contractOutput.lockupScript.contractId)
+          }
+
           worldState.existOutput(outputRef) isE true
         }
       }
@@ -615,7 +636,7 @@ trait FlowFixture
     val worldState  = blockFlow.getBestPersistedWorldState(chainIndex.from).rightValue
     val prevOutputs = worldState.getPreOutputs(tx0).rightValue
     val blockEnv =
-      BlockEnv(networkConfig.networkId, TimeStamp.now(), consensusConfig.maxMiningTarget)
+      BlockEnv(networkConfig.networkId, TimeStamp.now(), consensusConfig.maxMiningTarget, None)
     val txValidation = TxValidation.build
     val gasLeft      = txValidation.checkGasAndWitnesses(tx0, prevOutputs, blockEnv).rightValue
     val gasUsed      = initialGas.use(gasLeft).rightValue
@@ -633,7 +654,7 @@ trait FlowFixture
       code: StatefulContract,
       initialState: AVector[Val],
       lockupScript: LockupScript.Asset,
-      alphAmount: U256,
+      attoAlphAmount: U256,
       newTokenAmount: Option[U256] = None
   ): StatefulScript = {
     val address  = Address.Asset(lockupScript)
@@ -646,10 +667,8 @@ trait FlowFixture
     val scriptRaw =
       s"""
          |TxScript Foo {
-         |  pub payable fn main() -> () {
-         |    approveAlph!(@${address.toBase58}, ${alphAmount.v})
-         |    $creation
-         |  }
+         |  approveAlph!(@${address.toBase58}, ${attoAlphAmount.v})
+         |  $creation
          |}
          |""".stripMargin
     Compiler.compileTxScript(scriptRaw).rightValue

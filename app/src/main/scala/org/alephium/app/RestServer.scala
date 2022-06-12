@@ -60,11 +60,13 @@ class RestServer(
 
   override val maybeApiKey = apiConfig.apiKey
 
-  private val swaggerUiRoute = new SwaggerVertx(openApiJson(openAPI, maybeApiKey.isEmpty)).route
+  private val swaggerUiRoute = new SwaggerVertx(openApiJson(openAPI, maybeApiKey.isEmpty)).route(_)
 
   private val blockFlowRoute: AVector[Router => Route] =
     AVector(
       getNodeInfoLogic,
+      getNodeVersionLogic,
+      getChainParamsLogic,
       getSelfCliqueLogic,
       getInterCliquePeerInfoLogic,
       getDiscoveredNeighborsLogic,
@@ -92,18 +94,24 @@ class RestServer(
       buildMultisigLogic,
       submitMultisigTransactionLogic,
       getTransactionStatusLogic,
+      getTransactionStatusLocalLogic,
       decodeUnsignedTransactionLogic,
       minerActionLogic,
       minerListAddressesLogic,
       minerUpdateAddressesLogic,
       compileScriptLogic,
-      buildScriptLogic,
+      buildExecuteScriptTxLogic,
       compileContractLogic,
-      buildContractLogic,
+      buildDeployContractTxLogic,
       contractStateLogic,
+      testContractLogic,
+      callContractLogic,
       exportBlocksLogic,
       verifySignatureLogic,
       checkHashIndexingLogic,
+      getContractEventsLogic,
+      getContractEventsCurrentCountLogic,
+      getEventsByTxIdLogic,
       metricsLogic
     ).map(route(_)) :+ swaggerUiRoute
 

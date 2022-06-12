@@ -18,11 +18,10 @@ val scalastyleTestCfgFile = "project/scalastyle-test-config.xml"
 lazy val root: Project = Project("alephium-scala-blockflow", file("."))
   .settings(commonSettings: _*)
   .settings(
-    name := "alephium",
-    unmanagedSourceDirectories := Seq(),
-    scalastyle := {},
-    scalastyle in Test := {},
-    publish / skip := true
+    name              := "alephium",
+    scalastyle        := {},
+    Test / scalastyle := {},
+    publish / skip    := true
   )
   .aggregate(
     macros,
@@ -53,10 +52,10 @@ def project(path: String): Project = {
       Defaults.itSettings,
       inConfig(IntegrationTest)(org.scalafmt.sbt.ScalafmtPlugin.scalafmtConfigSettings),
       Compile / scalastyleConfig := root.base / scalastyleCfgFile,
-      Test / scalastyleConfig := root.base / scalastyleTestCfgFile,
+      Test / scalastyleConfig    := root.base / scalastyleTestCfgFile,
       inConfig(IntegrationTest)(ScalastylePlugin.rawScalastyleSettings()),
-      IntegrationTest / scalastyleConfig := root.base / scalastyleTestCfgFile,
-      IntegrationTest / scalastyleTarget := target.value / "scalastyle-it-results.xml",
+      IntegrationTest / scalastyleConfig  := root.base / scalastyleTestCfgFile,
+      IntegrationTest / scalastyleTarget  := target.value / "scalastyle-it-results.xml",
       IntegrationTest / scalastyleSources := (IntegrationTest / unmanagedSourceDirectories).value
     )
 }
@@ -64,7 +63,7 @@ def project(path: String): Project = {
 lazy val macros = project("macros")
   .settings(
     libraryDependencies += `scala-reflect`(scalaVersion.value),
-    wartremoverErrors in (Compile, compile) := Seq()
+    Compile / compile / wartremoverErrors := Seq()
   )
 
 lazy val util = project("util")
@@ -80,8 +79,8 @@ lazy val util = project("util")
 
 lazy val serde = project("serde")
   .settings(
-    Compile / sourceGenerators += (sourceManaged in Compile).map(Boilerplate.genSrc).taskValue,
-    Test / sourceGenerators += (sourceManaged in Test).map(Boilerplate.genTest).taskValue
+    Compile / sourceGenerators += (Compile / sourceManaged).map(Boilerplate.genSrc).taskValue,
+    Test / sourceGenerators += (Test / sourceManaged).map(Boilerplate.genTest).taskValue
   )
   .dependsOn(util % "test->test;compile->compile")
 
@@ -105,7 +104,13 @@ lazy val rpc = project("rpc")
   .dependsOn(json, util % "test->test;compile->compile")
 
 lazy val api = project("api")
-  .dependsOn(json, protocol, crypto, serde, util % "test->test;compile->compile")
+  .dependsOn(
+    json,
+    protocol % "test->test;compile->compile",
+    crypto,
+    serde,
+    util % "test->test;compile->compile"
+  )
   .settings(
     libraryDependencies ++= Seq(
       `scala-logging`,
@@ -128,18 +133,21 @@ lazy val app = mainProject("app")
   )
   .enablePlugins(sbtdocker.DockerPlugin, BuildInfoPlugin)
   .settings(
-    mainClass in assembly := Some("org.alephium.app.Boot"),
-    assemblyJarName in assembly := s"alephium-${version.value}.jar",
-    test in assembly := {},
-    assemblyMergeStrategy in assembly := {
+    assembly / mainClass       := Some("org.alephium.app.Boot"),
+    assembly / assemblyJarName := s"alephium-${version.value}.jar",
+    assembly / test            := {},
+    assemblyMergeStrategy := {
       case "logback.xml" => MergeStrategy.first
       case PathList("META-INF", "maven", "org.webjars", "swagger-ui", xs @ _*) =>
         MergeStrategy.first
       case PathList("META-INF", "io.netty.versions.properties", xs @ _*) =>
         MergeStrategy.first
-      case "module-info.class" =>
+      case PathList("module-info.class") =>
         MergeStrategy.discard
-      case other => (assemblyMergeStrategy in assembly).value(other)
+      case x if x.endsWith("module-info.class") =>
+        MergeStrategy.discard
+      case other =>
+        assemblyMergeStrategy.value(other)
     },
     libraryDependencies ++= Seq(
       janino,
@@ -195,6 +203,7 @@ lazy val app = mainProject("app")
       val baseImageName = "alephium/dev-alephium"
       val versionTag    = version.value.replace('+', '_')
       Seq(
+        ImageName(baseImageName + ":latest"),
         ImageName(baseImageName + ":" + versionTag),
         ImageName(baseImageName + ":" + versionTag + "-jdk17")
       )
@@ -207,7 +216,7 @@ lazy val app = mainProject("app")
       BuildInfoKey("branch"         -> git.gitCurrentBranch.value),
       BuildInfoKey("releaseVersion" -> version.value)
     ),
-    buildInfoPackage := "org.alephium.app",
+    buildInfoPackage          := "org.alephium.app",
     buildInfoUsePackageAsPath := true
   )
 
@@ -246,7 +255,7 @@ lazy val benchmark = project("benchmark")
   .settings(
     publish / skip := true,
     scalacOptions += "-Xdisable-assertions",
-    wartremoverErrors in (Compile, compile) := Seq.empty
+    Compile / compile / wartremoverErrors := Seq.empty
   )
 
 lazy val flow = project("flow")
@@ -269,11 +278,16 @@ lazy val flow = project("flow")
 lazy val protocol = project("protocol")
   .enablePlugins(BuildInfoPlugin)
   .settings(
-    buildInfoKeys := Seq[BuildInfoKey](version),
-    buildInfoPackage := "org.alephium.protocol",
+    buildInfoKeys             := Seq[BuildInfoKey](version),
+    buildInfoPackage          := "org.alephium.protocol",
     buildInfoUsePackageAsPath := true
   )
-  .dependsOn(crypto, io % "compile->compile;test->test", serde, util % "test->test")
+  .dependsOn(
+    crypto % "compile->compile;test->test",
+    io     % "compile->compile;test->test",
+    serde,
+    util % "test->test"
+  )
   .settings(
     libraryDependencies ++= Seq(
       `prometheus-simple-client`,
@@ -301,25 +315,28 @@ lazy val wallet = project("wallet")
       `scala-logging`,
       logback
     ),
-    publish / skip := true,
-    mainClass in assembly := Some("org.alephium.wallet.Main"),
-    assemblyJarName in assembly := s"alephium-wallet-${version.value}.jar",
-    test in assembly := {},
-    assemblyMergeStrategy in assembly := {
+    publish / skip             := true,
+    assembly / mainClass       := Some("org.alephium.wallet.Main"),
+    assembly / assemblyJarName := s"alephium-wallet-${version.value}.jar",
+    assembly / test            := {},
+    assemblyMergeStrategy := {
       case PathList("META-INF", "maven", "org.webjars", "swagger-ui", xs @ _*) =>
         MergeStrategy.first
       case PathList("META-INF", "io.netty.versions.properties", xs @ _*) =>
         MergeStrategy.first
-      case "module-info.class" =>
+      case PathList("module-info.class") =>
         MergeStrategy.discard
-      case other => (assemblyMergeStrategy in assembly).value(other)
+      case x if x.endsWith("module-info.class") =>
+        MergeStrategy.discard
+      case other =>
+        assemblyMergeStrategy.value(other)
     }
   )
 
 val publishSettings = Seq(
   organization := "org.alephium",
-  homepage := Some(url("https://github.com/alephium/alephium")),
-  licenses := Seq("LGPL 3.0" -> new URL("https://www.gnu.org/licenses/lgpl-3.0.en.html")),
+  homepage     := Some(url("https://github.com/alephium/alephium")),
+  licenses     := Seq("LGPL 3.0" -> new URL("https://www.gnu.org/licenses/lgpl-3.0.en.html")),
   developers := List(
     Developer(
       id = "alephium core dev",
@@ -331,8 +348,8 @@ val publishSettings = Seq(
 )
 
 val commonSettings = publishSettings ++ Seq(
-  scalaVersion := "2.13.6",
-  parallelExecution in Test := false,
+  scalaVersion             := "2.13.8",
+  Test / parallelExecution := false,
   scalacOptions ++= Seq(
 //    "-Xdisable-assertions", // TODO: use this properly
     "-deprecation",
@@ -341,7 +358,6 @@ val commonSettings = publishSettings ++ Seq(
     "-explaintypes",
     "-feature",
     "-unchecked",
-    "-Xsource:3",
     "-Xlint:adapted-args",
     "-Xlint:constant",
     "-Xlint:delayedinit-select",
@@ -370,11 +386,11 @@ val commonSettings = publishSettings ++ Seq(
     "-Ywarn-value-discard",
     "-Ymacro-annotations"
   ),
-  scalacOptions in (Compile, console) --= Seq("-Ywarn-unused:imports", "-Xfatal-warnings"),
-  wartremoverErrors in (Compile, compile) := Warts.allBut(wartsCompileExcludes: _*),
-  wartremoverErrors in (Test, test) := Warts.allBut(wartsTestExcludes: _*),
-  wartremoverErrors in (IntegrationTest, test) := Warts.allBut(wartsTestExcludes: _*),
-  fork := true,
+  Compile / console / scalacOptions --= Seq("-Ywarn-unused:imports", "-Xfatal-warnings"),
+  Compile / compile / wartremoverErrors      := Warts.allBut(wartsCompileExcludes: _*),
+  Test / test / wartremoverErrors            := Warts.allBut(wartsTestExcludes: _*),
+  IntegrationTest / test / wartremoverErrors := Warts.allBut(wartsTestExcludes: _*),
+  fork                                       := true,
   javaOptions += "-Xss2m",
   Test / scalacOptions ++= Seq("-Xcheckinit", "-Wconf:cat=other-non-cooperative-equals:s"),
   Test / envVars += "ALEPHIUM_ENV" -> "test",
@@ -401,12 +417,14 @@ val wartsCompileExcludes = Seq(
   Wart.Throw,
   Wart.Equals,
   Wart.StringPlusAny,
-  Wart.While
+  Wart.While,
+  Wart.SizeIs,
+  Wart.ScalaApp
 )
 
 val wartsTestExcludes = wartsCompileExcludes ++ Seq(
   Wart.PublicInference,
-  Wart.TraversableOps,
+  Wart.IterableOps,
   Wart.OptionPartial
 )
 

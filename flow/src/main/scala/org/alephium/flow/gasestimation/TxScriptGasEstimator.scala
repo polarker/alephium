@@ -32,7 +32,7 @@ object TxScriptGasEstimator {
   final case class Default(
       inputs: AVector[TxInput],
       flow: BlockFlow
-  )(implicit networkConfig: NetworkConfig, config: GroupConfig)
+  )(implicit networkConfig: NetworkConfig, config: GroupConfig, logConfig: LogConfig)
       extends TxScriptGasEstimator {
     def estimate(script: StatefulScript): Either[String, GasBox] = {
       val chainIndexOpt =
@@ -41,7 +41,7 @@ object TxScriptGasEstimator {
       def runScript(
           blockEnv: BlockEnv,
           groupView: BlockFlowGroupView[WorldState.Cached],
-          preOutputs: Option[AVector[AssetOutput]]
+          preOutputs: AVector[AssetOutput]
       ): Either[String, TxScriptExecution] = {
         val txTemplate = TransactionTemplate(
           UnsignedTransaction(Some(script), inputs, AVector.empty),
@@ -71,11 +71,12 @@ object TxScriptGasEstimator {
       }
 
       for {
-        chainIndex <- chainIndexOpt.toRight("No UTXO found.")
-        blockEnv   <- flow.getDryrunBlockEnv(chainIndex).left.map(_.toString())
-        groupView  <- flow.getMutableGroupView(chainIndex.from).left.map(_.toString())
-        preOutputs <- groupView.getPreOutputs(inputs).left.map(_.toString())
-        result     <- runScript(blockEnv, groupView, preOutputs)
+        chainIndex    <- chainIndexOpt.toRight("No UTXO found.")
+        blockEnv      <- flow.getDryrunBlockEnv(chainIndex).left.map(_.toString())
+        groupView     <- flow.getMutableGroupView(chainIndex.from).left.map(_.toString())
+        preOutputsOpt <- groupView.getPreOutputs(inputs).left.map(_.toString())
+        preOutputs    <- preOutputsOpt.toRight("Tx inputs do not exit")
+        result        <- runScript(blockEnv, groupView, preOutputs)
       } yield {
         maximalGasPerTx.subUnsafe(result.gasBox)
       }

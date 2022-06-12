@@ -135,7 +135,7 @@ class MinerApiController(allHandlers: AllHandlers)(implicit
   def handleAPI: Receive = {
     case ViewHandler.NewTemplates(templates)                 => publishTemplates(templates)
     case MinerApiController.Received(message: ClientMessage) => handleClientMessage(message)
-    case BlockChainHandler.BlockAdded(hash)                  => handleSubmittedBlock(hash, succeeded = true)
+    case BlockChainHandler.BlockAdded(hash) => handleSubmittedBlock(hash, succeeded = true)
     case BlockChainHandler.InvalidBlock(hash, reason) =>
       handleSubmittedBlock(hash, succeeded = false)
       log.error(s"Mined an invalid block ${hash.shortHex} due to: $reason")
@@ -180,11 +180,10 @@ class MinerApiController(allHandlers: AllHandlers)(implicit
   }
 
   def handleSubmittedBlock(hash: BlockHash, succeeded: Boolean): Unit = {
-    submittingBlocks.get(hash).foreach { client =>
+    submittingBlocks.remove(hash).foreach { client =>
       val chainIndex = ChainIndex.from(hash)
       val message    = SubmitResult(chainIndex.from.value, chainIndex.to.value, succeeded)
       client ! ConnectionHandler.Send(ServerMessage.serialize(message))
-      submittingBlocks.remove(hash)
     }
   }
 }
