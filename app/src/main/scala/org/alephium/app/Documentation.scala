@@ -16,19 +16,22 @@
 
 package org.alephium.app
 
+import sttp.apispec.openapi.{OpenAPI, Server, ServerVariable}
 import sttp.tapir.Endpoint
 import sttp.tapir.docs.openapi.OpenAPIDocsInterpreter
-import sttp.tapir.openapi.{OpenAPI, Server, ServerVariable}
 
 import org.alephium.api.Endpoints
+import org.alephium.protocol.model.ReleaseVersion
 
 trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
 
-  def walletEndpoints: List[Endpoint[_, _, _, _]]
+  def walletEndpoints: List[Endpoint[_, _, _, _, _]]
   def port: Int
 
   private lazy val blockflowEndpoints = List(
     getNodeInfo,
+    getNodeVersion,
+    getChainParams,
     getSelfClique,
     getInterCliquePeerInfo,
     getDiscoveredNeighbors,
@@ -54,11 +57,12 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
     decodeUnsignedTransaction,
     getTransactionStatus,
     compileScript,
-    buildScript,
+    buildExecuteScriptTx,
     compileContract,
-    buildContract,
+    buildDeployContractTx,
     contractState,
     testContract,
+    callContract,
     buildMultisigAddress,
     buildMultisig,
     submitMultisigTransaction,
@@ -66,7 +70,10 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
     checkHashIndexing,
     minerAction,
     minerListAddresses,
-    minerUpdateAddresses
+    minerUpdateAddresses,
+    getContractEvents,
+    getContractEventsCurrentCount,
+    getEventsByTxId
   )
 
   private lazy val servers = List(
@@ -79,6 +86,10 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
   )
 
   lazy val openAPI: OpenAPI =
-    toOpenAPI(walletEndpoints ++ blockflowEndpoints.map(_.endpoint), "Alephium API", "1.0")
+    toOpenAPI(
+      walletEndpoints ++ blockflowEndpoints.map(_.endpoint),
+      "Alephium API",
+      ReleaseVersion.current.toString.tail
+    )
       .servers(servers)
 }

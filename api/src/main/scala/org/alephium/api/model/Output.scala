@@ -18,38 +18,28 @@ package org.alephium.api.model
 
 import akka.util.ByteString
 
+import org.alephium.protocol.Hash
 import org.alephium.protocol.model
 import org.alephium.protocol.model.{Address, TxOutput}
 import org.alephium.util.{AVector, TimeStamp}
 
 sealed trait Output {
-  def amount: Amount
+  def hint: Int
+  def key: Hash
+  def attoAlphAmount: Amount
   def address: Address
   def tokens: AVector[Token]
+  def toProtocol(): model.TxOutput
 }
 
 object Output {
 
-  @upickle.implicits.key("asset")
-  final case class Asset(
-      amount: Amount,
-      address: Address,
-      tokens: AVector[Token],
-      lockTime: TimeStamp,
-      additionalData: ByteString
-  ) extends Output
-
-  @upickle.implicits.key("contract")
-  final case class Contract(
-      amount: Amount,
-      address: Address,
-      tokens: AVector[Token]
-  ) extends Output
-
-  def from(output: TxOutput): Output = {
+  def from(output: TxOutput, txId: Hash, index: Int): Output = {
     output match {
       case o: model.AssetOutput =>
-        Asset(
+        AssetOutput(
+          o.hint.value,
+          model.TxOutputRef.key(txId, index),
           Amount(o.amount),
           Address.Asset(o.lockupScript),
           o.tokens.map(Token.tupled),
@@ -57,11 +47,89 @@ object Output {
           o.additionalData
         )
       case o: model.ContractOutput =>
-        Contract(
+        ContractOutput(
+          o.hint.value,
+          model.TxOutputRef.key(txId, index),
           Amount(o.amount),
           Address.Contract(o.lockupScript),
           o.tokens.map(Token.tupled)
         )
     }
+  }
+}
+
+@upickle.implicits.key("AssetOutput")
+final case class AssetOutput(
+    hint: Int,
+    key: Hash,
+    attoAlphAmount: Amount,
+    address: Address.Asset,
+    tokens: AVector[Token],
+    lockTime: TimeStamp,
+    message: ByteString
+) extends Output {
+  def toProtocol(): model.AssetOutput = {
+    model.AssetOutput(
+      attoAlphAmount.value,
+      address.lockupScript,
+      lockTime,
+      tokens.map { token => (token.id, token.amount) },
+      message
+    )
+  }
+}
+
+@upickle.implicits.key("ContractOutput")
+final case class ContractOutput(
+    hint: Int,
+    key: Hash,
+    attoAlphAmount: Amount,
+    address: Address.Contract,
+    tokens: AVector[Token]
+) extends Output {
+  def toProtocol(): model.ContractOutput = {
+    model.ContractOutput(
+      attoAlphAmount.value,
+      address.lockupScript,
+      tokens.map(token => (token.id, token.amount))
+    )
+  }
+}
+
+final case class FixedAssetOutput(
+    hint: Int,
+    key: Hash,
+    attoAlphAmount: Amount,
+    address: Address.Asset,
+    tokens: AVector[Token],
+    lockTime: TimeStamp,
+    message: ByteString
+) {
+  def toProtocol(): model.AssetOutput = {
+    model.AssetOutput(
+      attoAlphAmount.value,
+      address.lockupScript,
+      lockTime,
+      tokens.map { token => (token.id, token.amount) },
+      message
+    )
+  }
+
+  def upCast(): AssetOutput = {
+    AssetOutput(hint, key, attoAlphAmount, address, tokens, lockTime, message)
+  }
+}
+
+object FixedAssetOutput {
+  def fromProtocol(assetOutput: model.AssetOutput, txId: Hash, index: Int): FixedAssetOutput = {
+    FixedAssetOutput(
+      assetOutput.hint.value,
+      model.TxOutputRef.key(txId, index),
+      Amount(assetOutput.amount),
+      Address.Asset(assetOutput.lockupScript),
+      assetOutput.tokens.map(Token.tupled),
+      assetOutput.lockTime,
+      assetOutput.additionalData
+    )
   }
 }

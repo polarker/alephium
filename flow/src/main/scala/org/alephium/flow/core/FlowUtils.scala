@@ -39,11 +39,14 @@ trait FlowUtils
     with BlockFlowState
     with SyncUtils
     with TxUtils
+    with LogUtils
+    with ContractUtils
     with ConflictedBlocks
     with LazyLogging { Self: BlockFlow =>
   implicit def mempoolSetting: MemPoolSetting
   implicit def consensusConfig: ConsensusSetting
   implicit def networkConfig: NetworkConfig
+  implicit def logConfig: LogConfig
 
   val blockFlow = Self
 
@@ -233,7 +236,7 @@ trait FlowUtils
       templateTs: TimeStamp,
       miner: LockupScript.Asset
   ): IOResult[BlockFlowTemplate] = {
-    val blockEnv = BlockEnv(networkConfig.networkId, templateTs, target)
+    val blockEnv = BlockEnv(networkConfig.networkId, templateTs, target, None)
     for {
       fullTxs      <- executeTxTemplates(chainIndex, blockEnv, loosenDeps, groupView, candidates)
       depStateHash <- getDepStateHash(loosenDeps, chainIndex.from)
@@ -251,7 +254,8 @@ trait FlowUtils
     }
   }
 
-  lazy val templateValidator = BlockValidation.build(brokerConfig, networkConfig, consensusConfig)
+  lazy val templateValidator =
+    BlockValidation.build(brokerConfig, networkConfig, consensusConfig, logConfig)
   private def validateTemplate(
       chainIndex: ChainIndex,
       template: BlockFlowTemplate
@@ -419,9 +423,9 @@ object FlowUtils {
       txTemplate: TransactionTemplate,
       script: StatefulScript
   ): Option[Transaction] = {
-    if (script.entryMethod.isPayable) {
+    if (script.entryMethod.usePreapprovedAssets) {
       for {
-        balances0 <- Balances.from(preOutputs, txTemplate.unsigned.fixedOutputs)
+        balances0 <- MutBalances.from(preOutputs, txTemplate.unsigned.fixedOutputs)
         _         <- balances0.subAlph(preOutputs.head.lockupScript, txTemplate.gasFeeUnsafe)
         outputs   <- balances0.toOutputs()
       } yield {

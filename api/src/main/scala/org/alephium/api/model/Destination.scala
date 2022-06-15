@@ -16,13 +16,16 @@
 
 package org.alephium.api.model
 
+import akka.util.ByteString
+
 import org.alephium.protocol.model.Address
 import org.alephium.util.{AVector, TimeStamp}
 
 @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class Destination(
     address: Address.Asset,
-    amount: Amount,
+    attoAlphAmount: Amount,
     tokens: Option[AVector[Token]] = None,
-    lockTime: Option[TimeStamp] = None
+    lockTime: Option[TimeStamp] = None,
+    message: Option[ByteString] = None
 )

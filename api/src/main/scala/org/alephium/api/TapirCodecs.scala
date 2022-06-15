@@ -32,7 +32,7 @@ import org.alephium.util.{TimeStamp, U256}
 trait TapirCodecs extends ApiModelCodec {
 
   implicit val timestampTapirCodec: Codec[String, TimeStamp, TextPlain] =
-    Codec.long.validate(Validator.min(0L)).map(TimeStamp.unsafe)(_.millis)
+    Codec.long.validate(Validator.min(0L)).map(TimeStamp.unsafe(_))(_.millis)
 
   implicit val hashTapirCodec: Codec[String, Hash, TextPlain] =
     fromJson[Hash]
@@ -62,18 +62,18 @@ trait TapirCodecs extends ApiModelCodec {
     Codec.int.mapDecode(value =>
       GasBox.from(value) match {
         case Some(gas) => DecodeResult.Value(gas)
-        case None      => DecodeResult.Error(s"$value", new IllegalArgumentException(s"Invalid gas"))
+        case None => DecodeResult.Error(s"$value", new IllegalArgumentException(s"Invalid gas"))
       }
     )(_.value)
 
   implicit val gasPriceCodec: Codec[String, GasPrice, TextPlain] =
-    u256TapirCodec.map[GasPrice](GasPrice.apply)(_.value)
+    u256TapirCodec.map[GasPrice](GasPrice(_))(_.value)
 
   implicit val minerActionTapirCodec: Codec[String, MinerAction, TextPlain] =
     fromJson[MinerAction]
 
   implicit val timespanTapirCodec: Codec[String, TimeSpan, TextPlain] =
-    Codec.long.validate(Validator.min(1)).map(TimeSpan.apply)(_.millis)
+    Codec.long.validate(Validator.min(1)).map(TimeSpan(_))(_.millis)
 
   implicit def groupIndexCodec(implicit
       groupConfig: GroupConfig

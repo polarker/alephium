@@ -17,12 +17,12 @@
 package org.alephium.api.model
 
 import sttp.model.StatusCode
-import sttp.tapir.{ValidationError, Validator}
+import sttp.tapir.{ValidationResult, Validator}
 
 import org.alephium.api.ApiError
 import org.alephium.util.{Duration, TimeStamp}
 
-final case class TimeInterval(from: TimeStamp, to: TimeStamp) {
+final case class TimeInterval(from: TimeStamp, toOpt: Option[TimeStamp]) {
   def validateTimeSpan(max: Duration): Either[ApiError[_ <: StatusCode], Unit] = {
     if (durationUnsafe() > max) {
       Left(ApiError.BadRequest(s"Time span cannot be greater than ${max}"))
@@ -31,15 +31,21 @@ final case class TimeInterval(from: TimeStamp, to: TimeStamp) {
     }
   }
 
+  def to: TimeStamp = toOpt.getOrElse(TimeStamp.now())
+
   def durationUnsafe(): Duration = to.deltaUnsafe(from)
 }
 
 object TimeInterval {
   val validator: Validator[TimeInterval] = Validator.custom { timeInterval =>
     if (timeInterval.from >= timeInterval.to) {
-      List(ValidationError.Custom(timeInterval, s"`fromTs` must be before `toTs`"))
+      ValidationResult.Invalid(s"`fromTs` must be before `toTs`")
     } else {
-      List.empty
+      ValidationResult.Valid
     }
+  }
+
+  def apply(from: TimeStamp, to: TimeStamp): TimeInterval = {
+    TimeInterval(from, Some(to))
   }
 }

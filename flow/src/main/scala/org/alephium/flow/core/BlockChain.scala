@@ -25,7 +25,7 @@ import org.alephium.flow.setting.ConsensusSetting
 import org.alephium.io.{IOResult, IOUtils}
 import org.alephium.protocol.{ALPH, BlockHash, Hash}
 import org.alephium.protocol.config.{BrokerConfig, NetworkConfig}
-import org.alephium.protocol.model.{Block, Weight}
+import org.alephium.protocol.model.{Block, ChainIndex, Weight}
 import org.alephium.protocol.vm.WorldState
 import org.alephium.serde.Serde
 import org.alephium.util.{AVector, TimeStamp}
@@ -64,13 +64,13 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
   def getHeightedBlocks(
       fromTs: TimeStamp,
       toTs: TimeStamp
-  ): IOResult[AVector[(Block, Int)]] =
+  ): IOResult[(ChainIndex, AVector[(Block, Int)])] =
     for {
       height <- maxHeight
       result <- searchByTimestampHeight(height, fromTs, toTs)
-    } yield result
+    } yield (chainIndex, result)
 
-  //Binary search until we found an height containing blocks within time range
+  // Binary search until we found an height containing blocks within time range
   @tailrec
   private def locateTimeRangedHeight(
       fromTs: TimeStamp,
@@ -84,11 +84,11 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
       val middle = low + (high - low) / 2
       getMainChainBlockByHeight(middle) match {
         case Right(Some(block)) =>
-          if (block.timestamp > toTs) { //search lower
+          if (block.timestamp > toTs) { // search lower
             locateTimeRangedHeight(fromTs, toTs, low, middle - 1)
-          } else if (block.timestamp >= fromTs) { //got you
+          } else if (block.timestamp >= fromTs) { // got you
             Right(Some((middle, block)))
-          } else { //search higher
+          } else { // search higher
             locateTimeRangedHeight(fromTs, toTs, middle + 1, high)
           }
         case Right(None) =>

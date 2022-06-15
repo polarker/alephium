@@ -34,12 +34,12 @@ class BlocksExporter(blockflow: BlockFlow, rootPath: Path)(implicit groupConfig:
   private lazy val chainIndexes: AVector[ChainIndex] =
     AVector.from(
       for {
-        i <- 0 to groupConfig.groups - 1
-        j <- 0 to groupConfig.groups - 1
-      } yield (ChainIndex.unsafe(i, j))
+        i <- 0 until groupConfig.groups
+        j <- 0 until groupConfig.groups
+      } yield ChainIndex.unsafe(i, j)
     )
 
-  def export(filename: String): IOResult[Unit] = {
+  def `export`(filename: String): IOResult[Unit] = {
     for {
       file   <- validateFilename(filename)
       blocks <- chainIndexes.flatMapE(chainIndex => fetchChain(chainIndex))
@@ -69,7 +69,7 @@ class BlocksExporter(blockflow: BlockFlow, rootPath: Path)(implicit groupConfig:
   private def fetchChain(chainIndex: ChainIndex): IOResult[AVector[Block]] = {
     for {
       maxHeight <- blockflow.getMaxHeight(chainIndex)
-      blocks <- EitherF.foldTry((0 to maxHeight), AVector.empty[Block]) { case (blocks, height) =>
+      blocks <- EitherF.foldTry(0 to maxHeight, AVector.empty[Block]) { case (blocks, height) =>
         fetchBlocksAt(chainIndex, height).map(newBlocks => blocks ++ newBlocks)
       }
     } yield blocks

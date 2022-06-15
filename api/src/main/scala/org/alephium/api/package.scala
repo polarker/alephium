@@ -31,6 +31,7 @@ import org.alephium.protocol.vm.ExeResult
 package object api {
   type Try[T] = Either[ApiError[_ <: StatusCode], T]
 
+  def notFound(error: String): ApiError[_ <: StatusCode]   = ApiError.NotFound(error)
   def badRequest(error: String): ApiError[_ <: StatusCode] = ApiError.BadRequest(error)
   def failed(error: String): ApiError[_ <: StatusCode] =
     ApiError.InternalServerError(error)
@@ -50,7 +51,7 @@ package object api {
   }
 
   def alphJsonBody[T: ReadWriter: Schema]: EndpointIO.Body[String, T] =
-    anyFromUtf8StringBody(readWriterCodec[T])
+    stringBodyUtf8AnyFormat(readWriterCodec[T])
 
   implicit def readWriterCodec[T: ReadWriter: Schema]: JsonCodec[T] =
     Codec.json[T] { s =>
@@ -61,6 +62,6 @@ package object api {
     } { t => write(t) }
 
   def alphPlainTextBody: EndpointIO.Body[String, String] = {
-    anyFromUtf8StringBody(Codec.string)
+    stringBodyUtf8AnyFormat(Codec.string)
   }
 }
