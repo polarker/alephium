@@ -65,4 +65,9 @@ object Type {
   final case class Contract(id: Ast.TypeId) extends Type {
     def toVal: Val.Type = Val.ByteVec
   }
+
+  // The naming is more specific than Bottom or Nothing
+  case object Panic extends Type {
+    def toVal: Val.Type = throw new RuntimeException("Unable to convert Bottom type to Val type")
+  }
 }

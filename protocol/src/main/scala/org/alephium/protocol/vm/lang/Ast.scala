@@ -398,11 +398,13 @@ object Ast {
     @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
     private def checkRetTypes(stmt: Option[Statement[Ctx]]): Unit = {
       stmt match {
-        case Some(_: ReturnStmt[Ctx]) => // we checked the `rtypes` in `ReturnStmt`
+        case Some(_: ReturnStmt[Ctx]) => () // we checked the `rtypes` in `ReturnStmt`
         case Some(IfElse(ifBranches, elseBranch)) =>
           ifBranches.foreach(branch => checkRetTypes(branch.body.lastOption))
           checkRetTypes(elseBranch.body.lastOption)
-        case _ => throw new Compiler.Error(s"Expect return statement for function ${id.name}")
+        case Some(call: FuncCall[_]) if call.id == FuncId("panic", isBuiltIn = true) => ()
+        case _ =>
+          throw new Compiler.Error(s"Expect return statement for function ${id.name}")
       }
     }
 
