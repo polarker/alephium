@@ -268,8 +268,8 @@ abstract class Parser[Ctx <: StatelessContext] {
 
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   def forLoopStmt[Unknown: P]: P[Ast.ForLoop[Ctx]] =
-    P(Lexer.keyword("for") ~/ statement.? ~ ";" ~ expr ~ ";" ~ statement.? ~ block).map {
-      case (initializeOpt, condition, updateOpt, body) =>
+    P(Lexer.keyword("for") ~/ "(" ~ statement.? ~ ";" ~ expr ~ ";" ~ statement.? ~ ")" ~ block)
+      .map { case (initializeOpt, condition, updateOpt, body) =>
         if (initializeOpt.isEmpty) {
           throw Compiler.Error("No initialize statement in for loop")
         }
@@ -277,7 +277,7 @@ abstract class Parser[Ctx <: StatelessContext] {
           throw Compiler.Error("No update statement in for loop")
         }
         Ast.ForLoop(initializeOpt.get, condition, updateOpt.get, body)
-    }
+      }
 
   def statement[Unknown: P]: P[Ast.Statement[Ctx]]
 
