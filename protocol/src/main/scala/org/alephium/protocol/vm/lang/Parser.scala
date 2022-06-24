@@ -160,31 +160,31 @@ abstract class Parser[Ctx <: StatelessContext] {
     }
 
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
-  def parseType[Unknown: P](contractTypeCtor: Ast.TypeId => Type): P[Type] = {
+  def parsetype[Unknown: P]: P[Type] = {
     P(
-      Lexer.typeId.map(id => Lexer.primTpes.getOrElse(id.name, contractTypeCtor(id))) |
-        arrayType(parseType(contractTypeCtor))
+      Lexer.typeId.map(id => Lexer.primTpes.getOrElse(id.name, Type.Contract(id))) |
+        arrayType
     )
   }
 
   // use by-name parameter because of https://github.com/com-lihaoyi/fastparse/pull/204
-  def arrayType[Unknown: P](baseType: => P[Type]): P[Type] = {
-    P("[" ~ baseType ~ ";" ~ nonNegativeNum("array size") ~ "]").map { case (tpe, size) =>
+  def arrayType[Unknown: P]: P[Type] = {
+    P("[" ~ parsetype ~ ";" ~ nonNegativeNum("array size") ~ "]").map { case (tpe, size) =>
       Type.FixedSizeArray(tpe, size)
     }
   }
   def funcArgument[Unknown: P]: P[Ast.Argument] =
     P(Lexer.mut ~ Lexer.ident ~ ":").flatMap { case (isMutable, ident) =>
-      parseType(typeId => Type.Contract.local(typeId, ident)).map { tpe =>
+      parsetype.map { tpe =>
         Ast.Argument(ident, tpe, isMutable)
       }
     }
   def funParams[Unknown: P]: P[Seq[Ast.Argument]] = P("(" ~ funcArgument.rep(0, ",") ~ ")")
   def returnType[Unknown: P]: P[Seq[Type]]        = P(simpleReturnType | bracketReturnType)
   def simpleReturnType[Unknown: P]: P[Seq[Type]] =
-    P("->" ~ parseType(Type.Contract.stack)).map(tpe => Seq(tpe))
+    P("->" ~ parsetype).map(tpe => Seq(tpe))
   def bracketReturnType[Unknown: P]: P[Seq[Type]] =
-    P("->" ~ "(" ~ parseType(Type.Contract.stack).rep(0, ",") ~ ")")
+    P("->" ~ "(" ~ parsetype.rep(0, ",") ~ ")")
   def funcTmp[Unknown: P]: P[FuncDefTmp[Ctx]] =
     P(
       annotation.rep(0) ~
@@ -283,7 +283,7 @@ abstract class Parser[Ctx <: StatelessContext] {
 
   def contractArgument[Unknown: P]: P[Ast.Argument] =
     P(Lexer.mut ~ Lexer.ident ~ ":").flatMap { case (isMutable, ident) =>
-      parseType(typeId => Type.Contract.global(typeId, ident)).map { tpe =>
+      parsetype.map { tpe =>
         Ast.Argument(ident, tpe, isMutable)
       }
     }
@@ -301,7 +301,7 @@ abstract class Parser[Ctx <: StatelessContext] {
 
   def eventField[Unknown: P]: P[Ast.EventField] =
     P(Lexer.ident ~ ":").flatMap { case (ident) =>
-      parseType(typeId => Type.Contract.global(typeId, ident)).map { tpe =>
+      parsetype.map { tpe =>
         Ast.EventField(ident, tpe)
       }
     }

@@ -365,9 +365,6 @@ object Compiler {
       tpe match {
         case _: Type.FixedSizeArray =>
           throw Error("Template variable does not support Array yet")
-        case c: Type.Contract =>
-          val varType = Type.Contract.local(c.id, ident)
-          varTable(sname) = VarInfo.Template(varType, index)
         case _ =>
           varTable(sname) = VarInfo.Template(tpe, index)
       }
@@ -390,10 +387,6 @@ object Compiler {
         case t: Type.FixedSizeArray =>
           ArrayTransformer.init(this, t, ident.name, isMutable, isLocal, varInfoBuild)
           ()
-        case c: Type.Contract =>
-          val varType = Type.Contract.local(c.id, ident)
-          varTable(sname) = varInfoBuild(varType, isMutable, varIndex.toByte)
-          varIndex += 1
         case _ =>
           varTable(sname) = varInfoBuild(tpe, isMutable, varIndex.toByte)
           varIndex += 1

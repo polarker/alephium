@@ -232,7 +232,7 @@ object Ast {
       if (address.getType(state) != Seq(Type.ByteVec)) {
         throw Compiler.Error(s"Invalid expr $address for contract address")
       } else {
-        Seq(Type.Contract.stack(contractType))
+        Seq(Type.Contract(contractType))
       }
     }
 

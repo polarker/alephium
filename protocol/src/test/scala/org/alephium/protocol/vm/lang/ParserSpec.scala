@@ -307,7 +307,7 @@ class ParserSpec extends AlephiumSpec {
           ),
           Argument(
             Ident("c"),
-            Type.FixedSizeArray(Type.Contract.local(TypeId("Foo"), Ident("c")), 4),
+            Type.FixedSizeArray(Type.Contract(TypeId("Foo")), 4),
             isMutable = false
           ),
           Argument(Ident("d"), Type.U256, isMutable = false)
