@@ -140,7 +140,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
              |  }
              |}
              |""".stripMargin
-        val script = Compiler.compileAssetScript(raw).rightValue
+        val script = Compiler.compileAssetScript(raw).rightValue._1
         val lockup = LockupScript.p2sh(script)
         val unlock = UnlockScript.p2sh(script, AVector(Val.U256(60), Val.U256(50)))
 
@@ -171,7 +171,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |}
            |""".stripMargin
 
-      val script = Compiler.compileAssetScript(raw).rightValue
+      val script = Compiler.compileAssetScript(raw).rightValue._1
       val lockup = LockupScript.p2sh(script)
       val unlock = UnlockScript.p2sh(script, AVector(Val.ByteVec(pubKey1.bytes)))
 
@@ -196,7 +196,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |}
            |""".stripMargin
 
-      val script = Compiler.compileAssetScript(raw).rightValue
+      val script = Compiler.compileAssetScript(raw).rightValue._1
       val lockup = LockupScript.p2sh(script)
       val unlock = UnlockScript.p2sh(script, AVector(Val.U256(50), Val.U256(60)))
 
@@ -262,10 +262,10 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
       estimateTxScript(
         s"""
            |TxScript Main {
-           |  assert!(1 == 2)
+           |  assert!(1 == 2, 0)
            |}
            |""".stripMargin
-      ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailed"
+      ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailedWithErrorCode(,0)"
       // scalastyle:on no.equal
     }
   }
@@ -282,6 +282,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
 
     blockFlow
       .transfer(
+        None,
         lockup,
         unlock,
         output,

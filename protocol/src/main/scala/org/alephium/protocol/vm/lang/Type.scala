@@ -32,6 +32,15 @@ sealed trait Type {
 }
 
 object Type {
+  def flattenTypeLength(types: Seq[Type]): Int = {
+    types.foldLeft(0) { case (acc, tpe) =>
+      tpe match {
+        case t: Type.FixedSizeArray => acc + t.flattenSize()
+        case _                      => acc + 1
+      }
+    }
+  }
+
   val primitives: AVector[Type] = AVector[Type](Bool, I256, U256, ByteVec, Address)
 
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
@@ -82,5 +91,10 @@ object Type {
     final class LocalVar(val id: Ast.TypeId, val variable: Ast.Ident)  extends Contract
     final class GlobalVar(val id: Ast.TypeId, val variable: Ast.Ident) extends Contract
     final class Stack(val id: Ast.TypeId)                              extends Contract
+  }
+
+  // The naming is more specific than Bottom or Nothing
+  case object Panic extends Type {
+    def toVal: Val.Type = throw new RuntimeException("Unable to convert Bottom type to Val type")
   }
 }

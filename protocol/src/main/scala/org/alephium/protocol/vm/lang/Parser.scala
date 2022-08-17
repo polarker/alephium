@@ -19,7 +19,7 @@ package org.alephium.protocol.vm.lang
 import fastparse._
 
 import org.alephium.protocol.vm.{Instr, StatefulContext, StatelessContext, Val}
-import org.alephium.protocol.vm.lang.Ast.{Annotation, Argument, ElseBranch, FuncId, Statement}
+import org.alephium.protocol.vm.lang.Ast.{Annotation, Argument, FuncId, Statement}
 
 // scalastyle:off number.of.methods
 @SuppressWarnings(
@@ -32,16 +32,17 @@ import org.alephium.protocol.vm.lang.Ast.{Annotation, Argument, ElseBranch, Func
 abstract class Parser[Ctx <: StatelessContext] {
   implicit val whitespace: P[_] => P[Unit] = { implicit ctx: P[_] => Lexer.emptyChars(ctx) }
 
-  def const[Unknown: P]: P[Ast.Const[Ctx]] =
-    P(Lexer.typedNum | Lexer.bool | Lexer.bytes | Lexer.address).map(Ast.Const.apply[Ctx])
+  def value[Unknown: P]: P[Val] = P(Lexer.typedNum | Lexer.bool | Lexer.bytes | Lexer.address)
+  def const[Unknown: P]: P[Ast.Const[Ctx]] = value.map(Ast.Const.apply[Ctx])
   def createArray1[Unknown: P]: P[Ast.CreateArrayExpr[Ctx]] =
     P("[" ~ expr.rep(1, ",") ~ "]").map(Ast.CreateArrayExpr.apply)
   def createArray2[Unknown: P]: P[Ast.CreateArrayExpr[Ctx]] =
     P("[" ~ expr ~ ";" ~ nonNegativeNum("array size") ~ "]").map { case (expr, size) =>
       Ast.CreateArrayExpr(Seq.fill(size)(expr))
     }
-  def arrayExpr[Unknown: P]: P[Ast.Expr[Ctx]]    = P(createArray1 | createArray2)
-  def variable[Unknown: P]: P[Ast.Variable[Ctx]] = P(Lexer.ident).map(Ast.Variable.apply[Ctx])
+  def arrayExpr[Unknown: P]: P[Ast.Expr[Ctx]] = P(createArray1 | createArray2)
+  def variable[Unknown: P]: P[Ast.Variable[Ctx]] =
+    P(Lexer.ident | Lexer.constantIdent).map(Ast.Variable.apply[Ctx])
 
   def alphAmount[Unknown: P]: P[Ast.Expr[Ctx]]                   = expr
   def tokenAmount[Unknown: P]: P[(Ast.Expr[Ctx], Ast.Expr[Ctx])] = P(expr ~ ":" ~ expr)
@@ -87,11 +88,13 @@ abstract class Parser[Ctx <: StatelessContext] {
   def arrayIndex[Unknown: P]: P[Ast.Expr[Ctx]] = P("[" ~ expr ~ "]")
 
   // Optimize chained comparisons
-  def expr[Unknown: P]: P[Ast.Expr[Ctx]]         = P(chain(andExpr, Lexer.opOr))
-  def andExpr[Unknown: P]: P[Ast.Expr[Ctx]]      = P(chain(relationExpr, Lexer.opAnd))
-  def relationExpr[Unknown: P]: P[Ast.Expr[Ctx]] = P(comp | arithExpr5)
-  def comp[Unknown: P]: P[Ast.Expr[Ctx]] =
-    P(arithExpr5 ~ comparison ~ arithExpr5).map { case (lhs, op, rhs) => Ast.Binop(op, lhs, rhs) }
+  def expr[Unknown: P]: P[Ast.Expr[Ctx]]    = P(chain(andExpr, Lexer.opOr))
+  def andExpr[Unknown: P]: P[Ast.Expr[Ctx]] = P(chain(relationExpr, Lexer.opAnd))
+  def relationExpr[Unknown: P]: P[Ast.Expr[Ctx]] =
+    P(arithExpr5 ~ comparison.?).flatMap {
+      case (lhs, Some(op)) => arithExpr5.map(rhs => Ast.Binop(op, lhs, rhs))
+      case (lhs, None)     => Pass(lhs)
+    }
   def comparison[Unknown: P]: P[TestOperator] =
     P(Lexer.opEq | Lexer.opNe | Lexer.opLe | Lexer.opLt | Lexer.opGe | Lexer.opGt)
   def arithExpr5[Unknown: P]: P[Ast.Expr[Ctx]] =
@@ -123,6 +126,22 @@ abstract class Parser[Ctx <: StatelessContext] {
   def parenExpr[Unknown: P]: P[Ast.ParenExpr[Ctx]] =
     P("(" ~ expr ~ ")").map(Ast.ParenExpr.apply[Ctx])
 
+  def ifBranchExpr[Unknown: P]: P[Ast.IfBranchExpr[Ctx]] =
+    P(Lexer.keyword("if") ~/ "(" ~ expr ~ ")" ~ expr).map { case (condition, expr) =>
+      Ast.IfBranchExpr(condition, expr)
+    }
+  def elseIfBranchExpr[Unknown: P]: P[Ast.IfBranchExpr[Ctx]] =
+    P(Lexer.keyword("else") ~ ifBranchExpr)
+  def elseBranchExpr[Unknown: P]: P[Ast.ElseBranchExpr[Ctx]] =
+    P(Lexer.keyword("else") ~ expr).map(Ast.ElseBranchExpr(_))
+  def ifelseExpr[Unknown: P]: P[Ast.IfElseExpr[Ctx]] =
+    P(ifBranchExpr ~ elseIfBranchExpr.rep(0) ~ elseBranchExpr.?).map {
+      case (ifBranch, elseIfBranches, Some(elseBranch)) =>
+        Ast.IfElseExpr(ifBranch +: elseIfBranches, elseBranch)
+      case (_, _, None) =>
+        throw Compiler.Error("If else expressions should be terminated with an else branch")
+    }
+
   def ret[Unknown: P]: P[Ast.ReturnStmt[Ctx]] =
     P(normalRet.rep(1)).map { returnStmts =>
       if (returnStmts.length > 1) {
@@ -135,13 +154,17 @@ abstract class Parser[Ctx <: StatelessContext] {
   def normalRet[Unknown: P]: P[Ast.ReturnStmt[Ctx]] =
     P(Lexer.keyword("return") ~/ expr.rep(0, ",")).map(Ast.ReturnStmt.apply[Ctx])
 
-  def ident[Unknown: P]: P[(Boolean, Ast.Ident)] = P(Lexer.mut ~ Lexer.ident)
-  def idents[Unknown: P]: P[Seq[(Boolean, Ast.Ident)]] = P(
-    ident.map(Seq(_)) | "(" ~ ident.rep(1, ",") ~ ")"
+  def anonymousVar[Unknown: P]: P[Ast.VarDeclaration] = P("_").map(_ => Ast.AnonymousVar)
+  def namedVar[Unknown: P]: P[Ast.VarDeclaration] =
+    P(Lexer.mut ~ Lexer.ident).map(Ast.NamedVar.tupled)
+
+  def varDeclaration[Unknown: P]: P[Ast.VarDeclaration] = P(namedVar | anonymousVar)
+  def varDeclarations[Unknown: P]: P[Seq[Ast.VarDeclaration]] = P(
+    varDeclaration.map(Seq(_)) | "(" ~ varDeclaration.rep(1, ",") ~ ")"
   )
   def varDef[Unknown: P]: P[Ast.VarDef[Ctx]] =
-    P(Lexer.keyword("let") ~/ idents ~ "=" ~ expr).map { case (idents, expr) =>
-      Ast.VarDef(idents, expr)
+    P(Lexer.keyword("let") ~/ varDeclarations ~ "=" ~ expr).map { case (vars, expr) =>
+      Ast.VarDef(vars, expr)
     }
   def assignmentSimpleTarget[Unknown: P]: P[Ast.AssignmentTarget[Ctx]] = P(
     Lexer.ident.map(Ast.AssignmentSimpleTarget.apply[Ctx])
@@ -173,12 +196,13 @@ abstract class Parser[Ctx <: StatelessContext] {
       Type.FixedSizeArray(tpe, size)
     }
   }
-  def funcArgument[Unknown: P]: P[Ast.Argument] =
-    P(Lexer.mut ~ Lexer.ident ~ ":").flatMap { case (isMutable, ident) =>
-      parseType(typeId => Type.Contract.local(typeId, ident)).map { tpe =>
-        Ast.Argument(ident, tpe, isMutable)
+  def argument[Unknown: P](contractTypeCtor: (Ast.TypeId, Ast.Ident) => Type): P[Ast.Argument] =
+    P(Lexer.unused ~ Lexer.mut ~ Lexer.ident ~ ":").flatMap { case (isUnused, isMutable, ident) =>
+      parseType(contractTypeCtor(_, ident)).map { tpe =>
+        Ast.Argument(ident, tpe, isMutable, isUnused)
       }
     }
+  def funcArgument[Unknown: P]: P[Ast.Argument]   = argument(Type.Contract.local)
   def funParams[Unknown: P]: P[Seq[Ast.Argument]] = P("(" ~ funcArgument.rep(0, ",") ~ ")")
   def returnType[Unknown: P]: P[Seq[Type]]        = P(simpleReturnType | bracketReturnType)
   def simpleReturnType[Unknown: P]: P[Seq[Type]] =
@@ -195,14 +219,15 @@ abstract class Parser[Ctx <: StatelessContext] {
         throw Compiler.Error(s"Duplicated function modifiers: $modifiers")
       } else {
         val isPublic = modifiers.contains(Lexer.FuncModifier.Pub)
-        val (usePreapprovedAssets, useContractAssets) =
-          Parser.extractAssetModifier(annotations, false, false)
+        val (usePreapprovedAssets, useContractAssets, usePermissionCheck) =
+          Parser.extractAssetModifier(annotations, false, false, true)
         FuncDefTmp(
           Seq.empty,
           funcId,
           isPublic,
           usePreapprovedAssets,
           useContractAssets,
+          usePermissionCheck,
           params,
           returnType,
           statements
@@ -210,21 +235,17 @@ abstract class Parser[Ctx <: StatelessContext] {
       }
     }
   def func[Unknown: P]: P[Ast.FuncDef[Ctx]] = funcTmp.map { f =>
-    f.body match {
-      case Some(statements) =>
-        Ast.FuncDef(
-          f.annotations,
-          f.id,
-          f.isPublic,
-          f.usePreapprovedAssets,
-          f.useContractAssets,
-          f.args,
-          f.rtypes,
-          statements
-        )
-      case None =>
-        throw Compiler.Error(s"Function ${f.id.name} does not have function body")
-    }
+    Ast.FuncDef(
+      f.annotations,
+      f.id,
+      f.isPublic,
+      f.usePreapprovedAssets,
+      f.useContractAssets,
+      f.usePermissionCheck,
+      f.args,
+      f.rtypes,
+      f.body
+    )
   }
 
   def eventFields[Unknown: P]: P[Seq[Ast.EventField]] = P("(" ~ eventField.rep(0, ",") ~ ")")
@@ -244,32 +265,34 @@ abstract class Parser[Ctx <: StatelessContext] {
 
   def block[Unknown: P]: P[Seq[Ast.Statement[Ctx]]]      = P("{" ~ statement.rep(1) ~ "}")
   def emptyBlock[Unknown: P]: P[Seq[Ast.Statement[Ctx]]] = P("{" ~ "}").map(_ => Seq.empty)
-  def ifBranch[Unknown: P]: P[Ast.IfBranch[Ctx]] =
-    P(Lexer.keyword("if") ~/ expr ~ block).map { case (condition, body) =>
-      Ast.IfBranch(condition, body)
+  def ifBranchStmt[Unknown: P]: P[Ast.IfBranchStatement[Ctx]] =
+    P(Lexer.keyword("if") ~/ "(" ~ expr ~ ")" ~ block).map { case (condition, body) =>
+      Ast.IfBranchStatement(condition, body)
     }
-  def elseIfBranch[Unknown: P]: P[Ast.IfBranch[Ctx]] =
-    P(Lexer.keyword("else") ~ ifBranch)
-  def elseBranch[Unknown: P]: P[ElseBranch[Ctx]] =
-    P(Lexer.keyword("else") ~ (block | emptyBlock)).map(Ast.ElseBranch(_))
-  def ifelse[Unknown: P]: P[Ast.IfElse[Ctx]] =
-    P(ifBranch ~ elseIfBranch.rep(0) ~ elseBranch.?)
+  def elseIfBranchStmt[Unknown: P]: P[Ast.IfBranchStatement[Ctx]] =
+    P(Lexer.keyword("else") ~ ifBranchStmt)
+  def elseBranchStmt[Unknown: P]: P[Ast.ElseBranchStatement[Ctx]] =
+    P(Lexer.keyword("else") ~ (block | emptyBlock)).map(Ast.ElseBranchStatement(_))
+  def ifelseStmt[Unknown: P]: P[Ast.IfElseStatement[Ctx]] =
+    P(ifBranchStmt ~ elseIfBranchStmt.rep(0) ~ elseBranchStmt.?)
       .map { case (ifBranch, elseIfBranches, elseBranchOpt) =>
         if (elseIfBranches.nonEmpty && elseBranchOpt.isEmpty) {
           throw Compiler.Error(
             "If ... else if constructs should be terminated with an else statement"
           )
         }
-        Ast.IfElse(ifBranch +: elseIfBranches, elseBranchOpt.getOrElse(ElseBranch(Seq.empty)))
+        Ast.IfElseStatement(ifBranch +: elseIfBranches, elseBranchOpt)
       }
 
   def whileStmt[Unknown: P]: P[Ast.While[Ctx]] =
-    P(Lexer.keyword("while") ~/ expr ~ block).map { case (expr, block) => Ast.While(expr, block) }
+    P(Lexer.keyword("while") ~/ "(" ~ expr ~ ")" ~ block).map { case (expr, block) =>
+      Ast.While(expr, block)
+    }
 
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   def forLoopStmt[Unknown: P]: P[Ast.ForLoop[Ctx]] =
-    P(Lexer.keyword("for") ~/ statement.? ~ ";" ~ expr ~ ";" ~ statement.? ~ block).map {
-      case (initializeOpt, condition, updateOpt, body) =>
+    P(Lexer.keyword("for") ~/ "(" ~ statement.? ~ ";" ~ expr ~ ";" ~ statement.? ~ ")" ~ block)
+      .map { case (initializeOpt, condition, updateOpt, body) =>
         if (initializeOpt.isEmpty) {
           throw Compiler.Error("No initialize statement in for loop")
         }
@@ -277,19 +300,14 @@ abstract class Parser[Ctx <: StatelessContext] {
           throw Compiler.Error("No update statement in for loop")
         }
         Ast.ForLoop(initializeOpt.get, condition, updateOpt.get, body)
-    }
+      }
 
   def statement[Unknown: P]: P[Ast.Statement[Ctx]]
 
-  def contractArgument[Unknown: P]: P[Ast.Argument] =
-    P(Lexer.mut ~ Lexer.ident ~ ":").flatMap { case (isMutable, ident) =>
-      parseType(typeId => Type.Contract.global(typeId, ident)).map { tpe =>
-        Ast.Argument(ident, tpe, isMutable)
-      }
-    }
+  def contractField[Unknown: P]: P[Ast.Argument] = argument(Type.Contract.global)
 
   def templateParams[Unknown: P]: P[Seq[Ast.Argument]] =
-    P("(" ~ contractArgument.rep(0, ",") ~ ")").map { params =>
+    P("(" ~ contractField.rep(0, ",") ~ ")").map { params =>
       val mutables = params.filter(_.isMutable)
       if (mutables.nonEmpty) {
         throw Compiler.Error(
@@ -327,28 +345,30 @@ final case class FuncDefTmp[Ctx <: StatelessContext](
     isPublic: Boolean,
     usePreapprovedAssets: Boolean,
     useContractAssets: Boolean,
+    usePermissionCheck: Boolean,
     args: Seq[Argument],
     rtypes: Seq[Type],
     body: Option[Seq[Statement[Ctx]]]
 )
 
 object Parser {
+  val usePreapprovedAssetsKey = "preapprovedAssets"
+  val useContractAssetsKey    = "assetsInContract"
+  val usePermissionCheckKey   = "permissionCheck"
+  val keys: Set[String] = Set(usePreapprovedAssetsKey, useContractAssetsKey, usePermissionCheckKey)
+
   def extractAssetModifier(
       annotations: Seq[Annotation],
       usePreapprovedAssetsDefault: Boolean,
-      useContractAssetsDefault: Boolean
-  ): (Boolean, Boolean) = {
+      useContractAssetsDefault: Boolean,
+      usePermissionCheckDefault: Boolean
+  ): (Boolean, Boolean, Boolean) = {
     if (annotations.exists(_.id.name != "using")) {
       throw Compiler.Error(s"Generic annotation is not supported yet")
     } else {
-      val usePreapprovedAssetsKey = "preapprovedAssets"
-      val useContractAssetsKey    = "assetsInContract"
       annotations.headOption match {
         case Some(useAnnotation) =>
-          val invalidKeys = useAnnotation.fields
-            .filter(f =>
-              f.ident.name != usePreapprovedAssetsKey && f.ident.name != useContractAssetsKey
-            )
+          val invalidKeys = useAnnotation.fields.filter(f => !keys.contains(f.ident.name))
           if (invalidKeys.nonEmpty) {
             throw Compiler.Error(
               s"Invalid keys for use annotation: ${invalidKeys.map(_.ident.name).mkString(",")}"
@@ -356,24 +376,31 @@ object Parser {
           }
 
           val usePreapprovedAssets =
-            extractAnnotationBoolean(useAnnotation, usePreapprovedAssetsKey)
-          val useContractAssets = extractAnnotationBoolean(useAnnotation, useContractAssetsKey)
-          (
-            usePreapprovedAssets.getOrElse(usePreapprovedAssetsDefault),
-            useContractAssets.getOrElse(useContractAssetsDefault)
+            extractAnnotationBoolean(
+              useAnnotation,
+              usePreapprovedAssetsKey,
+              usePreapprovedAssetsDefault
+            )
+          val useContractAssets =
+            extractAnnotationBoolean(useAnnotation, useContractAssetsKey, useContractAssetsDefault)
+          val usePermissionCheck = extractAnnotationBoolean(
+            useAnnotation,
+            usePermissionCheckKey,
+            usePermissionCheckDefault
           )
+          (usePreapprovedAssets, useContractAssets, usePermissionCheck)
         case None =>
-          (usePreapprovedAssetsDefault, useContractAssetsDefault)
+          (usePreapprovedAssetsDefault, useContractAssetsDefault, usePermissionCheckDefault)
       }
     }
   }
 
-  def extractAnnotationBoolean(annotation: Annotation, name: String): Option[Boolean] = {
+  def extractAnnotationBoolean(annotation: Annotation, name: String, default: Boolean): Boolean = {
     annotation.fields.find(_.ident.name == name).map(_.value) match {
-      case Some(value: Val.Bool) => Some(value.v)
+      case Some(value: Val.Bool) => value.v
       case Some(_) =>
         throw Compiler.Error(s"Expect boolean for ${name} in annotation ${annotation.id.name}")
-      case None => None
+      case None => default
     }
   }
 }
@@ -387,10 +414,10 @@ object Parser {
 )
 object StatelessParser extends Parser[StatelessContext] {
   def atom[Unknown: P]: P[Ast.Expr[StatelessContext]] =
-    P(const | callExpr | contractConv | variable | parenExpr | arrayExpr)
+    P(const | callExpr | contractConv | variable | parenExpr | arrayExpr | ifelseExpr)
 
   def statement[Unknown: P]: P[Ast.Statement[StatelessContext]] =
-    P(varDef | assign | funcCall | ifelse | whileStmt | forLoopStmt | ret)
+    P(varDef | assign | funcCall | ifelseStmt | whileStmt | forLoopStmt | ret)
 
   def assetScript[Unknown: P]: P[Ast.AssetScript] =
     P(
@@ -411,7 +438,7 @@ object StatelessParser extends Parser[StatelessContext] {
 object StatefulParser extends Parser[StatefulContext] {
   def atom[Unknown: P]: P[Ast.Expr[StatefulContext]] =
     P(
-      const | callExpr | contractCallExpr | contractConv | variable | parenExpr | arrayExpr
+      const | callExpr | contractCallExpr | contractConv | enumFieldSelector | variable | parenExpr | arrayExpr | ifelseExpr
     )
 
   def contractCallExpr[Unknown: P]: P[Ast.ContractCallExpr] =
@@ -427,10 +454,10 @@ object StatefulParser extends Parser[StatefulContext] {
 
   def statement[Unknown: P]: P[Ast.Statement[StatefulContext]] =
     P(
-      varDef | assign | funcCall | contractCall | ifelse | whileStmt | forLoopStmt | ret | emitEvent
+      varDef | assign | funcCall | contractCall | ifelseStmt | whileStmt | forLoopStmt | ret | emitEvent
     )
 
-  def contractParams[Unknown: P]: P[Seq[Ast.Argument]] = P("(" ~ contractArgument.rep(0, ",") ~ ")")
+  def contractFields[Unknown: P]: P[Seq[Ast.Argument]] = P("(" ~ contractField.rep(0, ",") ~ ")")
 
   def rawTxScript[Unknown: P]: P[Ast.TxScript] =
     P(
@@ -445,8 +472,8 @@ object StatefulParser extends Parser[StatefulContext] {
         if (mainStmts.isEmpty) {
           throw Compiler.Error(s"No main statements defined in TxScript ${typeId.name}")
         } else {
-          val (usePreapprovedAssets, useContractAssets) =
-            Parser.extractAssetModifier(annotations, true, false)
+          val (usePreapprovedAssets, useContractAssets, _) =
+            Parser.extractAssetModifier(annotations, true, false, true)
           Ast.TxScript(
             typeId,
             templateVars.getOrElse(Seq.empty),
@@ -472,31 +499,68 @@ object StatefulParser extends Parser[StatefulContext] {
     P(Lexer.keyword("extends") ~ (contractInheritance.rep(1, ",")))
 
   def contractInheritances[Unknown: P]: P[Seq[Ast.Inheritance]] = {
-    P(contractExtending.? ~ interfaceImplementing.?).map { case (extendingsOpt, implementingOpt) =>
-      extendingsOpt.getOrElse(Seq.empty) ++ implementingOpt.getOrElse(Seq.empty)
+    P(contractExtending.? ~ interfaceImplementing.?).map {
+      case (extendingsOpt, implementingOpt) => {
+        val implementedInterfaces = implementingOpt.getOrElse(Seq.empty)
+        if (implementedInterfaces.length > 1) {
+          val interfaceNames = implementedInterfaces.map(_.parentId.name).mkString(", ")
+          throw Compiler.Error(
+            s"Contract only supports implementing single interface: $interfaceNames"
+          )
+        }
+
+        extendingsOpt.getOrElse(Seq.empty) ++ implementedInterfaces
+      }
     }
   }
 
+  def constantVarDef[Unknown: P]: P[Ast.ConstantVarDef] =
+    P(Lexer.keyword("const") ~/ Lexer.constantIdent ~ "=" ~ value).map { case (ident, v) =>
+      Ast.ConstantVarDef(ident, v)
+    }
+
+  def enumFieldSelector[Unknown: P]: P[Ast.EnumFieldSelector[StatefulContext]] =
+    P(Lexer.typeId ~ "." ~ Lexer.constantIdent).map { case (enumId, field) =>
+      Ast.EnumFieldSelector(enumId, field)
+    }
+  def enumField[Unknown: P]: P[Ast.EnumField] =
+    P(Lexer.constantIdent ~ "=" ~ value).map(Ast.EnumField.tupled)
+  def rawEnumDef[Unknown: P]: P[Ast.EnumDef] =
+    P(Lexer.keyword("enum") ~/ Lexer.typeId ~ "{" ~ enumField.rep ~ "}").map { case (id, fields) =>
+      if (fields.length == 0) {
+        throw Compiler.Error(s"No field definition in Enum ${id.name}")
+      }
+      Ast.UniqueDef.checkDuplicates(fields, "enum fields")
+      if (fields.distinctBy(_.value.tpe).size != 1) {
+        throw Compiler.Error(s"Fields have different types in Enum ${id.name}")
+      }
+      if (fields.distinctBy(_.value).size != fields.length) {
+        throw Compiler.Error(s"Fields have the same value in Enum ${id.name}")
+      }
+      Ast.EnumDef(id, fields)
+    }
+  def enumDef[Unknown: P]: P[Ast.EnumDef] = P(Start ~ rawEnumDef ~ End)
+
   @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
-  def rawTxContract[Unknown: P]: P[Ast.TxContract] =
+  def rawContract[Unknown: P]: P[Ast.Contract] =
     P(
-      Lexer.keyword("TxContract") ~/ Lexer.typeId ~ contractParams ~
-        contractInheritances.? ~ "{" ~ eventDef.rep ~ func.rep ~ "}"
-    ).map { case (typeId, fields, contractInheritances, events, funcs) =>
-      if (funcs.length < 1) {
-        throw Compiler.Error(s"No function definition in TxContract ${typeId.name}")
-      } else {
-        Ast.TxContract(
+      Lexer.`abstract` ~ Lexer.keyword("Contract") ~/ Lexer.typeId ~ contractFields ~
+        contractInheritances.? ~ "{" ~ eventDef.rep ~ constantVarDef.rep ~ rawEnumDef.rep ~ func.rep ~ "}"
+    ).map {
+      case (isAbstract, typeId, fields, contractInheritances, events, constantVars, enums, funcs) =>
+        Ast.Contract(
+          isAbstract,
           typeId,
           Seq.empty,
           fields,
           funcs,
           events,
+          constantVars,
+          enums,
           contractInheritances.getOrElse(Seq.empty)
         )
-      }
     }
-  def contract[Unknown: P]: P[Ast.TxContract] = P(Start ~ rawTxContract ~ End)
+  def contract[Unknown: P]: P[Ast.Contract] = P(Start ~ rawContract ~ End)
 
   @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   def interfaceInheritance[Unknown: P]: P[Ast.InterfaceInheritance] =
@@ -511,9 +575,10 @@ object StatefulParser extends Parser[StatefulContext] {
             f.isPublic,
             f.usePreapprovedAssets,
             f.useContractAssets,
+            f.usePermissionCheck,
             f.args,
             f.rtypes,
-            Seq.empty
+            None
           )
         case _ =>
           throw Compiler.Error(s"Interface function ${f.id.name} should not have function body")
@@ -529,7 +594,7 @@ object StatefulParser extends Parser[StatefulContext] {
       inheritances match {
         case Some(parents) if parents.length > 1 =>
           throw Compiler.Error(
-            s"Interface only supports single inheritance: ${parents.map(_.parentId.name).mkString(",")}"
+            s"Interface only supports single inheritance: ${parents.map(_.parentId.name).mkString(", ")}"
           )
         case _ => ()
       }
@@ -546,9 +611,9 @@ object StatefulParser extends Parser[StatefulContext] {
     }
   def interface[Unknown: P]: P[Ast.ContractInterface] = P(Start ~ rawInterface ~ End)
 
-  def multiContract[Unknown: P]: P[Ast.MultiTxContract] =
-    P(Start ~ (rawTxScript | rawTxContract | rawInterface).rep(1) ~ End)
-      .map(Ast.MultiTxContract.apply)
+  def multiContract[Unknown: P]: P[Ast.MultiContract] =
+    P(Start ~ (rawTxScript | rawContract | rawInterface).rep(1) ~ End)
+      .map(Ast.MultiContract.apply)
 
   def state[Unknown: P]: P[Seq[Ast.Const[StatefulContext]]] =
     P("[" ~ constOrArray.rep(0, ",") ~ "]").map(_.flatten)

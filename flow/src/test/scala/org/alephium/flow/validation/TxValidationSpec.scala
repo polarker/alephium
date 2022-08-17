@@ -85,6 +85,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
 
       blockFlow
         .transfer(
+          None,
           lockup,
           unlock,
           output,
@@ -732,13 +733,13 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
       s"""
          |AssetScript P2sh {
          |  pub fn main(a: U256) -> () {
-         |    assert!(a == $n)
+         |    assert!(a == $n, 0)
          |  }
          |}
          |""".stripMargin
     // scalastyle:on no.equal
 
-    val script   = Compiler.compileAssetScript(rawScript(51)).rightValue
+    val script   = Compiler.compileAssetScript(rawScript(51)).rightValue._1
     val lockup   = LockupScript.p2sh(script)
     val unlock   = UnlockScript.p2sh(script, AVector(Val.U256(51)))
     val unsigned = prepareOutput(lockup, unlock)
@@ -749,9 +750,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     tx0.pass()
 
     val tx1 = tx0.replaceUnlock(UnlockScript.p2sh(script, AVector(Val.U256(50))))
-    tx1.fail(UnlockScriptExeFailed(AssertionFailed))
+    tx1.fail(UnlockScriptExeFailed(AssertionFailedWithErrorCode(None, 0)))
 
-    val newScript = Compiler.compileAssetScript(rawScript(50)).rightValue
+    val newScript = Compiler.compileAssetScript(rawScript(50)).rightValue._1
     val tx2       = tx0.replaceUnlock(UnlockScript.p2sh(newScript, AVector(Val.U256(50))))
     tx2.fail(InvalidScriptHash)
   }
@@ -781,7 +782,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
          |}
          |""".stripMargin
 
-    val script   = Compiler.compileAssetScript(rawScript).rightValue
+    val script   = Compiler.compileAssetScript(rawScript).rightValue._1
     val lockup   = LockupScript.p2sh(script)
     val unlock   = UnlockScript.p2sh(script, AVector.empty)
     val unsigned = prepareOutput(lockup, unlock)
@@ -884,7 +885,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     val invalidExecutionRawScript =
       s"""
          |TxScript Main {
-         |  assert!(1 == 2)
+         |  assert!(1 == 2, 0)
          |}
          |""".stripMargin
     // scalastyle:on no.equal

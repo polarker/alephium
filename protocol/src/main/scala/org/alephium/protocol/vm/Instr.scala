@@ -148,7 +148,7 @@ object Instr {
     EthEcRecover,
     Log6, Log7, Log8, Log9,
     ContractIdToAddress,
-    LoadLocalByIndex, StoreLocalByIndex, Dup
+    LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap
   )
   val statefulInstrs0: AVector[InstrCompanion[StatefulContext]] = AVector(
     LoadField, StoreField, CallExternal,
@@ -159,7 +159,7 @@ object Instr {
     /* Below are instructions for Leman hard fork */
     MigrateSimple, MigrateWithFields, CopyCreateContractWithToken, BurnToken, LockApprovedAssets,
     CreateSubContract, CreateSubContractWithToken, CopyCreateSubContract, CopyCreateSubContractWithToken,
-    LoadFieldByIndex, StoreFieldByIndex
+    LoadFieldByIndex, StoreFieldByIndex, ContractExists
   )
   // format: on
 
@@ -455,10 +455,13 @@ case object Pop extends PureStackInstr {
 
 case object Dup extends PureStackInstr with LemanInstrWithSimpleGas[StatelessContext] {
   def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
-    for {
-      value <- frame.opStack.top.toRight(Right(StackUnderflow))
-      _     <- frame.pushOpStack(value)
-    } yield ()
+    frame.opStack.dupTop()
+  }
+}
+
+case object Swap extends PureStackInstr with LemanInstrWithSimpleGas[StatelessContext] {
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    frame.opStack.swapTopTwo()
   }
 }
 
@@ -1067,6 +1070,25 @@ case object Assert extends StatelessInstrSimpleGas with StatelessInstrCompanion0
   }
 }
 
+case object AssertWithErrorCode
+    extends LemanInstrWithSimpleGas[StatelessContext]
+    with StatelessInstrCompanion0
+    with GasVeryLow {
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      errorCodeU256 <- frame.popOpStackU256()
+      errorCode     <- errorCodeU256.v.toInt.toRight(Right(InvalidErrorCode(errorCodeU256.v)))
+      predicate     <- frame.popOpStackBool()
+      _ <-
+        if (predicate.v) {
+          okay
+        } else {
+          failed(AssertionFailedWithErrorCode(frame.obj.contractIdOpt, errorCode))
+        }
+    } yield ()
+  }
+}
+
 sealed trait CryptoInstr extends StatelessInstr with GasSchedule
 
 sealed abstract class HashAlg[H <: RandomBytes]
@@ -1488,7 +1510,7 @@ sealed trait CreateContractAbstract extends ContractInstr {
       for {
         parentContractId <- frame.obj.getContractId()
         path             <- frame.popOpStackByteVec()
-        subContractIdPreImage = path.bytes ++ parentContractId.bytes
+        subContractIdPreImage = parentContractId.bytes ++ path.bytes
         _ <- frame.ctx.chargeDoubleHash(subContractIdPreImage.length)
       } yield {
         Hash.doubleHash(subContractIdPreImage)
@@ -1591,6 +1613,19 @@ object CopyCreateSubContractWithToken
     with LemanInstrWithSimpleGas[StatefulContext] {
   def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     __runWith(frame, issueToken = true)
+  }
+}
+
+object ContractExists
+    extends StatefulInstrCompanion0
+    with LemanInstrWithSimpleGas[StatefulContext]
+    with GasContractExists {
+  def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      contractId <- frame.popContractId()
+      exist      <- frame.ctx.contractExists(contractId)
+      _          <- frame.pushOpStack(Val.Bool(exist))
+    } yield ()
   }
 }
 

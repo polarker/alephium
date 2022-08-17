@@ -836,63 +836,79 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
   }
 
   it should "encode/decode CompilerResult" in new TypeSignatureFixture {
-    val result0 = CompileContractResult.from(contract, contractAst)
+    val result0 = CompileContractResult.from(contract, contractAst, contractWarnings)
     val jsonRaw0 =
       """
         |{
         |  "bytecode": "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602",
         |  "codeHash": "eff62a4b2d4d4936a84e360c916a398d80d5000497ccd4afbd80bfe254d62096",
         |  "fields": {
-        |    "signature": "TxContract Foo(aa:Bool,mut bb:U256,cc:I256,mut dd:ByteVec,ee:Address,ff:[[Bool;1];2])",
         |    "names": ["aa","bb","cc","dd","ee","ff"],
-        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |    "isMutable": [false, true, false, true, false, false]
         |  },
         |  "functions": [
         |    {
         |      "name": "bar",
-        |      "signature": "@using(preapprovedAssets=true,assetsInContract=true) pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])",
-        |      "argNames": ["a","b","c","d","e","f"],
-        |      "argTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "usePreapprovedAssets": true,
+        |      "useAssetsInContract": true,
+        |      "isPublic": true,
+        |      "paramNames": ["a","b","c","d","e","f"],
+        |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "paramIsMutable": [false, true, false, true, false, false],
         |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
         |    }
         |  ],
         |  "events": [
         |    {
         |      "name": "Bar",
-        |      "signature": "event Bar(a:Bool,b:U256,d:ByteVec,e:Address)",
         |      "fieldNames":["a","b","d","e"],
         |      "fieldTypes": ["Bool", "U256", "ByteVec", "Address"]
         |    }
+        |  ],
+        |  "warnings": [
+        |    "Found unused variables in function bar: bar.a",
+        |    "Found unused fields: aa, bb, cc, dd, ee"
         |  ]
         |}
         |""".stripMargin
     write(result0).filter(!_.isWhitespace) is jsonRaw0.filter(!_.isWhitespace)
 
-    val result1 = CompileScriptResult.from(script, scriptAst)
+    val result1 = CompileScriptResult.from(script, scriptAst, scriptWarnings)
     val jsonRaw1 =
       """
         |{
         |  "bytecodeTemplate": "020103000000010201000707060716011602160316041605160602",
         |  "fields": {
-        |    "signature": "TxScript Foo(aa:Bool,bb:U256,cc:I256,dd:ByteVec,ee:Address)",
         |    "names": ["aa","bb","cc","dd","ee"],
-        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"]
+        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"],
+        |    "isMutable": [false, false, false, false, false]
         |  },
         |  "functions": [
         |    {
         |      "name": "main",
-        |      "signature": "@using(preapprovedAssets=true) pub main()->()",
-        |      "argNames": [],
-        |      "argTypes": [],
+        |      "usePreapprovedAssets": true,
+        |      "useAssetsInContract": false,
+        |      "isPublic": true,
+        |      "paramNames": [],
+        |      "paramTypes": [],
+        |      "paramIsMutable": [],
         |      "returnTypes": []
         |    },
         |    {
         |      "name": "bar",
-        |      "signature": "pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])",
-        |      "argNames": ["a","b","c","d","e","f"],
-        |      "argTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "usePreapprovedAssets": false,
+        |      "useAssetsInContract": false,
+        |      "isPublic": true,
+        |      "paramNames": ["a","b","c","d","e","f"],
+        |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+        |      "paramIsMutable": [false, true, false, true, false, false],
         |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
         |    }
+        |  ],
+        |  "warnings": [
+        |    "Found unused variables in function bar: bar.a",
+        |    "Found unused fields: cc, ff"
         |  ]
         |}
         |""".stripMargin
