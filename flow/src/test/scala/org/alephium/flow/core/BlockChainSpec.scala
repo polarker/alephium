@@ -561,6 +561,8 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
     val ts      = all.rightValue._2.map { case (header, _) => header.timestamp }
     val heights = all.rightValue._2.map { case (_, heights) => heights }
 
+    println(s"=============== $ts")
+
     heights is AVector(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     def subset(from: TimeStamp, to: TimeStamp): AVector[Int] = {
