@@ -21,18 +21,25 @@ import scala.collection.{immutable, mutable}
 import fastparse.Parsed
 
 import org.alephium.protocol.vm._
-import org.alephium.protocol.vm.lang.Ast.MultiTxContract
+import org.alephium.protocol.vm.lang.Ast.MultiContract
 import org.alephium.util.AVector
 
+// scalastyle:off number.of.methods
+// scalastyle:off file.size.limit
+@SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 object Compiler {
+  type CompiledContract = (StatefulContract, Ast.Contract, AVector[String])
+  type CompiledScript   = (StatefulScript, Ast.TxScript, AVector[String])
+
   def compileAssetScript(
-      input: String
-  ): Either[Error, StatelessScript] =
+      input: String,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, (StatelessScript, AVector[String])] =
     try {
       fastparse.parse(input, StatelessParser.assetScript(_)) match {
         case Parsed.Success(script, _) =>
-          val state = State.buildFor(script)
-          Right(script.genCode(state))
+          val state = State.buildFor(script)(compilerOptions)
+          Right((script.genCode(state), state.getWarnings))
         case failure: Parsed.Failure =>
           Left(Error.parse(failure))
       }
@@ -40,37 +47,35 @@ object Compiler {
       case e: Error => Left(e)
     }
 
-  def compileTxScript(input: String): Either[Error, StatefulScript] =
-    compileTxScript(input, 0)
-
-  def compileTxScript(input: String, index: Int): Either[Error, StatefulScript] =
-    compileTxScriptFull(input, index).map(_._1)
-
-  def compileTxScriptFull(input: String): Either[Error, (StatefulScript, Ast.TxScript)] =
-    compileTxScriptFull(input, 0)
+  def compileTxScript(
+      input: String,
+      index: Int = 0,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, StatefulScript] =
+    compileTxScriptFull(input, index, compilerOptions).map(_._1)
 
   def compileTxScriptFull(
       input: String,
-      index: Int
-  ): Either[Error, (StatefulScript, Ast.TxScript)] =
-    compileStateful(input, _.genStatefulScript(index))
+      index: Int = 0,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, CompiledScript] =
+    compileStateful(input, _.genStatefulScript(index)(compilerOptions))
 
-  def compileContract(input: String): Either[Error, StatefulContract] =
-    compileContract(input, 0)
-
-  def compileContract(input: String, index: Int): Either[Error, StatefulContract] =
-    compileContractFull(input, index).map(_._1)
-
-  def compileContractFull(input: String): Either[Error, (StatefulContract, Ast.TxContract)] =
-    compileContractFull(input, 0)
+  def compileContract(
+      input: String,
+      index: Int = 0,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, StatefulContract] =
+    compileContractFull(input, index, compilerOptions).map(_._1)
 
   def compileContractFull(
       input: String,
-      index: Int
-  ): Either[Error, (StatefulContract, Ast.TxContract)] =
-    compileStateful(input, _.genStatefulContract(index))
+      index: Int = 0,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, CompiledContract] =
+    compileStateful(input, _.genStatefulContract(index)(compilerOptions))
 
-  private def compileStateful[T](input: String, genCode: MultiTxContract => T): Either[Error, T] = {
+  private def compileStateful[T](input: String, genCode: MultiContract => T): Either[Error, T] = {
     try {
       compileMultiContract(input).map(genCode)
     } catch {
@@ -78,7 +83,23 @@ object Compiler {
     }
   }
 
-  def compileMultiContract[T](input: String): Either[Error, MultiTxContract] = {
+  def compileProject(
+      input: String,
+      compilerOptions: CompilerOptions = CompilerOptions.Default
+  ): Either[Error, (AVector[CompiledContract], AVector[CompiledScript])] = {
+    try {
+      compileMultiContract(input).map { multiContract =>
+        val statefulContracts =
+          multiContract.genStatefulContracts()(compilerOptions).map(c => (c._1, c._2, c._3))
+        val statefulScripts = multiContract.genStatefulScripts()(compilerOptions)
+        (statefulContracts, statefulScripts)
+      }
+    } catch {
+      case e: Error => Left(e)
+    }
+  }
+
+  def compileMultiContract(input: String): Either[Error, MultiContract] = {
     try {
       fastparse.parse(input, StatefulParser.multiContract(_)) match {
         case Parsed.Success(multiContract, _) => Right(multiContract.extendedContracts())
@@ -106,42 +127,83 @@ object Compiler {
     def isVariadic: Boolean = false
     def usePreapprovedAssets: Boolean
     def useAssetsInContract: Boolean
+    def isReadonly: Boolean
     def getReturnType(inputType: Seq[Type]): Seq[Type]
+    def getReturnLength(inputType: Seq[Type]): Int = {
+      val retTypes = getReturnType(inputType)
+      Type.flattenTypeLength(retTypes)
+    }
     def genCode(inputType: Seq[Type]): Seq[Instr[Ctx]]
     def genExternalCallCode(typeId: Ast.TypeId): Seq[Instr[StatefulContext]]
   }
 
   final case class Error(message: String) extends Exception(message)
   object Error {
-    def parse(failure: Parsed.Failure): Error = Error(s"Parser failed: $failure")
+    def parse(failure: Parsed.Failure): Error = Error(s"Parser failed: ${failure.trace().longMsg}")
   }
 
   def expectOneType(ident: Ast.Ident, tpe: Seq[Type]): Type = {
     if (tpe.length == 1) {
       tpe(0)
     } else {
-      throw Error(s"Try to set types $tpe for varialbe $ident")
+      throw Error(s"Try to set types $tpe for variable $ident")
     }
   }
 
+  type VarInfoBuilder = (Type, Boolean, Boolean, Byte, Boolean) => VarInfo
   sealed trait VarInfo {
     def tpe: Type
     def isMutable: Boolean
+    def isUnused: Boolean
+    def isGenerated: Boolean
+    def isLocal: Boolean
   }
   object VarInfo {
-    final case class Local(tpe: Type, isMutable: Boolean, index: Byte) extends VarInfo
-    final case class Field(tpe: Type, isMutable: Boolean, index: Byte) extends VarInfo
+    final case class Local(
+        tpe: Type,
+        isMutable: Boolean,
+        isUnused: Boolean,
+        index: Byte,
+        isGenerated: Boolean
+    ) extends VarInfo {
+      def isLocal: Boolean = true
+    }
+    final case class Field(
+        tpe: Type,
+        isMutable: Boolean,
+        isUnused: Boolean,
+        index: Byte,
+        isGenerated: Boolean
+    ) extends VarInfo {
+      def isLocal: Boolean = false
+    }
     final case class Template(tpe: Type, index: Int) extends VarInfo {
-      def isMutable: Boolean = false
+      def isMutable: Boolean   = false
+      def isUnused: Boolean    = false
+      def isGenerated: Boolean = false
+      def isLocal: Boolean     = false
     }
     final case class ArrayRef[Ctx <: StatelessContext](
         isMutable: Boolean,
+        isUnused: Boolean,
+        isGenerated: Boolean,
         ref: ArrayTransformer.ArrayRef[Ctx]
     ) extends VarInfo {
-      def tpe: Type = ref.tpe
+      def tpe: Type        = ref.tpe
+      def isLocal: Boolean = ref.isLocal
+    }
+    final case class Constant[Ctx <: StatelessContext](
+        tpe: Type,
+        instrs: Seq[Instr[Ctx]]
+    ) extends VarInfo {
+      def isMutable: Boolean   = false
+      def isUnused: Boolean    = false
+      def isGenerated: Boolean = false
+      def isLocal: Boolean     = true
     }
   }
   trait ContractFunc[Ctx <: StatelessContext] extends FuncInfo[Ctx] {
+    def argsType: Seq[Type]
     def returnType: Seq[Type]
   }
   final case class SimpleFunc[Ctx <: StatelessContext](
@@ -149,6 +211,7 @@ object Compiler {
       isPublic: Boolean,
       usePreapprovedAssets: Boolean,
       useAssetsInContract: Boolean,
+      isReadonly: Boolean,
       argsType: Seq[Type],
       returnType: Seq[Type],
       index: Byte
@@ -171,7 +234,7 @@ object Compiler {
       if (isPublic) {
         Seq(CallExternal(index))
       } else {
-        throw Error(s"Call external private function of $typeId")
+        throw Error(s"Call external private function of ${typeId.name}")
       }
     }
   }
@@ -183,6 +246,7 @@ object Compiler {
           func.isPublic,
           func.usePreapprovedAssets,
           func.useAssetsInContract,
+          func.useReadonly,
           func.args.map(_.tpe),
           func.rtypes,
           index.toByte
@@ -256,23 +320,37 @@ object Compiler {
       }
     }
 
-    def buildFor(script: Ast.AssetScript): State[StatelessContext] =
+    def buildFor(script: Ast.AssetScript)(implicit
+        compilerOptions: CompilerOptions
+    ): State[StatelessContext] =
       StateForScript(
+        script.ident,
         mutable.HashMap.empty,
         Ast.FuncId.empty,
         0,
         script.funcTable,
-        immutable.Map(script.ident -> script.funcTable)
+        immutable.Map(script.ident -> ContractInfo(ContractKind.TxScript, script.funcTable))
       )
 
     @SuppressWarnings(Array("org.wartremover.warts.IsInstanceOf"))
     def buildFor(
-        multiContract: MultiTxContract,
+        multiContract: MultiContract,
         contractIndex: Int
-    ): State[StatefulContext] = {
-      val contractsTable = multiContract.contracts.map(c => c.ident -> c.funcTable).toMap
-      val contract       = multiContract.get(contractIndex)
+    )(implicit compilerOptions: CompilerOptions): State[StatefulContext] = {
+      val contractsTable = multiContract.contracts.map { contract =>
+        val kind = contract match {
+          case _: Ast.ContractInterface =>
+            ContractKind.Interface
+          case _: Ast.TxScript =>
+            ContractKind.TxScript
+          case txContract: Ast.Contract =>
+            ContractKind.Contract(txContract.isAbstract)
+        }
+        contract.ident -> ContractInfo(kind, contract.funcTable)
+      }.toMap
+      val contract = multiContract.get(contractIndex)
       StateForContract(
+        contract.ident,
         contract.isInstanceOf[Ast.TxScript],
         mutable.HashMap.empty,
         Ast.FuncId.empty,
@@ -284,15 +362,82 @@ object Compiler {
     }
   }
 
+  sealed trait ContractKind extends Serializable with Product {
+    def instantiable: Boolean
+    def inheritable: Boolean
+
+    override def toString(): String = productPrefix
+  }
+  object ContractKind {
+    case object TxScript extends ContractKind {
+      def instantiable: Boolean = false
+      def inheritable: Boolean  = false
+    }
+    case object Interface extends ContractKind {
+      def instantiable: Boolean = true
+      def inheritable: Boolean  = true
+    }
+    final case class Contract(isAbstract: Boolean) extends ContractKind {
+      def instantiable: Boolean = !isAbstract
+      def inheritable: Boolean  = isAbstract
+
+      override def toString(): String = {
+        if (isAbstract) "Abstract Contract" else "Contract"
+      }
+    }
+  }
+
+  final case class ContractInfo[Ctx <: StatelessContext](
+      kind: ContractKind,
+      funcs: immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
+  )
+
+  trait CallGraph {
+    def scope: Ast.FuncId
+
+    // caller -> callees
+    val internalCalls = mutable.HashMap.empty[Ast.FuncId, mutable.Set[Ast.FuncId]]
+    def addInternalCall(callee: Ast.FuncId): Unit = {
+      internalCalls.get(scope) match {
+        case Some(callees) => callees += callee
+        case None          => internalCalls.update(scope, mutable.Set(callee))
+      }
+    }
+    // callee -> callers
+    lazy val internalCallsReversed: mutable.Map[Ast.FuncId, mutable.ArrayBuffer[Ast.FuncId]] = {
+      val reversed = mutable.Map.empty[Ast.FuncId, mutable.ArrayBuffer[Ast.FuncId]]
+      internalCalls.foreach { case (caller, callees) =>
+        callees.foreach { callee =>
+          reversed.get(callee) match {
+            case None          => reversed.update(callee, mutable.ArrayBuffer(caller))
+            case Some(callers) => callers.addOne(caller)
+          }
+        }
+      }
+      reversed
+    }
+
+    val externalCalls = mutable.HashMap.empty[Ast.FuncId, mutable.Set[(Ast.TypeId, Ast.FuncId)]]
+    def addExternalCall(contract: Ast.TypeId, func: Ast.FuncId): Unit = {
+      val funcRef = contract -> func
+      externalCalls.get(scope) match {
+        case Some(callees) => callees += funcRef
+        case None          => externalCalls.update(scope, mutable.Set(funcRef))
+      }
+    }
+  }
+
   // scalastyle:off number.of.methods
-  sealed trait State[Ctx <: StatelessContext] {
+  sealed trait State[Ctx <: StatelessContext] extends CallGraph with Warnings {
+    def typeId: Ast.TypeId
     def varTable: mutable.HashMap[String, VarInfo]
     var scope: Ast.FuncId
     var varIndex: Int
     def funcIdents: immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
-    def contractTable: immutable.Map[Ast.TypeId, immutable.Map[Ast.FuncId, ContractFunc[Ctx]]]
+    def contractTable: immutable.Map[Ast.TypeId, ContractInfo[Ctx]]
     private var freshNameIndex: Int              = 0
     private var arrayIndexVar: Option[Ast.Ident] = None
+    val usedVars: mutable.Set[String]            = mutable.Set.empty[String]
     def eventsInfo: Seq[EventInfo]
 
     @inline final def freshName(): String = {
@@ -306,7 +451,7 @@ object Compiler {
         case Some(ident) => ident
         case None =>
           val ident = Ast.Ident(freshName())
-          addLocalVariable(ident, Type.U256, true)
+          addLocalVariable(ident, Type.U256, isMutable = true, isUnused = false, isGenerated = true)
           arrayIndexVar = Some(ident)
           ident
       }
@@ -328,7 +473,16 @@ object Compiler {
         case _ =>
           val arrayType = expr.getType(this)(0).asInstanceOf[Type.FixedSizeArray]
           val arrayRef =
-            ArrayTransformer.init(this, arrayType, freshName(), false, true, VarInfo.Local)
+            ArrayTransformer.init(
+              this,
+              arrayType,
+              freshName(),
+              isMutable = false,
+              isUnused = false,
+              isLocal = true,
+              isGenerated = true,
+              VarInfo.Local
+            )
           val codes = expr.genCode(this) ++ arrayRef.genStoreCode(this).reverse.flatten
           (arrayRef, codes)
       }
@@ -337,10 +491,12 @@ object Compiler {
     def addArrayRef(
         ident: Ast.Ident,
         isMutable: Boolean,
+        isUnused: Boolean,
+        isGenerated: Boolean,
         arrayRef: ArrayTransformer.ArrayRef[Ctx]
     ): Unit = {
       val sname = checkNewVariable(ident)
-      varTable(sname) = VarInfo.ArrayRef(isMutable, arrayRef)
+      varTable(sname) = VarInfo.ArrayRef(isMutable, isUnused, isGenerated, arrayRef)
     }
 
     def getArrayRef(ident: Ast.Ident): ArrayTransformer.ArrayRef[Ctx] = {
@@ -372,32 +528,60 @@ object Compiler {
           varTable(sname) = VarInfo.Template(tpe, index)
       }
     }
-    def addFieldVariable(ident: Ast.Ident, tpe: Type, isMutable: Boolean): Unit = {
-      addVariable(ident, tpe, isMutable, false, VarInfo.Field)
+    def addFieldVariable(
+        ident: Ast.Ident,
+        tpe: Type,
+        isMutable: Boolean,
+        isUnused: Boolean,
+        isGenerated: Boolean
+    ): Unit = {
+      addVariable(ident, tpe, isMutable, isUnused, isLocal = false, isGenerated, VarInfo.Field)
     }
-    def addLocalVariable(ident: Ast.Ident, tpe: Type, isMutable: Boolean): Unit = {
-      addVariable(ident, tpe, isMutable, true, VarInfo.Local)
+    def addLocalVariable(
+        ident: Ast.Ident,
+        tpe: Type,
+        isMutable: Boolean,
+        isUnused: Boolean,
+        isGenerated: Boolean
+    ): Unit = {
+      addVariable(ident, tpe, isMutable, isUnused, isLocal = true, isGenerated, VarInfo.Local)
     }
     def addVariable(
         ident: Ast.Ident,
         tpe: Type,
         isMutable: Boolean,
+        isUnused: Boolean,
         isLocal: Boolean,
-        varInfoBuild: (Type, Boolean, Byte) => VarInfo
+        isGenerated: Boolean,
+        varInfoBuilder: Compiler.VarInfoBuilder
     ): Unit = {
       val sname = checkNewVariable(ident)
       tpe match {
         case t: Type.FixedSizeArray =>
-          ArrayTransformer.init(this, t, ident.name, isMutable, isLocal, varInfoBuild)
+          ArrayTransformer.init(
+            this,
+            t,
+            ident.name,
+            isMutable,
+            isUnused,
+            isLocal,
+            isGenerated,
+            varInfoBuilder
+          )
           ()
         case c: Type.Contract =>
           val varType = Type.Contract.local(c.id, ident)
-          varTable(sname) = varInfoBuild(varType, isMutable, varIndex.toByte)
+          varTable(sname) =
+            varInfoBuilder(varType, isMutable, isUnused, varIndex.toByte, isGenerated)
           varIndex += 1
         case _ =>
-          varTable(sname) = varInfoBuild(tpe, isMutable, varIndex.toByte)
+          varTable(sname) = varInfoBuilder(tpe, isMutable, isUnused, varIndex.toByte, isGenerated)
           varIndex += 1
       }
+    }
+    def addConstantVariable(ident: Ast.Ident, tpe: Type, instrs: Seq[Instr[Ctx]]): Unit = {
+      val sname = checkNewVariable(ident)
+      varTable(sname) = VarInfo.Constant(tpe, instrs)
     }
 
     private def checkNewVariable(ident: Ast.Ident): String = {
@@ -416,10 +600,51 @@ object Compiler {
     def getVariable(ident: Ast.Ident): VarInfo = {
       val name  = ident.name
       val sname = scopedName(ident.name)
-      varTable.getOrElse(
-        sname,
-        varTable.getOrElse(name, throw Error(s"Variable $sname does not exist"))
-      )
+      val (varName, varInfo) = varTable.get(sname) match {
+        case Some(varInfo) => (sname, varInfo)
+        case None =>
+          varTable.get(name) match {
+            case Some(varInfo) => (name, varInfo)
+            case None          => throw Error(s"Variable $sname does not exist")
+          }
+      }
+      usedVars.add(varName)
+      varInfo
+    }
+
+    def addUsedVars(names: Set[String]): Unit = usedVars.addAll(names)
+
+    def checkUnusedLocalVars(funcId: Ast.FuncId): Unit = {
+      val prefix = s"${funcId.name}."
+      val unusedVars = varTable.filter { case (name, varInfo) =>
+        name.startsWith(prefix) &&
+        !usedVars.contains(name) &&
+        !varInfo.isGenerated &&
+        !varInfo.isUnused
+      }
+      if (unusedVars.nonEmpty) {
+        warnUnusedVariables(typeId, unusedVars)
+      }
+      usedVars.filterInPlace(name => !name.startsWith(prefix))
+    }
+
+    def checkUnusedFields(): Unit = {
+      val unusedVars = varTable.filter { case (name, varInfo) =>
+        !usedVars.contains(name) && !varInfo.isGenerated && !varInfo.isUnused
+      }
+      val unusedConstants = mutable.ArrayBuffer.empty[String]
+      val unusedFields    = mutable.ArrayBuffer.empty[String]
+      unusedVars.foreach {
+        case (name, _: VarInfo.Constant[_])      => unusedConstants.addOne(name)
+        case (name, varInfo) if !varInfo.isLocal => unusedFields.addOne(name)
+        case _                                   => ()
+      }
+      if (unusedConstants.nonEmpty) {
+        warnUnusedConstants(typeId, unusedConstants)
+      }
+      if (unusedFields.nonEmpty) {
+        warnUnusedFields(typeId, unusedFields)
+      }
     }
 
     def getLocalVars(func: Ast.FuncId): Seq[VarInfo] = {
@@ -435,7 +660,8 @@ object Compiler {
     def checkArrayIndexType(index: Ast.Expr[Ctx]): Unit = {
       index.getType(this) match {
         case Seq(Type.U256) =>
-        case tpe            => throw Compiler.Error(s"Invalid array index type $tpe")
+        case tpe =>
+          throw Compiler.Error(s"Invalid array index type ${quote(tpe)}, expected ${quote("U256")}")
       }
     }
 
@@ -449,7 +675,7 @@ object Compiler {
       } else {
         arrayType.baseType match {
           case baseType: Type.FixedSizeArray => arrayElementType(baseType, indexes.drop(1))
-          case tpe => throw Compiler.Error(s"Expect array type, have: $tpe")
+          case tpe => throw Compiler.Error(s"Expected array type, got ${quote(tpe)}")
         }
       }
     }
@@ -462,7 +688,7 @@ object Compiler {
       tpes match {
         case Seq(tpe: Type.FixedSizeArray) => arrayElementType(tpe, indexes)
         case tpe =>
-          throw Compiler.Error(s"Expect array type, have: $tpe")
+          throw Compiler.Error(s"Expected array type, got ${quote(tpe)}")
       }
     }
 
@@ -494,10 +720,13 @@ object Compiler {
       }
     }
 
-    def getFunc(typeId: Ast.TypeId, callId: Ast.FuncId): FuncInfo[Ctx] = {
-      contractTable
-        .getOrElse(typeId, throw Error(s"Contract ${typeId.name} does not exist"))
+    def getFunc(typeId: Ast.TypeId, callId: Ast.FuncId): ContractFunc[Ctx] = {
+      getContractInfo(typeId).funcs
         .getOrElse(callId, throw Error(s"Function ${typeId}.${callId.name} does not exist"))
+    }
+
+    def getContractInfo(typeId: Ast.TypeId): ContractInfo[Ctx] = {
+      contractTable.getOrElse(typeId, throw Error(s"Contract ${typeId.name} does not exist"))
     }
 
     def getEvent(typeId: Ast.TypeId): EventInfo = {
@@ -540,7 +769,7 @@ object Compiler {
     def checkReturn(returnType: Seq[Type]): Unit = {
       val rtype = funcIdents(scope).returnType
       if (returnType != rtype) {
-        throw Error(s"Invalid return types: expected $rtype, got $returnType")
+        throw Error(s"Invalid return types: expected ${quote(rtype)}, got ${quote(returnType)}")
       }
     }
   }
@@ -548,12 +777,14 @@ object Compiler {
 
   type Contract[Ctx <: StatelessContext] = immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
   final case class StateForScript(
+      typeId: Ast.TypeId,
       varTable: mutable.HashMap[String, VarInfo],
       var scope: Ast.FuncId,
       var varIndex: Int,
       funcIdents: immutable.Map[Ast.FuncId, ContractFunc[StatelessContext]],
-      contractTable: immutable.Map[Ast.TypeId, Contract[StatelessContext]]
-  ) extends State[StatelessContext] {
+      contractTable: immutable.Map[Ast.TypeId, ContractInfo[StatelessContext]]
+  )(implicit val compilerOptions: CompilerOptions)
+      extends State[StatelessContext] {
     override def eventsInfo: Seq[EventInfo] = Seq.empty
 
     protected def getBuiltInFunc(call: Ast.FuncId): FuncInfo[StatelessContext] = {
@@ -600,6 +831,7 @@ object Compiler {
         case v: VarInfo.Template => Seq(TemplateVariable(ident.name, v.tpe.toVal, v.index))
         case _: VarInfo.ArrayRef[StatelessContext @unchecked] =>
           getArrayRef(ident).genLoadCode(this)
+        case v: VarInfo.Constant[StatelessContext @unchecked] => v.instrs
       }
     }
 
@@ -610,19 +842,23 @@ object Compiler {
         case v: VarInfo.Local    => Seq(Seq(StoreLocal(v.index)))
         case _: VarInfo.Template => throw Error(s"Unexpected template variable: ${ident.name}")
         case ref: VarInfo.ArrayRef[StatelessContext @unchecked] => ref.ref.genStoreCode(this)
+        case _: VarInfo.Constant[StatelessContext @unchecked] =>
+          throw Error(s"Unexpected constant variable: ${ident.name}")
       }
     }
   }
 
   final case class StateForContract(
+      typeId: Ast.TypeId,
       isTxScript: Boolean,
       varTable: mutable.HashMap[String, VarInfo],
       var scope: Ast.FuncId,
       var varIndex: Int,
       funcIdents: immutable.Map[Ast.FuncId, ContractFunc[StatefulContext]],
       eventsInfo: Seq[EventInfo],
-      contractTable: immutable.Map[Ast.TypeId, Contract[StatefulContext]]
-  ) extends State[StatefulContext] {
+      contractTable: immutable.Map[Ast.TypeId, ContractInfo[StatefulContext]]
+  )(implicit val compilerOptions: CompilerOptions)
+      extends State[StatefulContext] {
     protected def getBuiltInFunc(call: Ast.FuncId): FuncInfo[StatefulContext] = {
       BuiltIn.statefulFuncs
         .getOrElse(call.name, throw Error(s"Built-in function ${call.name} does not exist"))
@@ -681,6 +917,7 @@ object Compiler {
         case v: VarInfo.Local    => Seq(LoadLocal(v.index))
         case v: VarInfo.Template => Seq(TemplateVariable(ident.name, varInfo.tpe.toVal, v.index))
         case _: VarInfo.ArrayRef[StatefulContext @unchecked] => getArrayRef(ident).genLoadCode(this)
+        case v: VarInfo.Constant[StatefulContext @unchecked] => v.instrs
       }
     }
 
@@ -691,6 +928,8 @@ object Compiler {
         case v: VarInfo.Local    => Seq(Seq(StoreLocal(v.index)))
         case _: VarInfo.Template => throw Error(s"Unexpected template variable: ${ident.name}")
         case ref: VarInfo.ArrayRef[StatefulContext @unchecked] => ref.ref.genStoreCode(this)
+        case _: VarInfo.Constant[StatefulContext @unchecked] =>
+          throw Error(s"Unexpected constant variable: ${ident.name}")
       }
     }
   }
@@ -699,7 +938,7 @@ object Compiler {
     if (logFieldLength >= 0 && logFieldLength < Instr.allLogInstrs.length) {
       Instr.allLogInstrs(logFieldLength)
     } else {
-      throw Compiler.Error(s"Max 8 fields allowed for contract events")
+      throw Compiler.Error(s"Contract events allow up to 8 fields")
     }
   }
 }

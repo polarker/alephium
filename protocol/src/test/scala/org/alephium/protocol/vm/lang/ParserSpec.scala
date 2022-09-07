@@ -26,6 +26,7 @@ import org.alephium.protocol.vm.lang.LogicalOperator._
 import org.alephium.protocol.vm.lang.TestOperator._
 import org.alephium.util.{AlephiumSpec, AVector, Hex, I256, U256}
 
+// scalastyle:off file.size.limit
 class ParserSpec extends AlephiumSpec {
   import Ast._
 
@@ -55,6 +56,12 @@ class ParserSpec extends AlephiumSpec {
         Or,
         Binop(And, Variable(Ident("x")), Variable(Ident("y"))),
         Variable(Ident("z"))
+      )
+    fastparse.parse("foo(ErrorCodes.Error)", StatefulParser.expr(_)).get.value is
+      CallExpr[StatefulContext](
+        FuncId("foo", false),
+        Seq.empty,
+        Seq(EnumFieldSelector(TypeId("ErrorCodes"), Ident("Error")))
       )
   }
 
@@ -129,7 +136,10 @@ class ParserSpec extends AlephiumSpec {
         Const(Val.ByteVec(Hex.unsafe("00")))
       )
     fastparse.parse("let bytes = #", StatefulParser.statement(_)).get.value is
-      VarDef[StatefulContext](Seq((false, Ident("bytes"))), Const(Val.ByteVec(ByteString.empty)))
+      VarDef[StatefulContext](
+        Seq(Ast.NamedVar(false, Ident("bytes"))),
+        Const(Val.ByteVec(ByteString.empty))
+      )
   }
 
   it should "parse return" in {
@@ -144,50 +154,80 @@ class ParserSpec extends AlephiumSpec {
     fastparse.parse("let x = 1", StatelessParser.statement(_)).isSuccess is true
     fastparse.parse("x = 1", StatelessParser.statement(_)).isSuccess is true
     fastparse.parse("x = true", StatelessParser.statement(_)).isSuccess is true
+    fastparse.parse("ConstantVar = 0", StatefulParser.statement(_)).isSuccess is false
+    fastparse.parse("ErrorCodes.Error = 0", StatefulParser.statement(_)).isSuccess is false
     fastparse.parse("add(x, y)", StatelessParser.statement(_)).isSuccess is true
     fastparse.parse("foo.add(x, y)", StatefulParser.statement(_)).isSuccess is true
     fastparse.parse("Foo(x).add(x, y)", StatefulParser.statement(_)).isSuccess is true
     fastparse
-      .parse("if x >= 1 { y = y + x } else { y = 0 }", StatelessParser.statement(_))
+      .parse("if (x >= 1) { y = y + x } else { y = 0 }", StatelessParser.statement(_))
       .isSuccess is true
 
     fastparse
-      .parse("while true { x = x + 1 }", StatelessParser.statement(_))
+      .parse("while (true) { x = x + 1 }", StatelessParser.statement(_))
       .get
       .value is a[Ast.While[StatelessContext]]
     fastparse
-      .parse("for let mut i = 0; i < 10; i = i + 1 { x = x + 1 }", StatelessParser.statement(_))
+      .parse("for (let mut i = 0; i < 10; i = i + 1) { x = x + 1 }", StatelessParser.statement(_))
       .get
       .value is a[Ast.ForLoop[StatelessContext]]
   }
 
   it should "parse if-else statements" in {
     fastparse
-      .parse("if x { return }", StatelessParser.statement(_))
+      .parse("if (x) { return }", StatelessParser.statement(_))
       .get
       .value is
-      Ast.IfElse[StatelessContext](
-        Seq(Ast.IfBranch(Variable(Ast.Ident("x")), Seq(ReturnStmt(Seq.empty)))),
-        ElseBranch(Seq.empty)
+      Ast.IfElseStatement[StatelessContext](
+        Seq(Ast.IfBranchStatement(Variable(Ast.Ident("x")), Seq(ReturnStmt(Seq.empty)))),
+        None
       )
 
     val error = intercept[Compiler.Error](
       fastparse
-        .parse("if x { return } else if y { return }", StatelessParser.statement(_))
+        .parse("if (x) { return } else if (y) { return }", StatelessParser.statement(_))
     )
     error.message is "If ... else if constructs should be terminated with an else statement"
 
     fastparse
-      .parse("if x { return } else if y { return } else {}", StatelessParser.statement(_))
+      .parse("if (x) { return } else if (y) { return } else {}", StatelessParser.statement(_))
       .get
       .value is
-      Ast.IfElse[StatelessContext](
+      Ast.IfElseStatement[StatelessContext](
         Seq(
-          Ast.IfBranch(Variable(Ast.Ident("x")), Seq(ReturnStmt(Seq.empty))),
-          Ast.IfBranch(Variable(Ast.Ident("y")), Seq(ReturnStmt(Seq.empty)))
+          Ast.IfBranchStatement(Variable(Ast.Ident("x")), Seq(ReturnStmt(Seq.empty))),
+          Ast.IfBranchStatement(Variable(Ast.Ident("y")), Seq(ReturnStmt(Seq.empty)))
         ),
-        ElseBranch(Seq.empty)
+        Some(Ast.ElseBranchStatement(Seq.empty))
       )
+  }
+
+  it should "parse if-else expressions" in {
+    fastparse
+      .parse("if (cond) 0 else 1", StatelessParser.expr(_))
+      .get
+      .value is
+      Ast.IfElseExpr[StatelessContext](
+        Seq(
+          Ast.IfBranchExpr(Variable(Ast.Ident("cond")), Ast.Const(Val.U256(U256.Zero)))
+        ),
+        Ast.ElseBranchExpr(Ast.Const(Val.U256(U256.One)))
+      )
+
+    fastparse
+      .parse("if (cond0) 0 else if (cond1) 1 else 2", StatelessParser.expr(_))
+      .get
+      .value is
+      Ast.IfElseExpr[StatelessContext](
+        Seq(
+          Ast.IfBranchExpr(Variable(Ast.Ident("cond0")), Ast.Const(Val.U256(U256.Zero))),
+          Ast.IfBranchExpr(Variable(Ast.Ident("cond1")), Ast.Const(Val.U256(U256.One)))
+        ),
+        Ast.ElseBranchExpr(Ast.Const(Val.U256(U256.Two)))
+      )
+
+    val error = intercept[Compiler.Error](fastparse.parse("if (cond0) 0", StatelessParser.expr(_)))
+    error.message is "If else expressions should be terminated with an else branch"
   }
 
   it should "parse annotations" in {
@@ -211,7 +251,7 @@ class ParserSpec extends AlephiumSpec {
 
     val parsed1 = fastparse
       .parse(
-        """@using(preapprovedAssets = true)
+        """@using(preapprovedAssets = true, readonly = false)
           |pub fn add(x: U256, y: U256) -> (U256, U256) { return x + y, x - y }
           |""".stripMargin,
         StatelessParser.func(_)
@@ -222,6 +262,8 @@ class ParserSpec extends AlephiumSpec {
     parsed1.isPublic is true
     parsed1.usePreapprovedAssets is true
     parsed1.useAssetsInContract is false
+    parsed1.useExternalCallCheck is true
+    parsed1.useReadonly is false
     parsed1.args.size is 2
     parsed1.rtypes is Seq(Type.U256, Type.U256)
 
@@ -238,13 +280,15 @@ class ParserSpec extends AlephiumSpec {
     parsed2.isPublic is true
     parsed2.usePreapprovedAssets is true
     parsed2.useAssetsInContract is true
+    parsed2.useExternalCallCheck is true
+    parsed2.useReadonly is false
     parsed2.args.size is 2
     parsed2.rtypes is Seq(Type.U256)
 
     info("More use annotation")
     val parsed3 = fastparse
       .parse(
-        """@using(assetsInContract = true)
+        """@using(assetsInContract = true, readonly = true)
           |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
         StatelessParser.func(_)
       )
@@ -252,6 +296,17 @@ class ParserSpec extends AlephiumSpec {
       .value
     parsed3.usePreapprovedAssets is false
     parsed3.useAssetsInContract is true
+    parsed3.useExternalCallCheck is true
+    parsed3.useReadonly is true
+
+    val error = intercept[Compiler.Error](
+      fastparse.parse(
+        """@using(assetsInContract = true)
+          |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
+        StatelessParser.assetScriptFunc(_)
+      )
+    )
+    error.message is "AssetScript does not support using annotation"
   }
 
   it should "parser contract initial states" in {
@@ -299,18 +354,25 @@ class ParserSpec extends AlephiumSpec {
     val funcArgs = List(
       "(mut a: [Bool; 2], b: [[Address; 3]; 2], c: [Foo; 4], d: U256)" ->
         Seq(
-          Argument(Ident("a"), Type.FixedSizeArray(Type.Bool, 2), isMutable = true),
+          Argument(
+            Ident("a"),
+            Type.FixedSizeArray(Type.Bool, 2),
+            isMutable = true,
+            isUnused = false
+          ),
           Argument(
             Ident("b"),
             Type.FixedSizeArray(Type.FixedSizeArray(Type.Address, 3), 2),
-            isMutable = false
+            isMutable = false,
+            isUnused = false
           ),
           Argument(
             Ident("c"),
             Type.FixedSizeArray(Type.Contract.local(TypeId("Foo"), Ident("c")), 4),
-            isMutable = false
+            isMutable = false,
+            isUnused = false
           ),
-          Argument(Ident("d"), Type.U256, isMutable = false)
+          Argument(Ident("d"), Type.U256, isMutable = false, isUnused = false)
         )
     )
 
@@ -333,15 +395,35 @@ class ParserSpec extends AlephiumSpec {
   it should "parse variable definitions" in {
     val states: List[(String, Ast.Statement[StatelessContext])] = List(
       "let (a, b) = foo()" -> Ast.VarDef(
-        Seq((false, Ast.Ident("a")), (false, Ast.Ident("b"))),
+        Seq(Ast.NamedVar(false, Ast.Ident("a")), Ast.NamedVar(false, Ast.Ident("b"))),
         Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
       ),
       "let (a, mut b) = foo()" -> Ast.VarDef(
-        Seq((false, Ast.Ident("a")), (true, Ast.Ident("b"))),
+        Seq(Ast.NamedVar(false, Ast.Ident("a")), Ast.NamedVar(true, Ast.Ident("b"))),
         Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
       ),
       "let (mut a, mut b) = foo()" -> Ast.VarDef(
-        Seq((true, Ast.Ident("a")), (true, Ast.Ident("b"))),
+        Seq(Ast.NamedVar(true, Ast.Ident("a")), Ast.NamedVar(true, Ast.Ident("b"))),
+        Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
+      ),
+      "let _ = foo()" -> Ast.VarDef(
+        Seq(Ast.AnonymousVar),
+        Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
+      ),
+      "let (_, _) = foo()" -> Ast.VarDef(
+        Seq(Ast.AnonymousVar, Ast.AnonymousVar),
+        Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
+      ),
+      "let (_, a, b) = foo()" -> Ast.VarDef(
+        Seq(
+          Ast.AnonymousVar,
+          Ast.NamedVar(false, Ast.Ident("a")),
+          Ast.NamedVar(false, Ast.Ident("b"))
+        ),
+        Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
+      ),
+      "let (mut a, _, _) = foo()" -> Ast.VarDef(
+        Seq(Ast.NamedVar(true, Ast.Ident("a")), Ast.AnonymousVar, Ast.AnonymousVar),
         Ast.CallExpr(Ast.FuncId("foo", false), Seq.empty, Seq.empty)
       )
     )
@@ -464,21 +546,131 @@ class ParserSpec extends AlephiumSpec {
     }
   }
 
+  it should "parse constant variable definition" in {
+    val invalidDefinition = "const c = 1"
+    val failure = fastparse
+      .parse(invalidDefinition, StatefulParser.constantVarDef(_))
+      .asInstanceOf[fastparse.Parsed.Failure]
+    failure.trace().longMsg.contains("constant variables must start with an uppercase letter")
+
+    val address = Address.p2pkh(PublicKey.generate)
+    val definitions = Seq[(String, Val)](
+      ("const C = true", Val.True),
+      ("const C = 1", Val.U256(U256.One)),
+      ("const C = 1i", Val.I256(I256.One)),
+      ("const C = #11", Val.ByteVec(Hex.unsafe("11"))),
+      (s"const C = @${address.toBase58}", Val.Address(address.lockupScript))
+    )
+    definitions.foreach { definition =>
+      val constantVar = fastparse.parse(definition._1, StatefulParser.constantVarDef(_)).get.value
+      constantVar.ident.name is "C"
+      constantVar.value is definition._2
+    }
+  }
+
+  it should "parse enum definitions" in {
+    {
+      info("Invalid enum type")
+      val definition =
+        s"""
+           |enum errorCodes {
+           |  Error = 0
+           |}
+           |""".stripMargin
+      fastparse.parse(definition, StatefulParser.enumDef(_)).isSuccess is false
+    }
+
+    {
+      info("Invalid enum field name")
+      val definition =
+        s"""
+           |enum ErrorCodes {
+           |  error = 0
+           |}
+           |""".stripMargin
+      val failure = fastparse
+        .parse(definition, StatefulParser.enumDef(_))
+        .asInstanceOf[fastparse.Parsed.Failure]
+      failure.trace().longMsg.contains("constant variables must start with an uppercase letter")
+    }
+
+    {
+      info("Invalid enum field type")
+      val definition =
+        s"""
+           |enum ErrorCodes {
+           |  Error0 = 0
+           |  Error1 = #00
+           |}
+           |""".stripMargin
+      val error = intercept[Compiler.Error](fastparse.parse(definition, StatefulParser.enumDef(_)))
+      error.message is "Fields have different types in Enum ErrorCodes"
+    }
+
+    {
+      info("Invalid enum field values")
+      val definition =
+        s"""
+           |enum ErrorCodes {
+           |  Error0 = 0
+           |  Error1 = 0
+           |}
+           |""".stripMargin
+      val error = intercept[Compiler.Error](fastparse.parse(definition, StatefulParser.enumDef(_)))
+      error.message is "Fields have the same value in Enum ErrorCodes"
+    }
+
+    {
+      info("Duplicated enum fields")
+      val definition =
+        s"""
+           |enum ErrorCodes {
+           |  Error = 0
+           |  Error = 1
+           |}
+           |""".stripMargin
+      val error = intercept[Compiler.Error](fastparse.parse(definition, StatefulParser.enumDef(_)))
+      error.message is "These enum fields are defined multiple times: Error"
+    }
+
+    {
+      info("Enum definition")
+      val definition =
+        s"""
+           |enum ErrorCodes {
+           |  Error0 = 0
+           |  Error1 = 1
+           |}
+           |""".stripMargin
+      fastparse.parse(definition, StatefulParser.enumDef(_)).get.value is EnumDef(
+        TypeId("ErrorCodes"),
+        Seq(
+          EnumField(Ident("Error0"), Val.U256(U256.Zero)),
+          EnumField(Ident("Error1"), Val.U256(U256.One))
+        )
+      )
+    }
+  }
+
   it should "parse contract inheritance" in {
     {
       info("Simple contract inheritance")
       val code =
         s"""
-           |TxContract Child(x: U256, y: U256) extends Parent0(x), Parent1(x) {
+           |Contract Child(x: U256, y: U256) extends Parent0(x), Parent1(x) {
            |  fn foo() -> () {
            |  }
            |}
            |""".stripMargin
 
-      fastparse.parse(code, StatefulParser.contract(_)).get.value is TxContract(
+      fastparse.parse(code, StatefulParser.contract(_)).get.value is Contract(
+        false,
         TypeId("Child"),
         Seq.empty,
-        Seq(Argument(Ident("x"), Type.U256, false), Argument(Ident("y"), Type.U256, false)),
+        Seq(
+          Argument(Ident("x"), Type.U256, false, false),
+          Argument(Ident("y"), Type.U256, false, false)
+        ),
         Seq(
           FuncDef(
             Seq.empty,
@@ -486,11 +678,15 @@ class ParserSpec extends AlephiumSpec {
             false,
             false,
             false,
+            true,
+            false,
             Seq.empty,
             Seq.empty,
-            Seq.empty
+            Some(Seq.empty)
           )
         ),
+        Seq.empty,
+        Seq.empty,
         Seq.empty,
         List(
           ContractInheritance(TypeId("Parent0"), Seq(Ident("x"))),
@@ -503,7 +699,7 @@ class ParserSpec extends AlephiumSpec {
       info("Contract event inheritance")
       val foo: String =
         s"""
-           |TxContract Foo() {
+           |Contract Foo() {
            |  event Foo(x: U256)
            |  event Foo2(x: U256)
            |
@@ -515,7 +711,7 @@ class ParserSpec extends AlephiumSpec {
            |""".stripMargin
       val bar: String =
         s"""
-           |TxContract Bar() extends Foo() {
+           |Contract Bar() extends Foo() {
            |  pub fn bar() -> () {}
            |}
            |$foo
@@ -526,6 +722,63 @@ class ParserSpec extends AlephiumSpec {
       val fooContract = extended.contracts(1)
       fooContract.events.length is 2
       barContract.events.length is 2
+    }
+
+    {
+      info("Contract constant variable inheritance")
+      val foo: String =
+        s"""
+           |Contract Foo() {
+           |  const C0 = 0
+           |  const C1 = 1
+           |  pub fn foo() -> () {}
+           |}
+           |""".stripMargin
+
+      val bar: String =
+        s"""
+           |Contract Bar() extends Foo() {
+           |  const C2 = 2
+           |  pub fn bar() -> () {}
+           |}
+           |$foo
+           |""".stripMargin
+      val extended =
+        fastparse.parse(bar, StatefulParser.multiContract(_)).get.value.extendedContracts()
+      val barContract = extended.contracts(0)
+      val fooContract = extended.contracts(1)
+      barContract.constantVars.length is 3
+      fooContract.constantVars.length is 2
+    }
+
+    {
+      info("Contract enum inheritance")
+      val foo: String =
+        s"""
+           |Contract Foo() {
+           |  enum FooErrorCodes {
+           |    Error = 0
+           |  }
+           |  pub fn foo() -> () {}
+           |}
+           |""".stripMargin
+
+      val bar: String =
+        s"""
+           |Contract Bar() extends Foo() {
+           |  enum BarErrorCodes {
+           |    Error = 0
+           |  }
+           |  pub fn bar() -> () {}
+           |}
+           |$foo
+           |""".stripMargin
+      val extended =
+        fastparse.parse(bar, StatefulParser.multiContract(_)).get.value.extendedContracts()
+      val barContract = extended.contracts(0)
+      val fooContract = extended.contracts(1)
+      barContract.enums.length is 2
+      fooContract.enums.length is 1
     }
   }
 
@@ -547,9 +800,11 @@ class ParserSpec extends AlephiumSpec {
             false,
             false,
             false,
+            true,
+            false,
             Seq.empty,
             Seq.empty,
-            Seq.empty
+            None
           )
         ),
         Seq.empty,
@@ -566,20 +821,21 @@ class ParserSpec extends AlephiumSpec {
            |}
            |""".stripMargin
       val error = intercept[Compiler.Error](fastparse.parse(code, StatefulParser.interface(_)))
-      error.message is "Interface only supports single inheritance: Parent0,Parent1"
+      error.message is "Interface only supports single inheritance: Parent0, Parent1"
     }
 
     {
       info("Contract inherits interface")
       val code =
         s"""
-           |TxContract Child() implements Parent {
+           |Contract Child() implements Parent {
            |  fn foo() -> () {
            |    return
            |  }
            |}
            |""".stripMargin
-      fastparse.parse(code, StatefulParser.contract(_)).get.value is TxContract(
+      fastparse.parse(code, StatefulParser.contract(_)).get.value is Contract(
+        false,
         TypeId("Child"),
         Seq.empty,
         Seq.empty,
@@ -590,13 +846,170 @@ class ParserSpec extends AlephiumSpec {
             false,
             false,
             false,
+            true,
+            false,
             Seq.empty,
             Seq.empty,
-            Seq(ReturnStmt(Seq.empty))
+            Some(Seq(ReturnStmt(Seq.empty)))
           )
         ),
         Seq.empty,
+        Seq.empty,
+        Seq.empty,
         Seq(InterfaceInheritance(TypeId("Parent")))
+      )
+    }
+
+    {
+      info("Contract supports extends multiple contracts")
+      val code =
+        s"""
+           |Contract Child() extends Parent0(), Parent1() implements Parent2 {
+           |  fn foo() -> () {
+           |    return
+           |  }
+           |}
+           |""".stripMargin
+      fastparse.parse(code, StatefulParser.contract(_)).get.value is Contract(
+        false,
+        TypeId("Child"),
+        Seq.empty,
+        Seq.empty,
+        Seq(
+          FuncDef(
+            Seq.empty,
+            FuncId("foo", false),
+            false,
+            false,
+            false,
+            true,
+            false,
+            Seq.empty,
+            Seq.empty,
+            Some(Seq(ReturnStmt(Seq.empty)))
+          )
+        ),
+        Seq.empty,
+        Seq.empty,
+        Seq.empty,
+        Seq(
+          ContractInheritance(TypeId("Parent0"), Seq.empty),
+          ContractInheritance(TypeId("Parent1"), Seq.empty),
+          InterfaceInheritance(TypeId("Parent2"))
+        )
+      )
+    }
+
+    {
+      info("Contract can only implement single interface")
+      val code =
+        s"""
+           |Contract Child() extends Parent0(), Parent1() implements Parent3, Parent4 {
+           |  fn foo() -> () {
+           |    return
+           |  }
+           |}
+           |""".stripMargin
+      val error = intercept[Compiler.Error](fastparse.parse(code, StatefulParser.contract(_)))
+      error.message is "Contract only supports implementing single interface: Parent3, Parent4"
+    }
+  }
+
+  it should "test abstract contract parser" in {
+    def fooFuncDef(isAbstract: Boolean, externalCallCheck: Boolean = true) =
+      FuncDef[StatefulContext](
+        Seq.empty,
+        FuncId("foo", false),
+        false,
+        false,
+        false,
+        externalCallCheck,
+        false,
+        Seq.empty,
+        Seq.empty,
+        if (isAbstract) None else Some(Seq(Ast.ReturnStmt(List())))
+      )
+
+    def barFuncDef(isAbstract: Boolean, externalCallCheck: Boolean = true) =
+      FuncDef[StatefulContext](
+        Seq.empty,
+        FuncId("bar", false),
+        false,
+        false,
+        false,
+        externalCallCheck,
+        false,
+        Seq.empty,
+        Seq.empty,
+        if (isAbstract) None else Some(Seq(Ast.ReturnStmt(List())))
+      )
+
+    {
+      info("Parse abstract contract")
+      val code =
+        s"""
+           |Abstract Contract Foo() {
+           |  fn foo() -> ()
+           |  fn bar() -> () {
+           |    return
+           |  }
+           |}
+           |""".stripMargin
+      fastparse.parse(code, StatefulParser.contract(_)).get.value is Contract(
+        true,
+        TypeId("Foo"),
+        Seq.empty,
+        Seq.empty,
+        Seq(fooFuncDef(true), barFuncDef(false)),
+        Seq.empty,
+        Seq.empty,
+        Seq.empty,
+        Seq.empty
+      )
+    }
+
+    {
+      info("Parse abstract contract inheritance")
+      val bar =
+        s"""
+           |Interface Bar {
+           |  @using(externalCallCheck = false)
+           |  fn bar() -> ()
+           |}
+           |""".stripMargin
+
+      val code =
+        s"""
+           |Abstract Contract Foo() implements Bar {
+           |  @using(externalCallCheck = false)
+           |  fn foo() -> () {
+           |    return
+           |  }
+           |}
+           |$bar
+           |""".stripMargin
+      val extended =
+        fastparse.parse(code, StatefulParser.multiContract(_)).get.value.extendedContracts()
+      val fooContract = extended.contracts(0)
+      val annotations = Seq(
+        Annotation(
+          Ident(Parser.usingAnnotationId),
+          Seq(AnnotationField(Ident(Parser.useExternalCallCheckKey), Val.False))
+        )
+      )
+      fooContract is Contract(
+        true,
+        TypeId("Foo"),
+        Seq.empty,
+        Seq.empty,
+        Seq(
+          barFuncDef(true, false).copy(annotations = annotations),
+          fooFuncDef(false, false).copy(annotations = annotations)
+        ),
+        Seq.empty,
+        Seq.empty,
+        Seq.empty,
+        Seq(InterfaceInheritance(TypeId("Bar")))
       )
     }
   }
@@ -606,7 +1019,7 @@ class ParserSpec extends AlephiumSpec {
     val script: String
 
     val ident        = TypeId("Main")
-    val templateVars = Seq(Argument(Ident("x"), Type.U256, false))
+    val templateVars = Seq(Argument(Ident("x"), Type.U256, false, false))
     def funcs[C <: StatelessContext] = Seq[FuncDef[C]](
       FuncDef(
         Seq.empty,
@@ -614,9 +1027,11 @@ class ParserSpec extends AlephiumSpec {
         true,
         usePreapprovedAssets,
         false,
+        true,
+        false,
         Seq.empty,
         Seq.empty,
-        Seq(Ast.ReturnStmt(List()))
+        Some(Seq(Ast.ReturnStmt(List())))
       )
     )
   }

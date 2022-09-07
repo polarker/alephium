@@ -18,9 +18,8 @@ package org.alephium.protocol.vm
 
 import org.scalacheck.Gen
 
-import org.alephium.protocol.Hash
 import org.alephium.protocol.config.{GroupConfigFixture, NetworkConfigFixture}
-import org.alephium.protocol.model.{ContractId, GroupIndex, HardFork, TxGenerators, TxOutputRef}
+import org.alephium.protocol.model.{ContractId, GroupIndex, HardFork, TxGenerators}
 import org.alephium.util.{AlephiumSpec, AVector, TimeStamp}
 
 class ContextSpec
@@ -33,9 +32,10 @@ class ContextSpec
     lazy val context    = genStatefulContext(None, gasLimit = initialGas)
 
     def createContract(): ContractId = {
-      val output = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(Hash.zero))).sample.get
+      val output =
+        contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(ContractId.zero))).sample.get
       val balances   = MutBalancesPerLockup.from(output)
-      val contractId = TxOutputRef.key(context.txId, context.txEnv.fixedOutputs.length)
+      val contractId = ContractId.from(context.txId, context.txEnv.fixedOutputs.length)
       context
         .createContract(
           contractId,
@@ -57,6 +57,13 @@ class ContextSpec
     }
   }
 
+  it should "test contract exists" in new Fixture {
+    val contractId0 = ContractId.random
+    context.contractExists(contractId0) isE false
+    val contractId1 = createContract()
+    context.contractExists(contractId1) isE true
+  }
+
   it should "generate asset output" in new Fixture {
     val assetOutput = assetOutputGen(GroupIndex.unsafe(0))().sample.get
     context.generateOutput(assetOutput) isE ()
@@ -76,13 +83,17 @@ class ContextSpec
   }
 
   it should "generate contract output when the contract is loaded" in new Fixture {
-    val contractId = createContract()
+    val contractId   = createContract()
+    val oldOutputRef = context.worldState.getContractState(contractId).rightValue.contractOutputRef
     val newOutput =
       contractOutputGen(scriptGen = Gen.const(contractId).map(LockupScript.p2c)).sample.get
     context.loadContractObj(contractId).isRight is true
     context.useContractAssets(contractId).isRight is true
     context.generateOutput(newOutput) isE ()
+
+    val newOutputRef = context.worldState.getContractState(contractId).rightValue.contractOutputRef
     context.worldState.getContractAsset(contractId) isE newOutput
+    newOutputRef isnot oldOutputRef
     (initialGas.value -
       GasSchedule.contractLoadGas(StatefulContract.forSMT.methodsBytes.length).value -
       GasSchedule.txInputBaseGas.value -

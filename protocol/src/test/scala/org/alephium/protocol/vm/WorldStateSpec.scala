@@ -35,11 +35,9 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
   // scalastyle:off method.length
   def test[T, R1, R2, R3](initialWorldState: WorldState[T, R1, R2, R3]) = {
-    val (assetOutputRef, assetOutput)                    = generateAsset.sample.get
-    val (code, state, contractOutputRef, contractOutput) = generateContract().sample.get
-    val (_, _, contractOutputRef1, contractOutput1)      = generateContract().sample.get
-    val contractId                                       = contractOutputRef.key
-    val contractId1                                      = contractOutputRef1.key
+    val (assetOutputRef, assetOutput)                                = generateAsset.sample.get
+    val (contractId, code, state, contractOutputRef, contractOutput) = generateContract().sample.get
+    val (contractId1, _, _, contractOutputRef1, contractOutput1)     = generateContract().sample.get
 
     val contractObj = code.toObjectUnsafe(contractId, state)
     var worldState  = initialWorldState
@@ -53,7 +51,8 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
     worldState.getOutput(assetOutputRef).isLeft is true
     worldState.getOutput(contractOutputRef).isLeft is true
-    worldState.getContractObj(contractOutputRef.key).isLeft is true
+    worldState.getContractObj(contractId).isLeft is true
+    worldState.contractExists(contractId) isE false
     worldState.removeAsset(assetOutputRef).isLeft is true
     worldState.removeAsset(contractOutputRef).isLeft is true
 
@@ -62,13 +61,15 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
     update(
       worldState.createContractUnsafe(
+        contractId,
         code,
         state,
         contractOutputRef,
         contractOutput
       )
     )
-    worldState.getContractObj(contractOutputRef.key) isE contractObj
+    worldState.getContractObj(contractId) isE contractObj
+    worldState.contractExists(contractId) isE true
     worldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
     worldState.getOutput(contractOutputRef) isE contractOutput
 
@@ -79,6 +80,7 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
     assume(newState != state)
     update(
       worldState.createContractUnsafe(
+        contractId1,
         code,
         newState,
         contractOutputRef1,
@@ -90,6 +92,7 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
     update(worldState.removeContract(contractId))
     worldState.getContractObj(contractId).isLeft is true
+    worldState.contractExists(contractId) isE false
     worldState.getOutput(contractOutputRef).isLeft is true
     worldState.getContractState(contractId).isLeft is true
     worldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
@@ -97,6 +100,7 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
     update(worldState.removeContract(contractId1))
     worldState.getContractObj(contractId1).isLeft is true
+    worldState.contractExists(contractId1) isE false
     worldState.getOutput(contractOutputRef1).isLeft is true
     worldState.getContractState(contractId).isLeft is true
     worldState.getContractCode(code.hash).isLeft is true
@@ -127,10 +131,10 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
 
   it should "maintain the order of the cached logs" in {
     val logInputGen = for {
-      blockHash  <- blockHashGen
-      txId       <- hashGen
-      contractId <- hashGen
-    } yield (blockHash, txId, contractId)
+      blockHash       <- blockHashGen
+      txId            <- hashGen
+      contractIdValue <- hashGen
+    } yield (blockHash, TransactionId(txId), ContractId(contractIdValue))
 
     val storage = newDBStorage()
     val worldState = WorldState
@@ -153,7 +157,7 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
         false
       )
 
-      LogStates(blockHash, contractId, AVector(LogState(txId, 0, fields.tail)))
+      LogStates(blockHash, contractId.value, AVector(LogState(txId, 0, fields.tail)))
     }
 
     val newLogs = worldState.logState.getNewLogs()
@@ -174,11 +178,9 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
     )
     val staging = worldState.staging()
 
-    val (code, state, contractOutputRef, contractOutput) = generateContract().sample.get
-
-    val contractId  = contractOutputRef.key
+    val (contractId, code, state, contractOutputRef, contractOutput) = generateContract().sample.get
     val contractObj = code.toObjectUnsafe(contractId, state)
-    staging.createContractUnsafe(code, state, contractOutputRef, contractOutput) isE ()
+    staging.createContractUnsafe(contractId, code, state, contractOutputRef, contractOutput) isE ()
     staging.getContractObj(contractId) isE contractObj
     worldState.getContractObj(contractId).isLeft is true
   }
@@ -186,17 +188,21 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
   it should "commit staged changes" in new StagingFixture {
     staging.commit()
     staging.getContractObj(contractId) isE contractObj
+    staging.contractExists(contractId) isE true
     worldState.getContractObj(contractId) isE contractObj
+    worldState.contractExists(contractId) isE true
   }
 
   it should "rollback staged changes" in new StagingFixture {
     staging.rollback()
     staging.getContractObj(contractId).isLeft is true
     staging.getContractState(contractId).isLeft is true
+    staging.contractExists(contractId) isE false
     staging.getContractCode(code.hash).isLeft is true
     staging.getContractAsset(contractId).isLeft is true
     worldState.getContractObj(contractId).isLeft is true
     worldState.getContractState(contractId).isLeft is true
+    worldState.contractExists(contractId) isE false
     worldState.getContractCode(code.hash).isLeft is true
     worldState.getContractAsset(contractId).isLeft is true
   }

@@ -2,9 +2,12 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Alephium API",
-    "version": "1.4.2"
+    "version": "1.5.0"
   },
   "servers": [
+    {
+      "url": "../"
+    },
     {
       "url": "{protocol}://{host}:{port}",
       "variables": {
@@ -3433,7 +3436,7 @@
                         "transactions": [
                           {
                             "unsigned": {
-                              "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                              "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                               "version": 1,
                               "networkId": 1,
                               "gasAmount": 20000,
@@ -3639,7 +3642,7 @@
                   "transactions": [
                     {
                       "unsigned": {
-                        "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                        "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                         "version": 1,
                         "networkId": 1,
                         "gasAmount": 20000,
@@ -4666,7 +4669,7 @@
                     "unconfirmedTransactions": [
                       {
                         "unsigned": {
-                          "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                          "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                           "version": 1,
                           "networkId": 1,
                           "gasAmount": 20000,
@@ -4857,7 +4860,7 @@
                   "unsignedTx": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "gasAmount": 20000,
                   "gasPrice": "100000000000",
-                  "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                  "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                   "fromGroup": 2,
                   "toGroup": 1
                 }
@@ -4979,7 +4982,7 @@
                 "example": {
                   "unsignedTxs": [
                     {
-                      "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                      "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                       "unsignedTx": "35d1b2a520a0da34c5eb8d712aa9cc",
                       "gasAmount": 20000,
                       "gasPrice": "100000000000"
@@ -5196,7 +5199,7 @@
                   "fromGroup": 1,
                   "toGroup": 2,
                   "unsignedTx": {
-                    "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                    "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                     "version": 1,
                     "networkId": 1,
                     "gasAmount": 20000,
@@ -5456,7 +5459,10 @@
                 "$ref": "#/components/schemas/Script"
               },
               "example": {
-                "code": "TxScript Main { let token = Token(#36cdbfabca2d71622b6) token.withdraw(@1AujpupFP4KWeZvqA7itsHY9cLJmx4qTzojVZrg8W9y, 1024) }"
+                "code": "TxScript Main { let token = Token(#36cdbfabca2d71622b6) token.withdraw(@1AujpupFP4KWeZvqA7itsHY9cLJmx4qTzojVZrg8W9y, 1024) }",
+                "compilerOptions": {
+                  "ignoreUnusedConstantsWarnings": true
+                }
               }
             }
           },
@@ -5470,9 +5476,9 @@
                   "$ref": "#/components/schemas/CompileScriptResult"
                 },
                 "example": {
+                  "name": "Main",
                   "bytecodeTemplate": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "fields": {
-                    "signature": "TxScript Bar(aa:Bool,mut bb:U256,cc:I256,mut dd:ByteVec,ee:Address)",
                     "names": [
                       "aa",
                       "bb",
@@ -5486,25 +5492,41 @@
                       "I256",
                       "ByteVec",
                       "Address"
+                    ],
+                    "isMutable": [
+                      false,
+                      true,
+                      false,
+                      true,
+                      false
                     ]
                   },
                   "functions": [
                     {
                       "name": "bar",
-                      "signature": "pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address)->(U256,I256,ByteVec,Address)",
-                      "argNames": [
+                      "usePreapprovedAssets": false,
+                      "useAssetsInContract": false,
+                      "isPublic": true,
+                      "paramNames": [
                         "a",
                         "b",
                         "c",
                         "d",
                         "e"
                       ],
-                      "argTypes": [
+                      "paramTypes": [
                         "Bool",
                         "U256",
                         "I256",
                         "ByteVec",
                         "Address"
+                      ],
+                      "paramIsMutable": [
+                        false,
+                        true,
+                        false,
+                        true,
+                        false
                       ],
                       "returnTypes": [
                         "U256",
@@ -5513,6 +5535,9 @@
                         "Address"
                       ]
                     }
+                  ],
+                  "warnings": [
+                    "Found unused fields in Foo: a"
                   ]
                 }
               }
@@ -5646,7 +5671,7 @@
                   "unsignedTx": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "gasAmount": 20000,
                   "gasPrice": "100000000000",
-                  "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef"
+                  "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69"
                 }
               }
             }
@@ -5734,7 +5759,10 @@
                 "$ref": "#/components/schemas/Contract"
               },
               "example": {
-                "code": "TxContract Foo(bar: ByteVec) {\n pub fn baz(amount: U256) -> () {\nissueToken!(amount)\n}}"
+                "code": "Contract Foo(bar: ByteVec) {\n pub fn baz(amount: U256) -> () {\nissueToken!(amount)\n}}",
+                "compilerOptions": {
+                  "ignoreUnusedConstantsWarnings": true
+                }
               }
             }
           },
@@ -5748,10 +5776,10 @@
                   "$ref": "#/components/schemas/CompileContractResult"
                 },
                 "example": {
+                  "name": "Foo",
                   "bytecode": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "codeHash": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
                   "fields": {
-                    "signature": "TxContract Foo(aa:Bool,mut bb:U256,cc:I256,mut dd:ByteVec,ee:Address)",
                     "names": [
                       "aa",
                       "bb",
@@ -5765,25 +5793,41 @@
                       "I256",
                       "ByteVec",
                       "Address"
+                    ],
+                    "isMutable": [
+                      false,
+                      true,
+                      false,
+                      true,
+                      false
                     ]
                   },
                   "functions": [
                     {
                       "name": "bar",
-                      "signature": "pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address)->(U256,I256,ByteVec,Address)",
-                      "argNames": [
+                      "usePreapprovedAssets": false,
+                      "useAssetsInContract": false,
+                      "isPublic": true,
+                      "paramNames": [
                         "a",
                         "b",
                         "c",
                         "d",
                         "e"
                       ],
-                      "argTypes": [
+                      "paramTypes": [
                         "Bool",
                         "U256",
                         "I256",
                         "ByteVec",
                         "Address"
+                      ],
+                      "paramIsMutable": [
+                        false,
+                        true,
+                        false,
+                        true,
+                        false
                       ],
                       "returnTypes": [
                         "U256",
@@ -5796,7 +5840,6 @@
                   "events": [
                     {
                       "name": "Bar",
-                      "signature": "event Bar(a:Bool,b:U256,d:ByteVec,e:Address)",
                       "fieldNames": [
                         "a",
                         "b",
@@ -5808,6 +5851,265 @@
                         "U256",
                         "ByteVec",
                         "Address"
+                      ]
+                    }
+                  ],
+                  "warnings": [
+                    "Found unused fields in Foo: a"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequest"
+                },
+                "example": {
+                  "detail": "Something bad in the request"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                },
+                "example": {
+                  "detail": "You shall not pass"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFound",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                },
+                "example": {
+                  "resource": "wallet-name",
+                  "detail": "wallet-name not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "InternalServerError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                },
+                "example": {
+                  "detail": "Ouch"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ServiceUnavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                },
+                "example": {
+                  "detail": "Self clique unsynced"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contracts/compile-project": {
+      "post": {
+        "tags": [
+          "Contracts"
+        ],
+        "summary": "Compile a project",
+        "operationId": "postContractsCompile-project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Project"
+              },
+              "example": {
+                "code": "Contract Foo() {\n pub fn foo() -> () {}\n }\n TxScript Main(id: ByteVec) {\n Foo(id).foo() \n}",
+                "compilerOptions": {
+                  "ignoreUnusedConstantsWarnings": true
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompileProjectResult"
+                },
+                "example": {
+                  "contracts": [
+                    {
+                      "name": "Foo",
+                      "bytecode": "35d1b2a520a0da34c5eb8d712aa9cc",
+                      "codeHash": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                      "fields": {
+                        "names": [
+                          "aa",
+                          "bb",
+                          "cc",
+                          "dd",
+                          "ee"
+                        ],
+                        "types": [
+                          "Bool",
+                          "U256",
+                          "I256",
+                          "ByteVec",
+                          "Address"
+                        ],
+                        "isMutable": [
+                          false,
+                          true,
+                          false,
+                          true,
+                          false
+                        ]
+                      },
+                      "functions": [
+                        {
+                          "name": "bar",
+                          "usePreapprovedAssets": false,
+                          "useAssetsInContract": false,
+                          "isPublic": true,
+                          "paramNames": [
+                            "a",
+                            "b",
+                            "c",
+                            "d",
+                            "e"
+                          ],
+                          "paramTypes": [
+                            "Bool",
+                            "U256",
+                            "I256",
+                            "ByteVec",
+                            "Address"
+                          ],
+                          "paramIsMutable": [
+                            false,
+                            true,
+                            false,
+                            true,
+                            false
+                          ],
+                          "returnTypes": [
+                            "U256",
+                            "I256",
+                            "ByteVec",
+                            "Address"
+                          ]
+                        }
+                      ],
+                      "events": [
+                        {
+                          "name": "Bar",
+                          "fieldNames": [
+                            "a",
+                            "b",
+                            "d",
+                            "e"
+                          ],
+                          "fieldTypes": [
+                            "Bool",
+                            "U256",
+                            "ByteVec",
+                            "Address"
+                          ]
+                        }
+                      ],
+                      "warnings": [
+                        "Found unused fields in Foo: a"
+                      ]
+                    }
+                  ],
+                  "scripts": [
+                    {
+                      "name": "Main",
+                      "bytecodeTemplate": "35d1b2a520a0da34c5eb8d712aa9cc",
+                      "fields": {
+                        "names": [
+                          "aa",
+                          "bb",
+                          "cc",
+                          "dd",
+                          "ee"
+                        ],
+                        "types": [
+                          "Bool",
+                          "U256",
+                          "I256",
+                          "ByteVec",
+                          "Address"
+                        ],
+                        "isMutable": [
+                          false,
+                          true,
+                          false,
+                          true,
+                          false
+                        ]
+                      },
+                      "functions": [
+                        {
+                          "name": "bar",
+                          "usePreapprovedAssets": false,
+                          "useAssetsInContract": false,
+                          "isPublic": true,
+                          "paramNames": [
+                            "a",
+                            "b",
+                            "c",
+                            "d",
+                            "e"
+                          ],
+                          "paramTypes": [
+                            "Bool",
+                            "U256",
+                            "I256",
+                            "ByteVec",
+                            "Address"
+                          ],
+                          "paramIsMutable": [
+                            false,
+                            true,
+                            false,
+                            true,
+                            false
+                          ],
+                          "returnTypes": [
+                            "U256",
+                            "I256",
+                            "ByteVec",
+                            "Address"
+                          ]
+                        }
+                      ],
+                      "warnings": [
+                        "Found unused fields in Foo: a"
                       ]
                     }
                   ]
@@ -5944,7 +6246,7 @@
                   "unsignedTx": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "gasAmount": 20000,
                   "gasPrice": "100000000000",
-                  "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                  "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                   "contractAddress": "vSxdLL2kE3o6vJBdKkdgmS3W39G3ZEmFHpo2y1jnbzBq"
                 }
               }
@@ -6291,7 +6593,7 @@
                   "events": [
                     {
                       "blockHash": "bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5",
-                      "contractAddress": "z69mxCq5vnw7UZdN2iUDi2jqGRpfnSmgAuouvPeUXeMn",
+                      "contractAddress": "vSxdLL2kE3o6vJBdKkdgmS3W39G3ZEmFHpo2y1jnbzBq",
                       "eventIndex": 1,
                       "fields": [
                         {
@@ -6488,7 +6790,7 @@
                   "events": [
                     {
                       "blockHash": "bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5",
-                      "contractAddress": "z69mxCq5vnw7UZdN2iUDi2jqGRpfnSmgAuouvPeUXeMn",
+                      "contractAddress": "vSxdLL2kE3o6vJBdKkdgmS3W39G3ZEmFHpo2y1jnbzBq",
                       "eventIndex": 1,
                       "fields": [
                         {
@@ -6755,7 +7057,7 @@
                   "unsignedTx": "35d1b2a520a0da34c5eb8d712aa9cc",
                   "gasAmount": 20000,
                   "gasPrice": "100000000000",
-                  "txId": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
+                  "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                   "fromGroup": 2,
                   "toGroup": 1
                 }
@@ -7464,7 +7766,7 @@
                   "events": [
                     {
                       "blockHash": "bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5",
-                      "txId": "109b05391a240a0d21671720f62fe39138aaca562676053900b348a51e11ba25",
+                      "txId": "503bfb16230888af4924aa8f8250d7d348b862e267d75d3147f1998050b6da69",
                       "eventIndex": 1,
                       "fields": [
                         {
@@ -7687,7 +7989,7 @@
                   "events": [
                     {
                       "blockHash": "bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5",
-                      "contractAddress": "z69mxCq5vnw7UZdN2iUDi2jqGRpfnSmgAuouvPeUXeMn",
+                      "contractAddress": "vSxdLL2kE3o6vJBdKkdgmS3W39G3ZEmFHpo2y1jnbzBq",
                       "eventIndex": 1,
                       "fields": [
                         {
@@ -8244,6 +8546,10 @@
           "gasPrice": {
             "type": "string",
             "format": "uint256"
+          },
+          "targetBlockHash": {
+            "type": "string",
+            "format": "block-hash"
           }
         }
       },
@@ -8320,6 +8626,10 @@
           "gasPrice": {
             "type": "string",
             "format": "uint256"
+          },
+          "targetBlockHash": {
+            "type": "string",
+            "format": "block-hash"
           }
         }
       },
@@ -8467,6 +8777,10 @@
           "gasPrice": {
             "type": "string",
             "format": "uint256"
+          },
+          "targetBlockHash": {
+            "type": "string",
+            "format": "block-hash"
           }
         }
       },
@@ -8524,6 +8838,10 @@
           "gasPrice": {
             "type": "string",
             "format": "uint256"
+          },
+          "targetBlockHash": {
+            "type": "string",
+            "format": "block-hash"
           }
         }
       },
@@ -8712,14 +9030,19 @@
       },
       "CompileContractResult": {
         "required": [
+          "name",
           "bytecode",
           "codeHash",
           "fields",
           "functions",
-          "events"
+          "events",
+          "warnings"
         ],
         "type": "object",
         "properties": {
+          "name": {
+            "type": "string"
+          },
           "bytecode": {
             "type": "string"
           },
@@ -8741,17 +9064,49 @@
             "items": {
               "$ref": "#/components/schemas/EventSig"
             }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CompileProjectResult": {
+        "required": [
+          "contracts",
+          "scripts"
+        ],
+        "type": "object",
+        "properties": {
+          "contracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompileContractResult"
+            }
+          },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompileScriptResult"
+            }
           }
         }
       },
       "CompileScriptResult": {
         "required": [
+          "name",
           "bytecodeTemplate",
           "fields",
-          "functions"
+          "functions",
+          "warnings"
         ],
         "type": "object",
         "properties": {
+          "name": {
+            "type": "string"
+          },
           "bytecodeTemplate": {
             "type": "string"
           },
@@ -8763,6 +9118,35 @@
             "items": {
               "$ref": "#/components/schemas/FunctionSig"
             }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CompilerOptions": {
+        "type": "object",
+        "properties": {
+          "ignoreUnusedConstantsWarnings": {
+            "type": "boolean"
+          },
+          "ignoreUnusedVariablesWarnings": {
+            "type": "boolean"
+          },
+          "ignoreUnusedFieldsWarnings": {
+            "type": "boolean"
+          },
+          "ignoreUnusedPrivateFunctionsWarnings": {
+            "type": "boolean"
+          },
+          "ignoreReadonlyCheckWarnings": {
+            "type": "boolean"
+          },
+          "ignoreExternalCallCheckWarnings": {
+            "type": "boolean"
           }
         }
       },
@@ -8810,6 +9194,9 @@
         "properties": {
           "code": {
             "type": "string"
+          },
+          "compilerOptions": {
+            "$ref": "#/components/schemas/CompilerOptions"
           }
         }
       },
@@ -9067,16 +9454,12 @@
       "EventSig": {
         "required": [
           "name",
-          "signature",
           "fieldNames",
           "fieldTypes"
         ],
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
-          },
-          "signature": {
             "type": "string"
           },
           "fieldNames": {
@@ -9112,15 +9495,12 @@
       },
       "FieldsSig": {
         "required": [
-          "signature",
           "names",
-          "types"
+          "types",
+          "isMutable"
         ],
         "type": "object",
         "properties": {
-          "signature": {
-            "type": "string"
-          },
           "names": {
             "type": "array",
             "items": {
@@ -9131,6 +9511,12 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "isMutable": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
             }
           }
         }
@@ -9182,9 +9568,12 @@
       "FunctionSig": {
         "required": [
           "name",
-          "signature",
-          "argNames",
-          "argTypes",
+          "usePreapprovedAssets",
+          "useAssetsInContract",
+          "isPublic",
+          "paramNames",
+          "paramTypes",
+          "paramIsMutable",
           "returnTypes"
         ],
         "type": "object",
@@ -9192,19 +9581,31 @@
           "name": {
             "type": "string"
           },
-          "signature": {
-            "type": "string"
+          "usePreapprovedAssets": {
+            "type": "boolean"
           },
-          "argNames": {
+          "useAssetsInContract": {
+            "type": "boolean"
+          },
+          "isPublic": {
+            "type": "boolean"
+          },
+          "paramNames": {
             "type": "array",
             "items": {
               "type": "string"
             }
           },
-          "argTypes": {
+          "paramTypes": {
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "paramIsMutable": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
             }
           },
           "returnTypes": {
@@ -9526,6 +9927,20 @@
           }
         }
       },
+      "Project": {
+        "required": [
+          "code"
+        ],
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "compilerOptions": {
+            "$ref": "#/components/schemas/CompilerOptions"
+          }
+        }
+      },
       "Reachable": {
         "required": [
           "peers",
@@ -9597,6 +10012,9 @@
         "properties": {
           "code": {
             "type": "string"
+          },
+          "compilerOptions": {
+            "$ref": "#/components/schemas/CompilerOptions"
           }
         }
       },
@@ -9743,6 +10161,10 @@
           "utxosLimit": {
             "type": "integer",
             "format": "int32"
+          },
+          "targetBlockHash": {
+            "type": "string",
+            "format": "block-hash"
           }
         }
       },

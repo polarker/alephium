@@ -85,6 +85,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
 
       blockFlow
         .transfer(
+          None,
           lockup,
           unlock,
           output,
@@ -97,7 +98,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     }
 
     def sign(unsigned: UnsignedTransaction, privateKeys: PrivateKey*): Transaction = {
-      val signatures = privateKeys.map(SignatureSchema.sign(unsigned.hash.bytes, _))
+      val signatures = privateKeys.map(SignatureSchema.sign(unsigned.id, _))
       Transaction.from(unsigned, AVector.from(signatures))
     }
 
@@ -139,7 +140,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
       }
 
       def zeroTokenAmount(): Transaction = {
-        updateRandomFixedOutputs(_.copy(tokens = AVector(Hash.generate -> U256.Zero)))
+        updateRandomFixedOutputs(_.copy(tokens = AVector(TokenId.generate -> U256.Zero)))
       }
 
       def inputs(inputs: AVector[TxInput]): Transaction = {
@@ -278,10 +279,11 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     val tx    = transactionGen().sample.get
     val input = tx.unsigned.inputs.head
 
-    val modified0         = tx.inputs(AVector.fill(ALPH.MaxTxInputNum)(input))
-    val modified1         = tx.inputs(AVector.fill(ALPH.MaxTxInputNum + 1)(input))
-    val contractOutputRef = ContractOutputRef.unsafe(Hint.unsafe(1), Hash.zero)
-    val modified2         = tx.copy(contractInputs = AVector(contractOutputRef))
+    val modified0 = tx.inputs(AVector.fill(ALPH.MaxTxInputNum)(input))
+    val modified1 = tx.inputs(AVector.fill(ALPH.MaxTxInputNum + 1)(input))
+    val contractOutputRef =
+      ContractOutputRef.unsafe(Hint.unsafe(1), TxOutputRef.unsafeKey(Hash.zero))
+    val modified2 = tx.copy(contractInputs = AVector(contractOutputRef))
     val modified3 =
       tx.copy(contractInputs = AVector.fill(ALPH.MaxTxInputNum + 1)(contractOutputRef))
 
@@ -456,7 +458,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
           scriptHint   <- scriptHintGen(fromGroupNew)
         } yield {
           tx.updateRandomInputs { input =>
-            val outputRefNew = AssetOutputRef.unsafeWithScriptHint(scriptHint, input.outputRef.key)
+            val outputRefNew = AssetOutputRef.from(scriptHint, input.outputRef.key)
             input.copy(outputRef = outputRefNew)
           }
         }
@@ -732,13 +734,13 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
       s"""
          |AssetScript P2sh {
          |  pub fn main(a: U256) -> () {
-         |    assert!(a == $n)
+         |    assert!(a == $n, 0)
          |  }
          |}
          |""".stripMargin
     // scalastyle:on no.equal
 
-    val script   = Compiler.compileAssetScript(rawScript(51)).rightValue
+    val script   = Compiler.compileAssetScript(rawScript(51)).rightValue._1
     val lockup   = LockupScript.p2sh(script)
     val unlock   = UnlockScript.p2sh(script, AVector(Val.U256(51)))
     val unsigned = prepareOutput(lockup, unlock)
@@ -749,9 +751,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     tx0.pass()
 
     val tx1 = tx0.replaceUnlock(UnlockScript.p2sh(script, AVector(Val.U256(50))))
-    tx1.fail(UnlockScriptExeFailed(AssertionFailed))
+    tx1.fail(UnlockScriptExeFailed(AssertionFailedWithErrorCode(None, 0)))
 
-    val newScript = Compiler.compileAssetScript(rawScript(50)).rightValue
+    val newScript = Compiler.compileAssetScript(rawScript(50)).rightValue._1
     val tx2       = tx0.replaceUnlock(UnlockScript.p2sh(newScript, AVector(Val.U256(50))))
     tx2.fail(InvalidScriptHash)
   }
@@ -781,7 +783,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
          |}
          |""".stripMargin
 
-    val script   = Compiler.compileAssetScript(rawScript).rightValue
+    val script   = Compiler.compileAssetScript(rawScript).rightValue._1
     val lockup   = LockupScript.p2sh(script)
     val unlock   = UnlockScript.p2sh(script, AVector.empty)
     val unsigned = prepareOutput(lockup, unlock)
@@ -850,9 +852,8 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     tx.contractInputs.length is 0
     tx.pass()
 
-    val contractId = Hash.generate
-    val output = contractOutputGen(scriptGen = Gen.const(LockupScript.P2C(contractId))).sample.get
-    val outputRef = ContractOutputRef.unsafe(output.hint, contractId)
+    val contractId = ContractId.generate
+    val outputRef  = contractId.firstOutputRef()
     tx.copy(contractInputs = AVector(outputRef)).fail(InvalidContractInputs)
 
     tx.copy(generatedOutputs = AVector(assetOutputGen.sample.get)).fail(InvalidGeneratedOutputs)
@@ -884,7 +885,7 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     val invalidExecutionRawScript =
       s"""
          |TxScript Main {
-         |  assert!(1 == 2)
+         |  assert!(1 == 2, 0)
          |}
          |""".stripMargin
     // scalastyle:on no.equal

@@ -21,6 +21,7 @@ import scala.annotation.{switch, tailrec}
 import org.alephium.protocol.Hash
 import org.alephium.protocol.model.ContractId
 import org.alephium.protocol.vm.{createContractEventIndex, destroyContractEventIndex}
+import org.alephium.protocol.vm.TokenIssuance
 import org.alephium.serde.deserialize
 import org.alephium.util.{AVector, Bytes}
 
@@ -93,12 +94,24 @@ abstract class Frame[Ctx <: StatelessContext] {
       case elem              => failed(InvalidType(elem))
     }
 
+  def popAssetAddress[C <: StatefulContext](): ExeResult[LockupScript.Asset] = {
+    for {
+      address <- popOpStackAddress()
+      lockupScript <-
+        if (address.lockupScript.isAssetType) {
+          Right(address.lockupScript.asInstanceOf[LockupScript.Asset])
+        } else {
+          Left(Right(InvalidAssetAddress))
+        }
+    } yield lockupScript
+  }
+
   @inline
   def popContractId(): ExeResult[ContractId] = {
     for {
       byteVec     <- popOpStackByteVec()
       contractKey <- Hash.from(byteVec.bytes).toRight(Right(InvalidContractAddress))
-    } yield contractKey
+    } yield ContractId(contractKey)
   }
 
   @inline
@@ -134,13 +147,13 @@ abstract class Frame[Ctx <: StatelessContext] {
   def methodFrame(index: Int): ExeResult[Frame[Ctx]]
 
   def createContract(
-      contractId: Hash,
+      contractId: ContractId,
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
-      tokenAmount: Option[Val.U256]
+      tokenIssuanceInfo: Option[TokenIssuance.Info]
   ): ExeResult[ContractId]
 
-  def destroyContract(address: LockupScript): ExeResult[Unit]
+  def destroyContract(refundAddress: LockupScript): ExeResult[Unit]
 
   def checkPayToContractAddressInCallerTrace(address: LockupScript.P2C): ExeResult[Unit]
 
@@ -206,12 +219,12 @@ final class StatelessFrame(
   // the following should not be used in stateless context
   def balanceStateOpt: Option[MutBalanceState] = None
   def createContract(
-      contractId: Hash,
+      contractId: ContractId,
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
-      tokenAmount: Option[Val.U256]
+      tokenIssuanceInfo: Option[TokenIssuance.Info]
   ): ExeResult[ContractId] = StatelessFrame.notAllowed
-  def destroyContract(address: LockupScript): ExeResult[Unit] = StatelessFrame.notAllowed
+  def destroyContract(refundAddress: LockupScript): ExeResult[Unit] = StatelessFrame.notAllowed
   def checkPayToContractAddressInCallerTrace(address: LockupScript.P2C): ExeResult[Unit] =
     StatelessFrame.notAllowed
   def migrateContract(
@@ -343,15 +356,15 @@ final case class StatefulFrame(
   }
 
   def createContract(
-      contractId: Hash,
+      contractId: ContractId,
       code: StatefulContract.HalfDecoded,
       fields: AVector[Val],
-      tokenAmount: Option[Val.U256]
+      tokenIssuanceInfo: Option[TokenIssuance.Info]
   ): ExeResult[ContractId] = {
     for {
       balanceState <- getBalanceState()
       balances     <- balanceState.approved.useForNewContract().toRight(Right(InvalidBalances))
-      _            <- ctx.createContract(contractId, code, balances, fields, tokenAmount)
+      _            <- ctx.createContract(contractId, code, balances, fields, tokenIssuanceInfo)
       _ <- ctx.writeLog(
         Some(createContractEventId),
         AVector(
@@ -362,8 +375,9 @@ final case class StatefulFrame(
     } yield contractId
   }
 
-  def destroyContract(address: LockupScript): ExeResult[Unit] = {
+  def destroyContract(refundAddress: LockupScript): ExeResult[Unit] = {
     for {
+      _           <- checkDestroyContractRecipientAddress(refundAddress)
       contractId  <- obj.getContractId()
       callerFrame <- getCallerFrame()
       _ <- callerFrame.checkNonRecursive(contractId, ContractDestructionShouldNotBeCalledFromSelf)
@@ -371,7 +385,7 @@ final case class StatefulFrame(
       contractAssets <- balanceState
         .useAll(LockupScript.p2c(contractId))
         .toRight(Right(InvalidBalances))
-      _ <- ctx.destroyContract(contractId, contractAssets, address)
+      _ <- ctx.destroyContract(contractId, contractAssets, refundAddress)
       _ <- ctx.writeLog(
         Some(destroyContractEventId),
         AVector(destroyContractEventIndex, Val.Address(LockupScript.p2c(contractId)))
@@ -379,6 +393,18 @@ final case class StatefulFrame(
       _ <- runReturn()
     } yield {
       pc -= 1 // because of the `advancePC` call following this instruction
+    }
+  }
+
+  def checkDestroyContractRecipientAddress(refundAddress: LockupScript): ExeResult[Unit] = {
+    refundAddress match {
+      case _: LockupScript.Asset => okay
+      case contractAddr: LockupScript.P2C =>
+        if (ctx.getHardFork().isLemanEnabled()) {
+          checkPayToContractAddressInCallerTrace(contractAddr)
+        } else {
+          failed(InvalidAddressTypeInContractDestroy)
+        }
     }
   }
 
@@ -445,13 +471,15 @@ final case class StatefulFrame(
   }
 
   def externalMethodFrame(
-      contractKey: Hash,
+      contractId: ContractId,
       index: Int
   ): ExeResult[Frame[StatefulContext]] = {
     for {
-      contractObj        <- ctx.loadContractObj(contractKey)
-      method             <- contractObj.getMethod(index)
-      _                  <- if (method.isPublic) okay else failed(ExternalPrivateMethodCall)
+      contractObj <- ctx.loadContractObj(contractId)
+      method      <- contractObj.getMethod(index)
+      _ <- checkLength(method.returnLength, InvalidReturnLength, InvalidExternalMethodReturnLength)
+      _ <- checkLength(method.argsLength, InvalidArgLength, InvalidExternalMethodArgLength)
+      _ <- if (method.isPublic) okay else failed(ExternalPrivateMethodCall)
       newBalanceStateOpt <- getNewFrameBalancesState(contractObj, method)
       frame <-
         Frame.stateful(
@@ -464,6 +492,21 @@ final case class StatefulFrame(
           opStack.push
         )
     } yield frame
+  }
+
+  @inline private def checkLength(
+      expected: Int,
+      paramError: ExeFailure,
+      checkError: ExeFailure
+  ): ExeResult[Unit] = {
+    if (ctx.getHardFork().isLemanEnabled()) {
+      popOpStackU256().flatMap(_.v.toInt match {
+        case Some(length) => if (length == expected) okay else failed(checkError)
+        case None         => failed(paramError)
+      })
+    } else {
+      okay
+    }
   }
 
   def callExternal(index: Byte): ExeResult[Option[Frame[StatefulContext]]] = {

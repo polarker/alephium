@@ -592,14 +592,14 @@ trait FlowFixture
   def checkState(
       blockFlow: BlockFlow,
       chainIndex: ChainIndex,
-      key: Hash,
+      contractId: ContractId,
       fields: AVector[Val],
       outputRef: ContractOutputRef,
       numAssets: Int = 2,
       numContracts: Int = 2
   ): Assertion = {
     val worldState = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
-    val contractState = worldState.getContractState(key).fold(throw _, identity)
+    val contractState = worldState.getContractState(contractId).fold(throw _, identity)
 
     contractState.fields is fields
     contractState.contractOutputRef is outputRef
@@ -618,13 +618,7 @@ trait FlowFixture
     if (chainIndex.isIntraGroup) {
       block.nonCoinbase.foreach { tx =>
         tx.allOutputs.foreachWithIndex { case (output, index) =>
-          val outputRef = output match {
-            case assetOutput: AssetOutput =>
-              TxOutputRef.from(assetOutput, TxOutputRef.key(tx.id, index))
-            case contractOutput: ContractOutput =>
-              ContractOutputRef.unsafe(contractOutput.hint, contractOutput.lockupScript.contractId)
-          }
-
+          val outputRef = TxOutputRef.from(output, TxOutputRef.key(tx.id, index))
           worldState.existOutput(outputRef) isE true
         }
       }
@@ -655,15 +649,20 @@ trait FlowFixture
       initialState: AVector[Val],
       lockupScript: LockupScript.Asset,
       attoAlphAmount: U256,
-      newTokenAmount: Option[U256] = None
+      tokenIssuanceInfo: Option[TokenIssuance.Info] = None
   ): StatefulScript = {
     val address  = Address.Asset(lockupScript)
     val codeRaw  = Hex.toHexString(serialize(code))
     val stateRaw = Hex.toHexString(serialize(initialState))
-    val creation = newTokenAmount match {
-      case Some(amount) =>
+    val creation = tokenIssuanceInfo match {
+      case Some(TokenIssuance.Info(amount, None)) =>
         s"createContractWithToken!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v})"
-      case None => s"createContract!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw)"
+      case Some(TokenIssuance.Info(amount, Some(transferTo))) => {
+        val toAddress = Address.from(transferTo).toBase58
+        s"createContractWithToken!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v}, @${toAddress})"
+      }
+      case None =>
+        s"createContract!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw)"
     }
     val scriptRaw =
       s"""
@@ -678,7 +677,7 @@ trait FlowFixture
     val chainIndex = ChainIndex.unsafe(0, 0)
     val input =
       s"""
-         |TxContract Foo() {
+         |Contract Foo() {
          |  pub fn foo() -> () {
          |    return
          |  }

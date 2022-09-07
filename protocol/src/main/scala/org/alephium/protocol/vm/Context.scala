@@ -19,9 +19,10 @@ package org.alephium.protocol.vm
 import scala.collection.mutable.ArrayBuffer
 
 import org.alephium.io.IOError
-import org.alephium.protocol.{BlockHash, Hash, Signature}
+import org.alephium.protocol.Signature
 import org.alephium.protocol.config.NetworkConfig
 import org.alephium.protocol.model._
+import org.alephium.protocol.vm.TokenIssuance
 import org.alephium.util.{discard, AVector, TimeStamp, U256}
 
 final case class BlockEnv(
@@ -53,7 +54,7 @@ object BlockEnv {
 }
 
 sealed trait TxEnv {
-  def txId: Hash
+  def txId: TransactionId
   def signatures: Stack[Signature]
   def prevOutputs: AVector[AssetOutput]
   def fixedOutputs: AVector[AssetOutput]
@@ -70,7 +71,7 @@ object TxEnv {
   ): TxEnv = Default(tx, prevOutputs, signatures)
 
   def mockup(
-      txId: Hash,
+      txId: TransactionId,
       signatures: Stack[Signature],
       prevOutputs: AVector[AssetOutput],
       fixedOutputs: AVector[AssetOutput],
@@ -84,14 +85,14 @@ object TxEnv {
       prevOutputs: AVector[AssetOutput],
       signatures: Stack[Signature]
   ) extends TxEnv {
-    def txId: Hash                         = tx.id
+    def txId: TransactionId                = tx.id
     def fixedOutputs: AVector[AssetOutput] = tx.unsigned.fixedOutputs
     def gasFeeUnsafe: U256                 = tx.gasFeeUnsafe
     def isEntryMethodPayable: Boolean      = tx.isEntryMethodPayable
   }
 
   final case class Mockup(
-      txId: Hash,
+      txId: TransactionId,
       signatures: Stack[Signature],
       prevOutputs: AVector[AssetOutput],
       fixedOutputs: AVector[AssetOutput],
@@ -140,7 +141,7 @@ trait StatelessContext extends CostStrategy {
 
   def writeLog(contractIdOpt: Option[ContractId], fields: AVector[Val]): ExeResult[Unit]
 
-  def txId: Hash                   = txEnv.txId
+  def txId: TransactionId          = txEnv.txId
   def signatures: Stack[Signature] = txEnv.signatures
 
   def getTxPrevOutput(indexRaw: Val.U256): ExeResult[AssetOutput] = {
@@ -213,14 +214,14 @@ trait StatefulContext extends StatelessContext with ContractPool {
 
   def nextOutputIndex: Int
 
-  def nextContractOutputRef(contractId: Hash, output: ContractOutput): ContractOutputRef =
-    ContractOutputRef.unsafe(output.hint, contractId)
+  def nextContractOutputRef(output: ContractOutput): ContractOutputRef =
+    ContractOutputRef.from(txId, output, nextOutputIndex)
 
   @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def generateOutput(output: TxOutput): ExeResult[Unit] = {
     output match {
       case contractOutput @ ContractOutput(_, LockupScript.P2C(contractId), _) =>
-        val outputRef = nextContractOutputRef(contractId, contractOutput)
+        val outputRef = nextContractOutputRef(contractOutput)
         for {
           _ <- chargeGeneratedOutput()
           _ <- updateContractAsset(contractId, outputRef, contractOutput)
@@ -234,20 +235,35 @@ trait StatefulContext extends StatelessContext with ContractPool {
     }
   }
 
+  def contractExists(contractId: ContractId): ExeResult[Boolean] = {
+    worldState
+      .contractExists(contractId)
+      .left
+      .flatMap(error => ioFailed(IOErrorLoadContract(error)))
+  }
+
   def createContract(
-      contractId: Hash,
+      contractId: ContractId,
       code: StatefulContract.HalfDecoded,
       initialBalances: MutBalancesPerLockup,
       initialFields: AVector[Val],
-      tokenAmount: Option[Val.U256]
-  ): ExeResult[Hash] = {
-    tokenAmount.foreach(amount => initialBalances.addToken(contractId, amount.v))
+      tokenIssuanceInfo: Option[TokenIssuance.Info]
+  ): ExeResult[ContractId] = {
+    tokenIssuanceInfo.foreach { info =>
+      info.transferTo match {
+        case Some(transferTo) =>
+          outputBalances.addToken(transferTo, TokenId.from(contractId), info.amount.v)
+        case None =>
+          initialBalances.addToken(TokenId.from(contractId), info.amount.v)
+      }
+    }
+
     val contractOutput = ContractOutput(
       initialBalances.attoAlphAmount,
       LockupScript.p2c(contractId),
       initialBalances.tokenVector
     )
-    val outputRef = nextContractOutputRef(contractId, contractOutput)
+    val outputRef = nextContractOutputRef(contractOutput)
 
     for {
       _ <-
@@ -262,7 +278,7 @@ trait StatefulContext extends StatelessContext with ContractPool {
       _ <- code.check(initialFields)
       _ <-
         worldState
-          .createContractUnsafe(code, initialFields, outputRef, contractOutput)
+          .createContractUnsafe(contractId, code, initialFields, outputRef, contractOutput)
           .map(_ => discard(generatedOutputs.addOne(contractOutput)))
           .left
           .map(e => Left(IOErrorUpdateState(e)))
@@ -275,14 +291,10 @@ trait StatefulContext extends StatelessContext with ContractPool {
   def destroyContract(
       contractId: ContractId,
       contractAssets: MutBalancesPerLockup,
-      address: LockupScript
+      refundAddress: LockupScript
   ): ExeResult[Unit] = {
     for {
-      _ <- address match {
-        case _: LockupScript.Asset => okay
-        case _: LockupScript.P2C   => failed(InvalidAddressTypeInContractDestroy)
-      }
-      _ <- outputBalances.add(address, contractAssets).toRight(Right(InvalidBalances))
+      _ <- outputBalances.add(refundAddress, contractAssets).toRight(Right(InvalidBalances))
       _ <- removeContract(contractId)
     } yield ()
   }
