@@ -23,80 +23,121 @@ import org.alephium.serde.serialize
 import org.alephium.util.{AVector, Hex}
 
 final case class CompileScriptResult(
+    name: String,
     bytecodeTemplate: String,
     fields: CompileResult.FieldsSig,
-    functions: AVector[CompileResult.FunctionSig]
+    functions: AVector[CompileResult.FunctionSig],
+    warnings: AVector[String]
 )
 
 object CompileScriptResult {
-  def from(script: StatefulScript, scriptAst: Ast.TxScript): CompileScriptResult = {
+  def from(
+      script: StatefulScript,
+      scriptAst: Ast.TxScript,
+      warnings: AVector[String]
+  ): CompileScriptResult = {
     val bytecodeTemplate = script.toTemplateString()
     val fields = CompileResult.FieldsSig(
-      scriptAst.getTemplateVarsSignature(),
-      AVector.from(scriptAst.getTemplateVarsNames()),
-      AVector.from(scriptAst.getTemplateVarsTypes())
+      scriptAst.getTemplateVarsNames(),
+      scriptAst.getTemplateVarsTypes(),
+      scriptAst.getTemplateVarsMutability()
     )
     CompileScriptResult(
+      scriptAst.name,
       bytecodeTemplate,
       fields = fields,
-      functions = AVector.from(scriptAst.funcs.view.map(CompileResult.FunctionSig.from))
+      functions = AVector.from(scriptAst.funcs.view.map(CompileResult.FunctionSig.from)),
+      warnings = warnings
     )
   }
 }
 
 final case class CompileContractResult(
+    name: String,
     bytecode: String,
     codeHash: Hash,
     fields: CompileResult.FieldsSig,
     functions: AVector[CompileResult.FunctionSig],
-    events: AVector[CompileResult.EventSig]
+    events: AVector[CompileResult.EventSig],
+    warnings: AVector[String]
 )
 
 object CompileContractResult {
-  def from(contract: StatefulContract, contractAst: Ast.TxContract): CompileContractResult = {
+  def from(
+      contract: StatefulContract,
+      contractAst: Ast.Contract,
+      warnings: AVector[String]
+  ): CompileContractResult = {
     assume(contractAst.templateVars.isEmpty) // Template variable is disabled right now
     val bytecode = Hex.toHexString(serialize(contract))
     val fields = CompileResult.FieldsSig(
-      contractAst.getFieldsSignature(),
-      AVector.from(contractAst.getFieldNames()),
-      AVector.from(contractAst.getFieldTypes())
+      contractAst.getFieldNames(),
+      contractAst.getFieldTypes(),
+      contractAst.getFieldMutability()
     )
     CompileContractResult(
+      contractAst.name,
       bytecode,
       contract.hash,
       fields,
       functions = AVector.from(contractAst.funcs.view.map(CompileResult.FunctionSig.from)),
-      events = AVector.from(contractAst.events.map(CompileResult.EventSig.from))
+      events = AVector.from(contractAst.events.map(CompileResult.EventSig.from)),
+      warnings = warnings
     )
+  }
+}
+
+final case class CompileProjectResult(
+    contracts: AVector[CompileContractResult],
+    scripts: AVector[CompileScriptResult]
+)
+
+object CompileProjectResult {
+  def from(
+      contracts: AVector[(StatefulContract, Ast.Contract, AVector[String])],
+      scripts: AVector[(StatefulScript, Ast.TxScript, AVector[String])]
+  ): CompileProjectResult = {
+    val compiledContracts = contracts.map(c => CompileContractResult.from(c._1, c._2, c._3))
+    val compiledScripts   = scripts.map(s => CompileScriptResult.from(s._1, s._2, s._3))
+    CompileProjectResult(compiledContracts, compiledScripts)
   }
 }
 
 object CompileResult {
 
-  final case class FieldsSig(signature: String, names: AVector[String], types: AVector[String])
+  final case class FieldsSig(
+      names: AVector[String],
+      types: AVector[String],
+      isMutable: AVector[Boolean]
+  )
 
   final case class FunctionSig(
       name: String,
-      signature: String,
-      argNames: AVector[String],
-      argTypes: AVector[String],
+      usePreapprovedAssets: Boolean,
+      useAssetsInContract: Boolean,
+      isPublic: Boolean,
+      paramNames: AVector[String],
+      paramTypes: AVector[String],
+      paramIsMutable: AVector[Boolean],
       returnTypes: AVector[String]
   )
   object FunctionSig {
     def from(func: Ast.FuncDef[StatefulContext]): FunctionSig = {
       FunctionSig(
         func.id.name,
-        func.signature,
-        AVector.from(func.getArgNames()),
-        AVector.from(func.getArgTypeSignatures()),
-        AVector.from(func.getReturnSignatures())
+        func.usePreapprovedAssets,
+        func.useAssetsInContract,
+        func.isPublic,
+        func.getArgNames(),
+        func.getArgTypeSignatures(),
+        func.getArgMutability(),
+        func.getReturnSignatures()
       )
     }
   }
 
   final case class EventSig(
       name: String,
-      signature: String,
       fieldNames: AVector[String],
       fieldTypes: AVector[String]
   )
@@ -104,9 +145,8 @@ object CompileResult {
     def from(event: Ast.EventDef): EventSig = {
       EventSig(
         event.name,
-        event.signature,
-        AVector.from(event.getFieldNames()),
-        AVector.from(event.getFieldTypeSignatures())
+        event.getFieldNames(),
+        event.getFieldTypeSignatures()
       )
     }
   }

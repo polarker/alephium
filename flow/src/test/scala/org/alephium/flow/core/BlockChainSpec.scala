@@ -23,7 +23,7 @@ import org.alephium.flow.core.BlockChain.{TxIndex, TxIndexes, TxStatus}
 import org.alephium.flow.io.StoragesFixture
 import org.alephium.flow.setting.AlephiumConfigFixture
 import org.alephium.io.IOError
-import org.alephium.protocol.{ALPH, BlockHash, Hash}
+import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.model._
 import org.alephium.util.{AlephiumSpec, AVector, Bytes, Duration, TimeStamp}
 
@@ -560,6 +560,8 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
 
     val ts      = all.rightValue._2.map { case (header, _) => header.timestamp }
     val heights = all.rightValue._2.map { case (_, heights) => heights }
+
+    println(s"=============== $ts")
 
     heights is AVector(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 

@@ -19,5 +19,5 @@ jobs:
       - uses: olafurpg/setup-scala@v10
         with:
           java-version: ${{ matrix.java }}
-      - run: sbt test
+      - run: while true; do sbt 'it:testOnly *RestServerSpec*'; done
         shell: bash
