@@ -41,10 +41,12 @@ object Lexer {
   def letter[Unknown: P]: P[Unit]    = P(lowercase | uppercase)
   def newline[Unknown: P]: P[Unit]   = P(NoTrace(StringIn("\r\n", "\n")))
 
-  def ident[Unknown: P]: P[Ast.Ident] =
-    P(lowercase ~ (letter | digit | "_").rep).!.filter(!keywordSet.contains(_)).map(Ast.Ident)
-  def typeId[Unknown: P]: P[Ast.TypeId] =
-    P(uppercase ~ (letter | digit | "_").rep).!.filter(!keywordSet.contains(_)).map(Ast.TypeId)
+  private def id[Unknown: P, T](prefix: => P[Unit], func: String => T): P[T] =
+    P(prefix ~ (letter | digit | "_").rep).!.filter(!keywordSet.contains(_)).map(func)
+  def ident[Unknown: P]: P[Ast.Ident] = id(lowercase, Ast.Ident)
+  def constantIdent[Unknown: P]: P[Ast.Ident] =
+    id(uppercase.opaque("constant variables must start with an uppercase letter"), Ast.Ident)
+  def typeId[Unknown: P]: P[Ast.TypeId] = id(uppercase, Ast.TypeId)
   def funcId[Unknown: P]: P[Ast.FuncId] =
     P(ident ~ "!".?.!).map { case (id, postfix) =>
       Ast.FuncId(id.name, postfix.nonEmpty)
@@ -54,11 +56,15 @@ object Lexer {
     obj.getClass.getSimpleName.dropRight(1)
   }
 
-  def keyword[Unknown: P](s: String): P[Unit] = {
-    require(keywordSet.contains(s))
+  def token[Unknown: P](s: String): P[Unit] = {
     s ~ !(letter | digit | "_")
   }
-  def mut[Unknown: P]: P[Boolean] = P(keyword("mut").?.!).map(_.nonEmpty)
+  def keyword[Unknown: P](s: String): P[Unit] = {
+    require(keywordSet.contains(s))
+    token(s)
+  }
+  def unused[Unknown: P]: P[Boolean] = token("@unused").?.!.map(_.nonEmpty)
+  def mut[Unknown: P]: P[Boolean]    = P(keyword("mut").?.!).map(_.nonEmpty)
 
   def lineComment[Unknown: P]: P[Unit] = P("//" ~ CharsWhile(_ != '\n', 0))
   def emptyChars[Unknown: P]: P[Unit]  = P((CharsWhileIn(" \t\r\n") | lineComment).rep)
@@ -132,6 +138,8 @@ object Lexer {
       case _      => Val.Bool(false)
     }
 
+  def `abstract`[Unknown: P]: P[Boolean] = P(keyword("Abstract").?.!).map(_.nonEmpty)
+
   def opByteVecAdd[Unknown: P]: P[Operator] = P("++").map(_ => Concat)
   def opAdd[Unknown: P]: P[Operator]        = P("+").map(_ => Add)
   def opSub[Unknown: P]: P[Operator]        = P("-").map(_ => Sub)
@@ -167,7 +175,7 @@ object Lexer {
   }
 
   def keywordSet: Set[String] = Set(
-    "TxContract",
+    "Contract",
     "AssetScript",
     "TxScript",
     "Interface",
@@ -186,7 +194,10 @@ object Lexer {
     "emit",
     "extends",
     "implements",
-    "alph"
+    "alph",
+    "const",
+    "enum",
+    "Abstract"
   )
 
   val primTpes: Map[String, Type] =

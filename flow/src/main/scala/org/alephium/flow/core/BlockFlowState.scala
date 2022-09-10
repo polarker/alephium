@@ -23,7 +23,7 @@ import org.alephium.flow.core.BlockChain.TxIndex
 import org.alephium.flow.mempool.MemPool
 import org.alephium.flow.setting.ConsensusSetting
 import org.alephium.io.{IOResult, KeyValueStorage}
-import org.alephium.protocol.{BlockHash, Hash}
+import org.alephium.protocol.Hash
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig, NetworkConfig}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm._
@@ -219,7 +219,14 @@ trait BlockFlowState extends FlowTipsUtil {
   ): IOResult[WorldState.Persisted] = {
     assume(deps.length == brokerConfig.depsNum)
     val hash = deps.uncleHash(groupIndex)
-    getBlockChainWithState(groupIndex).getPersistedWorldState(hash)
+    getPersistedWorldState(hash, groupIndex)
+  }
+
+  private[flow] def getPersistedWorldState(
+      targetHash: BlockHash,
+      groupIndex: GroupIndex
+  ): IOResult[WorldState.Persisted] = {
+    getBlockChainWithState(groupIndex).getPersistedWorldState(targetHash)
   }
 
   private[flow] def getDepStateHash(header: BlockHeader): IOResult[Hash] = {
@@ -285,8 +292,18 @@ trait BlockFlowState extends FlowTipsUtil {
   def getImmutableGroupViewIncludePool(
       mainGroup: GroupIndex
   ): IOResult[BlockFlowGroupView[WorldState.Persisted]] = {
-    val blockDeps = getBestDeps(mainGroup)
+    getImmutableGroupViewIncludePool(mainGroup, None)
+  }
+
+  def getImmutableGroupViewIncludePool(
+      mainGroup: GroupIndex,
+      targetBlockHashOpt: Option[BlockHash]
+  ): IOResult[BlockFlowGroupView[WorldState.Persisted]] = {
     for {
+      blockDeps <- targetBlockHashOpt match {
+        case Some(blockHash) => getBlockHeader(blockHash).map(_.blockDeps)
+        case None            => Right(getBestDeps(mainGroup))
+      }
       worldState  <- getPersistedWorldState(blockDeps, mainGroup)
       blockCaches <- getBlockCachesForUpdates(mainGroup, blockDeps)
     } yield BlockFlowGroupView.includePool(worldState, blockCaches, getMemPool(mainGroup))
@@ -522,7 +539,7 @@ object BlockFlowState {
   )(implicit brokerConfig: GroupConfig): IOResult[Unit] = {
     tx.allOutputs.foreachWithIndexE {
       case (output: AssetOutput, index) if output.toGroup == targetGroup =>
-        val outputRef = TxOutputRef.from(output, TxOutputRef.key(tx.id, index))
+        val outputRef = TxOutputRef.from(tx.id, index, output)
         val outputUpdated =
           if (output.lockTime < blockTs) output.copy(lockTime = blockTs) else output
         worldState.addAsset(outputRef, outputUpdated)

@@ -16,8 +16,8 @@
 
 package org.alephium.protocol.model
 
-import org.alephium.protocol.BlockHash
 import org.alephium.protocol.config.GroupConfigFixture
+import org.alephium.protocol.model.BlockHash
 import org.alephium.util.{AlephiumSpec, AVector}
 
 class BlockDepsSpec extends AlephiumSpec with GroupConfigFixture.Default {

@@ -23,7 +23,7 @@ object AMMContract {
     s"""
        |// Simple swap contract purely for testing
        |
-       |TxContract Swap(tokenId: ByteVec, mut alphReserve: U256, mut tokenReserve: U256) {
+       |Contract Swap(tokenId: ByteVec, mut alphReserve: U256, mut tokenReserve: U256) {
        |  event AddLiquidity(lp: Address, attoAlphAmount: U256, tokenAmount: U256)
        |  event SwapToken(buyer: Address, attoAlphAmount: U256)
        |  event SwapAlph(buyer: Address, tokenAmount: U256)
@@ -65,22 +65,22 @@ object AMMContract {
 
   lazy val swapProxyContract: String =
     s"""
-       |TxContract SwapProxy(swapContractId: ByteVec, tokenId: ByteVec) {
+       |Contract SwapProxy(swapContract: Swap, tokenId: ByteVec) {
        |  @using(preapprovedAssets = true)
        |  pub fn addLiquidity(lp: Address, attoAlphAmount: U256, tokenAmount: U256) -> () {
-       |    Swap(swapContractId).addLiquidity{
+       |    swapContract.addLiquidity{
        |      lp -> attoAlphAmount, tokenId: tokenAmount
        |    }(lp, attoAlphAmount, tokenAmount)
        |  }
        |
        |  @using(preapprovedAssets = true)
        |  pub fn swapToken(buyer: Address, attoAlphAmount: U256) -> () {
-       |    Swap(swapContractId).swapToken{buyer -> attoAlphAmount}(buyer, attoAlphAmount)
+       |    swapContract.swapToken{buyer -> attoAlphAmount}(buyer, attoAlphAmount)
        |  }
        |
        |  @using(preapprovedAssets = true)
        |  pub fn swapAlph(buyer: Address, tokenAmount: U256) -> () {
-       |    Swap(swapContractId).swapAlph{buyer -> tokenId: tokenAmount}(buyer, tokenAmount)
+       |    swapContract.swapAlph{buyer -> tokenId: tokenAmount}(buyer, tokenAmount)
        |  }
        |}
        |

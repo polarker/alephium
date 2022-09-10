@@ -28,10 +28,20 @@ import org.alephium.api.model._
 import org.alephium.crypto.wallet.Mnemonic
 import org.alephium.json.Json._
 import org.alephium.json.Json.{ReadWriter => RW}
-import org.alephium.protocol.{BlockHash, Hash, PublicKey, Signature}
+import org.alephium.protocol.{Hash, PublicKey, Signature}
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model
-import org.alephium.protocol.model.{Address, CliqueId, GroupIndex, NetworkId, Nonce}
+import org.alephium.protocol.model.{
+  Address,
+  BlockHash,
+  CliqueId,
+  ContractId,
+  GroupIndex,
+  NetworkId,
+  Nonce,
+  TokenId,
+  TransactionId
+}
 import org.alephium.protocol.vm.{GasBox, GasPrice, StatefulContract}
 import org.alephium.serde.{deserialize, serialize, RandomBytes}
 import org.alephium.util._
@@ -115,6 +125,15 @@ trait ApiModelCodec {
   )
   implicit val blockHashReader: Reader[BlockHash] =
     byteStringReader.map(BlockHash.from(_).getOrElse(throw new Abort("cannot decode block hash")))
+
+  implicit val tokenIdWriter: Writer[TokenId] = hashWriter.comap[TokenId](_.value)
+  implicit val tokenIdReader: Reader[TokenId] = hashReader.map(TokenId.unsafe(_))
+
+  implicit val contractIdWriter: Writer[ContractId] = hashWriter.comap[ContractId](_.value)
+  implicit val contractIdReader: Reader[ContractId] = hashReader.map(ContractId.unsafe(_))
+
+  implicit val transactionIdWriter: Writer[TransactionId] = hashWriter.comap[TransactionId](_.value)
+  implicit val transactionIdReader: Reader[TransactionId] = hashReader.map(TransactionId.unsafe(_))
 
   implicit lazy val assetAddressWriter: Writer[Address.Asset] =
     StringWriter.comap[Address.Asset](_.toBase58)
@@ -261,15 +280,20 @@ trait ApiModelCodec {
 
   implicit val submitMultisigTransactionRW: RW[SubmitMultisig] = macroRW
 
+  implicit val compilerOptionsRW: RW[CompilerOptions] = macroRW
+
   implicit val compileScriptRW: RW[Compile.Script] = macroRW
 
   implicit val compileContractRW: RW[Compile.Contract] = macroRW
+
+  implicit val compileProjectRW: RW[Compile.Project] = macroRW
 
   implicit val compileResultFieldsRW: RW[CompileResult.FieldsSig]     = macroRW
   implicit val compileResultFunctionRW: RW[CompileResult.FunctionSig] = macroRW
   implicit val compileResultEventRW: RW[CompileResult.EventSig]       = macroRW
   implicit val compileScriptResultRW: RW[CompileScriptResult]         = macroRW
   implicit val compileContractResultRW: RW[CompileContractResult]     = macroRW
+  implicit val compileProjectResultRW: RW[CompileProjectResult]       = macroRW
 
   implicit val statefulContractReader: Reader[StatefulContract] = StringReader.map { input =>
     val bs =
