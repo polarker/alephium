@@ -30,11 +30,12 @@ import org.alephium.api.TapirSchemasLike
 import org.alephium.api.UtilJson.{avectorReadWriter, inetAddressRW}
 import org.alephium.api.model._
 import org.alephium.json.Json.ReadWriter
-import org.alephium.protocol.{ALPH, BlockHash, Hash}
+import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model._
 import org.alephium.util.{AVector, TimeStamp}
 
+//scalastyle:off file.size.limit
 trait Endpoints
     extends ApiModelCodec
     with BaseEndpoint
@@ -324,20 +325,20 @@ trait Endpoints
       .summary("Submit a multi-signed transaction")
 
   lazy val getTransactionStatus
-      : BaseEndpoint[(Hash, Option[GroupIndex], Option[GroupIndex]), TxStatus] =
+      : BaseEndpoint[(TransactionId, Option[GroupIndex], Option[GroupIndex]), TxStatus] =
     transactionsEndpoint.get
       .in("status")
-      .in(query[Hash]("txId"))
+      .in(query[TransactionId]("txId"))
       .in(query[Option[GroupIndex]]("fromGroup"))
       .in(query[Option[GroupIndex]]("toGroup"))
       .out(jsonBody[TxStatus])
       .summary("Get tx status")
 
   lazy val getTransactionStatusLocal
-      : BaseEndpoint[(Hash, Option[GroupIndex], Option[GroupIndex]), TxStatus] =
+      : BaseEndpoint[(TransactionId, Option[GroupIndex], Option[GroupIndex]), TxStatus] =
     transactionsEndpoint.get
       .in("local-status")
-      .in(query[Hash]("txId"))
+      .in(query[TransactionId]("txId"))
       .in(query[Option[GroupIndex]]("fromGroup"))
       .in(query[Option[GroupIndex]]("toGroup"))
       .out(jsonBody[TxStatus])
@@ -356,6 +357,14 @@ trait Endpoints
       .in(query[MinerAction]("action").examples(minerActionExamples))
       .out(jsonBody[Boolean])
       .summary("Execute an action on CPU miner. !!! for test only !!!")
+
+  lazy val mineOneBlock: BaseEndpoint[ChainIndex, Boolean] =
+    minersEndpoint.post
+      .in("cpu-mining")
+      .in("mine-one-block")
+      .in(chainIndexQuery)
+      .out(jsonBody[Boolean])
+      .summary("Mine a block on CPU miner. !!! for test only !!!")
 
   val minerListAddresses: BaseEndpoint[Unit, MinerAddresses] =
     minersEndpoint.get
@@ -389,6 +398,13 @@ trait Endpoints
       .in(jsonBody[Compile.Contract])
       .out(jsonBody[CompileContractResult])
       .summary("Compile a smart contract")
+
+  val compileProject: BaseEndpoint[Compile.Project, CompileProjectResult] =
+    contractsEndpoint.post
+      .in("compile-project")
+      .in(jsonBody[Compile.Project])
+      .out(jsonBody[CompileProjectResult])
+      .summary("Compile a project")
 
   val buildDeployContractTx: BaseEndpoint[BuildDeployContractTx, BuildDeployContractTxResult] =
     contractsUnsignedTxEndpoint.post
@@ -466,9 +482,10 @@ trait Endpoints
       .out(jsonBody[Int])
       .summary("Get current value of the events counter for a contract")
 
-  lazy val getEventsByTxId: BaseEndpoint[(Hash, Option[GroupIndex]), ContractEventsByTxId] =
+  lazy val getEventsByTxId
+      : BaseEndpoint[(TransactionId, Option[GroupIndex]), ContractEventsByTxId] =
     eventsByTxIdEndpoint.get
-      .in(path[Hash]("txId"))
+      .in(path[TransactionId]("txId"))
       .in(query[Option[GroupIndex]]("group"))
       .out(jsonBody[ContractEventsByTxId])
       .summary("Get events for a TxScript")

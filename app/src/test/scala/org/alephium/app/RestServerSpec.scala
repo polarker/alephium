@@ -521,6 +521,41 @@ abstract class RestServerSpec(
         "The clique is not synced"
       )
     }
+
+    Post(
+      s"/miners/cpu-mining/mine-one-block?fromGroup=${dummyGroup.group}&toGroup=${dummyGroup.group}"
+    ) check { response =>
+      response.code is StatusCode.ServiceUnavailable
+      response.as[ApiError.ServiceUnavailable] is ApiError.ServiceUnavailable(
+        "The clique is not synced"
+      )
+    }
+
+    interCliqueSynced = true
+    Post(
+      s"/miners/cpu-mining/mine-one-block?fromGroup=${dummyGroup.group}&toGroup=${dummyGroup.group}"
+    ) check { response =>
+      response.code is StatusCode.Ok
+      response.as[Boolean] is true
+    }
+
+    Post(
+      s"/miners/cpu-mining/mine-one-block?fromGroup=${dummyGroup.group}&toGroup=${dummyGroup.group + 10}"
+    ) check { response =>
+      response.code is StatusCode.BadRequest
+      response.as[ApiError.BadRequest] is ApiError.BadRequest(
+        s"Invalid value for: query parameter toGroup (Invalid group index: ${dummyGroup.group + 10})"
+      )
+    }
+
+    Post(
+      s"/miners/cpu-mining/mine-one-block?fromGroup=${dummyGroup.group}"
+    ) check { response =>
+      response.code is StatusCode.BadRequest
+      response.as[ApiError.BadRequest] is ApiError.BadRequest(
+        s"Invalid value for: query parameter toGroup"
+      )
+    }
   }
 
   it should "call GET /miners/addresses" in {
@@ -806,7 +841,9 @@ abstract class RestServerSpec(
     val end       = 100
     // No events for this contractId, see `getEvents` method for `BlockFlowDummy` in `ServerFixture.scala`
     val contractId =
-      Blake2b.unsafe(hex"e939f9c5d2ad12ea2375dcc5231f5f25db0a2ac8af426f547819e13559aa693e")
+      ContractId.unsafe(
+        Blake2b.unsafe(hex"e939f9c5d2ad12ea2375dcc5231f5f25db0a2ac8af426f547819e13559aa693e")
+      )
     val contractAddress = Address.Contract(LockupScript.P2C(contractId)).toBase58
     val urlBase         = s"/events/contract/$contractAddress"
 
@@ -824,7 +861,7 @@ abstract class RestServerSpec(
   // scalastyle:off no.equal
   it should "get events for contract id with wrong group" in {
     val blockHash       = dummyBlock.hash
-    val contractId      = Hash.random
+    val contractId      = ContractId.random
     val contractAddress = Address.Contract(LockupScript.P2C(contractId)).toBase58
     val chainIndex      = ChainIndex.from(blockHash, groupConfig.groups)
     val wrongGroup      = (chainIndex.from.value + 1) % groupConfig.groups
@@ -841,7 +878,9 @@ abstract class RestServerSpec(
 
   it should "get events for tx id with events" in {
     val blockHash = dummyBlock.hash
-    val txId      = Hash.random
+    val txId      = TransactionId.random
+    val contractId =
+      ContractId.unsafe(txId.value) // TODO: refactor BlockFlowDummy to fix this hacky value
 
     servers.foreach { server =>
       val chainIndex = ChainIndex.from(blockHash, server.node.config.broker.groups)
@@ -858,7 +897,7 @@ abstract class RestServerSpec(
                      |  "events": [
                      |    {
                      |      "blockHash": "${blockHash.toHexString}",
-                     |      "contractAddress": "${Address.contract(txId).toBase58}",
+                     |      "contractAddress": "${Address.contract(contractId).toBase58}",
                      |      "eventIndex": 0,
                      |      "fields": [
                      |        {

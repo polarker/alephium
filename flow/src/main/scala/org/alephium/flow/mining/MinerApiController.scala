@@ -30,9 +30,8 @@ import org.alephium.flow.model.BlockFlowTemplate
 import org.alephium.flow.model.DataOrigin.Local
 import org.alephium.flow.network.broker.ConnectionHandler
 import org.alephium.flow.setting.{MiningSetting, NetworkSetting}
-import org.alephium.protocol.BlockHash
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig}
-import org.alephium.protocol.model.{Block, ChainIndex}
+import org.alephium.protocol.model.{Block, BlockHash, ChainIndex}
 import org.alephium.serde.{deserialize, SerdeResult, Staging}
 import org.alephium.util.{ActorRefT, AVector, BaseActor, Hex}
 
@@ -145,10 +144,11 @@ class MinerApiController(allHandlers: AllHandlers)(implicit
     log.info(
       s"Sending block templates to subscribers: #${connections.length} connections, #${pendings.length} pending connections"
     )
-    val jobs = templatess.foldLeft(AVector.ofSize[Job](templatess.length * brokerConfig.groups)) {
-      case (acc, templates) =>
-        acc ++ AVector.from(templates.view.map(Job.from))
-    }
+    val jobs =
+      templatess.foldLeft(AVector.ofCapacity[Job](templatess.length * brokerConfig.groups)) {
+        case (acc, templates) =>
+          acc ++ AVector.from(templates.view.map(Job.from))
+      }
     latestJobs = Some(jobs)
     connections.foreach(_ ! ConnectionHandler.Send(ServerMessage.serialize(Jobs(jobs))))
   }

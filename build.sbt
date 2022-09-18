@@ -73,6 +73,7 @@ lazy val util = project("util")
       akka,
       `akka-slf4j`,
       bcprov,
+      `scala-logging`,
       `scala-reflect`(scalaVersion.value)
     )
   )
@@ -90,7 +91,7 @@ lazy val crypto = project("crypto")
 lazy val io = project("io")
   .dependsOn(util % "test->test;compile->compile", serde, crypto)
   .settings(
-    libraryDependencies += rocksdb
+    libraryDependencies ++= Seq(rocksdb, `scala-logging`)
   )
 
 lazy val rpc = project("rpc")
@@ -151,7 +152,6 @@ lazy val app = mainProject("app")
         assemblyMergeStrategy.value(other)
     },
     libraryDependencies ++= Seq(
-      janino,
       vertx,
       `tapir-core`,
       `tapir-vertx`,
@@ -352,6 +352,8 @@ val commonSettings = publishSettings ++ Seq(
   scalaVersion             := "2.13.8",
   Test / parallelExecution := false,
   scalacOptions ++= Seq(
+    "-Xsource:3",
+    "-opt:l:method",
 //    "-Xdisable-assertions", // TODO: use this properly
     "-deprecation",
     "-encoding",
@@ -393,7 +395,7 @@ val commonSettings = publishSettings ++ Seq(
   IntegrationTest / test / wartremoverErrors := Warts.allBut(wartsTestExcludes: _*),
   fork                                       := true,
   javaOptions += "-Xss2m",
-  Test / scalacOptions ++= Seq("-Xcheckinit", "-Wconf:cat=other-non-cooperative-equals:s"),
+  Test / scalacOptions ++= Seq("-Xcheckinit"),
   Test / envVars += "ALEPHIUM_ENV" -> "test",
   Test / testOptions += Tests.Argument("-oD"),
   IntegrationTest / envVars += "ALEPHIUM_ENV" -> "it",

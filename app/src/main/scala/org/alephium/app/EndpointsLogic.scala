@@ -42,13 +42,13 @@ import org.alephium.flow.network.broker.MisbehaviorManager
 import org.alephium.flow.network.broker.MisbehaviorManager.Peers
 import org.alephium.flow.setting.{ConsensusSetting, NetworkSetting}
 import org.alephium.http.EndpointSender
-import org.alephium.protocol.Hash
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.{LockupScript, LogConfig}
 import org.alephium.serde._
 import org.alephium.util._
 
+// scalastyle:off file.size.limit
 // scalastyle:off method.length
 trait EndpointsLogic extends Endpoints {
   def node: Node
@@ -409,7 +409,7 @@ trait EndpointsLogic extends Endpoints {
   }
 
   private def searchTransactionStatus(
-      txId: Hash,
+      txId: TransactionId,
       chainFrom: Option[GroupIndex],
       chainTo: Option[GroupIndex]
   ): FutureTry[TxStatus] = {
@@ -445,7 +445,7 @@ trait EndpointsLogic extends Endpoints {
   }
 
   @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
-  private def searchTransactionStatusInOtherNodes(txId: Hash): FutureTry[TxStatus] = {
+  private def searchTransactionStatusInOtherNodes(txId: TransactionId): FutureTry[TxStatus] = {
     val otherGroupFrom = groupConfig.allGroups.filterNot(brokerConfig.contains)
     if (otherGroupFrom.isEmpty) {
       Future.successful(Right(TxNotFound))
@@ -513,6 +513,14 @@ trait EndpointsLogic extends Endpoints {
       }
   }
 
+  val mineOneBlockLogic = serverLogic(mineOneBlock) { chainIndex =>
+    withSyncedClique {
+      serverUtils.execute(
+        txHandler ! TxHandler.MineOneBlock(chainIndex)
+      )
+    }
+  }
+
   val minerUpdateAddressesLogic = serverLogic(minerUpdateAddresses) { minerAddresses =>
     Future.successful {
       Miner
@@ -533,6 +541,10 @@ trait EndpointsLogic extends Endpoints {
 
   val compileContractLogic = serverLogic(compileContract) { query =>
     Future.successful(serverUtils.compileContract(query))
+  }
+
+  val compileProjectLogic = serverLogic(compileProject) { query =>
+    Future.successful(serverUtils.compileProject(query))
   }
 
   val buildDeployContractTxLogic = serverLogic(buildDeployContractTx) { query =>

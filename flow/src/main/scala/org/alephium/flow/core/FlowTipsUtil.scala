@@ -20,7 +20,6 @@ import scala.annotation.tailrec
 
 import org.alephium.flow.Utils
 import org.alephium.io.IOResult
-import org.alephium.protocol.BlockHash
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.model._
 import org.alephium.util.{AVector, EitherF}
@@ -266,7 +265,7 @@ trait FlowTipsUtil {
       }
     }
 
-    iter(AVector.ofSize(tips1.length), 0)
+    iter(AVector.ofCapacity(tips1.length), 0)
   }
 
   private[core] def mergeInTips(

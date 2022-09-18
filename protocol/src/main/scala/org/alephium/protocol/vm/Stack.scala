@@ -101,9 +101,22 @@ class Stack[@sp T: ClassTag](
       currentIndex = start
       Right(elems)
     } else if (n == 0) {
-      Right(AVector.ofSize(0))
+      Right(AVector.ofCapacity(0))
     } else {
       failed(NegativeArgumentInStack)
+    }
+  }
+
+  def swapTopTwo(): ExeResult[Unit] = {
+    val fromIndex = currentIndex - 1
+    val toIndex   = currentIndex - 2
+    if (toIndex < offset) {
+      failed(StackUnderflow)
+    } else {
+      val tmp = underlying(fromIndex)
+      underlying(fromIndex) = underlying(toIndex)
+      underlying(toIndex) = tmp
+      Right(())
     }
   }
 
@@ -115,6 +128,14 @@ class Stack[@sp T: ClassTag](
       Right(())
     } else {
       failed(NegativeArgumentInStack)
+    }
+  }
+
+  def dupTop(): ExeResult[Unit] = {
+    if (currentIndex >= 1) {
+      push(underlying(currentIndex - 1))
+    } else {
+      failed(StackUnderflow)
     }
   }
 

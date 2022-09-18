@@ -59,6 +59,7 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
     compileScript,
     buildExecuteScriptTx,
     compileContract,
+    compileProject,
     buildDeployContractTx,
     contractState,
     testContract,
@@ -69,6 +70,7 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
     verifySignature,
     checkHashIndexing,
     minerAction,
+    mineOneBlock,
     minerListAddresses,
     minerUpdateAddresses,
     getContractEvents,
@@ -77,6 +79,7 @@ trait Documentation extends Endpoints with OpenAPIDocsInterpreter {
   )
 
   private lazy val servers = List(
+    Server("../"),
     Server("{protocol}://{host}:{port}")
       .variables(
         "protocol" -> ServerVariable(Some(List("http", "https")), "http", None),

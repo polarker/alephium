@@ -18,8 +18,8 @@ package org.alephium.app
 
 import org.alephium.api.model._
 import org.alephium.json.Json._
-import org.alephium.protocol.{ALPH, BlockHash, Hash, PublicKey}
-import org.alephium.protocol.model.{dustUtxoAmount, Address, ContractId}
+import org.alephium.protocol.{ALPH, PublicKey}
+import org.alephium.protocol.model.{dustUtxoAmount, Address, BlockHash, ContractId, TransactionId}
 import org.alephium.protocol.vm
 import org.alephium.util._
 import org.alephium.wallet.api.model._
@@ -87,7 +87,7 @@ class VotingTest extends AlephiumActorSpec {
       event.eventIndex is 0
     }
 
-    def checkVoteCastedEventsByTxId(infos: Seq[(String, Boolean, Hash)]) = {
+    def checkVoteCastedEventsByTxId(infos: Seq[(String, Boolean, TransactionId)]) = {
       infos.foreach { info =>
         val (address, choice, txId) = info
         val response = request[ContractEventsByTxId](
@@ -181,7 +181,7 @@ trait VotingFixture extends WalletFixture {
       .mkString("\n")
     // scalastyle:off no.equal
     val votingContract = s"""
-                            |TxContract Voting(
+                            |Contract Voting(
                             |  mut yes: U256,
                             |  mut no: U256,
                             |  mut isClosed: Bool,
@@ -196,8 +196,8 @@ trait VotingFixture extends WalletFixture {
                             |
                             |  @using(preapprovedAssets = true, assetsInContract = true)
                             |  pub fn allocateTokens() -> () {
-                            |     assert!(initialized == false)
-                            |     assert!(callerAddress!() == admin)
+                            |     assert!(initialized == false, 0)
+                            |     assert!(callerAddress!() == admin, 0)
                             |     ${allocationTransfers}
                             |     yes = 0
                             |     no = 0
@@ -208,7 +208,7 @@ trait VotingFixture extends WalletFixture {
                             |
                             |  @using(preapprovedAssets = true, assetsInContract = true)
                             |  pub fn vote(choice: Bool, voter: Address) -> () {
-                            |    assert!(initialized == true && isClosed == false)
+                            |    assert!(initialized == true && isClosed == false, 0)
                             |    transferAlph!(voter, admin, $dustAmount)
                             |    transferTokenToSelf!(voter, selfTokenId!(), 1)
                             |
@@ -222,8 +222,8 @@ trait VotingFixture extends WalletFixture {
                             |  }
                             |
                             |   pub fn close() -> () {
-                            |     assert!(initialized == true && isClosed == false)
-                            |     assert!(callerAddress!() == admin)
+                            |     assert!(initialized == true && isClosed == false, 0)
+                            |     assert!(callerAddress!() == admin, 0)
                             |     isClosed = true
                             |
                             |     emit VotingClosed()
@@ -301,7 +301,7 @@ trait WalletFixture extends CliqueFixture {
   val clique                = bootClique(1)
   val activeAddressesGroup  = 0
   val genesisWalletName     = "genesis-wallet"
-  def submitTx(unsignedTx: String, txId: Hash, walletName: String): SubmitTxResult = {
+  def submitTx(unsignedTx: String, txId: TransactionId, walletName: String): SubmitTxResult = {
     val signature =
       request[SignResult](sign(walletName, s"${txId.toHexString}"), restPort).signature
     val tx = request[SubmitTxResult](

@@ -18,7 +18,7 @@ package org.alephium.protocol.vm.lang
 
 import org.alephium.crypto.Byte32
 import org.alephium.protocol.{ALPH, Hash, PublicKey}
-import org.alephium.protocol.model.Address
+import org.alephium.protocol.model.{Address, ContractId}
 import org.alephium.protocol.vm.Val
 import org.alephium.protocol.vm.lang.ArithOperator._
 import org.alephium.util.{AlephiumSpec, Hex, I256, U256}
@@ -58,9 +58,13 @@ class LexerSpec extends AlephiumSpec {
     fastparse.parse("U256", Lexer.typeId(_)).get.value is Ast.TypeId("U256")
     fastparse.parse("Foo", Lexer.typeId(_)).get.value is Ast.TypeId("Foo")
     fastparse.parse("x: U256", StatelessParser.funcArgument(_)).get.value is
-      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = false)
+      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = false, isUnused = false)
     fastparse.parse("mut x: U256", StatelessParser.funcArgument(_)).get.value is
-      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = true)
+      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = true, isUnused = false)
+    fastparse.parse("@unused mut x: U256", StatelessParser.funcArgument(_)).get.value is
+      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = true, isUnused = true)
+    fastparse.parse("@unused mut x: U256", StatelessParser.contractField(_)).get.value is
+      Ast.Argument(Ast.Ident("x"), Type.U256, isMutable = true, isUnused = true)
     fastparse.parse("// comment", Lexer.lineComment(_)).isSuccess is true
     fastparse.parse("add", Lexer.funcId(_)).get.value is Ast.FuncId("add", false)
     fastparse.parse("add!", Lexer.funcId(_)).get.value is Ast.FuncId("add", true)
@@ -79,7 +83,7 @@ class LexerSpec extends AlephiumSpec {
   it should "parse bytes and address" in {
     val hash     = Hash.random
     val address  = Address.p2pkh(PublicKey.generate)
-    val contract = Address.contract(Hash.random)
+    val contract = Address.contract(ContractId.random)
     fastparse.parse(s"#${hash.toHexString}", Lexer.bytes(_)).get.value is
       Val.ByteVec(hash.bytes)
     fastparse.parse(s"@${address.toBase58}", Lexer.address(_)).get.value is

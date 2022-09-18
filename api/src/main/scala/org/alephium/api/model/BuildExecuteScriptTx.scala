@@ -19,6 +19,7 @@ package org.alephium.api.model
 import akka.util.ByteString
 
 import org.alephium.protocol.PublicKey
+import org.alephium.protocol.model.BlockHash
 import org.alephium.protocol.vm.{GasBox, GasPrice}
 import org.alephium.util.AVector
 
@@ -29,5 +30,6 @@ final case class BuildExecuteScriptTx(
     attoAlphAmount: Option[Amount] = None,
     tokens: Option[AVector[Token]] = None,
     gasAmount: Option[GasBox] = None,
-    gasPrice: Option[GasPrice] = None
+    gasPrice: Option[GasPrice] = None,
+    targetBlockHash: Option[BlockHash] = None
 ) extends BuildTxCommon
