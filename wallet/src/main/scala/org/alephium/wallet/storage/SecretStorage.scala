@@ -407,9 +407,11 @@ object SecretStorage {
   }
 
   def setPermission600(file: File): Unit = {
-    file.setReadable(false, false) // This returns false on Windows CI
-    require(file.setReadable(true, true))
-    require(file.setWritable(false, false))
-    require(file.setWritable(true, true))
+    print(s"======= $file: ")
+    print(file.setReadable(false, false))
+    print(file.setReadable(true, true))
+    print(file.setWritable(false, false))
+    print(file.setWritable(true, true))
+    print("\n")
   }
 }
