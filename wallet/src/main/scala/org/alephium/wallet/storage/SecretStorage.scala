@@ -171,6 +171,7 @@ object SecretStorage {
         )
         state <- stateFromFile(file, password, path, mnemonicPassphrase)
       } yield {
+        SecretStorage.setPermission600(file)
         new Impl(file, Some(state), path)
       }
     }
@@ -403,5 +404,14 @@ object SecretStorage {
       .toEither
       .left
       .map(_ => SecretFileError)
+  }
+
+  def setPermission600(file: File): Unit = {
+    print(s"======= $file: ")
+    print(file.setReadable(false, false))
+    print(file.setReadable(true, true))
+    print(file.setWritable(false, false))
+    print(file.setWritable(true, true))
+    print("\n")
   }
 }
