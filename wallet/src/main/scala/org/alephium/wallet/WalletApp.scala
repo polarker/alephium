@@ -131,8 +131,10 @@ class WalletApp(config: WalletConfig)(implicit
 
 object WalletApp {
   def checkSecretFilePermission(walletDir: Path): Unit = {
-    Files.list(walletDir).forEach { path =>
-      SecretStorage.setPermission600(path.toFile)
+    if (Files.exists(walletDir)) {
+      Files.list(walletDir).forEach { path =>
+        SecretStorage.setPermission600(path.toFile)
+      }
     }
   }
 }
