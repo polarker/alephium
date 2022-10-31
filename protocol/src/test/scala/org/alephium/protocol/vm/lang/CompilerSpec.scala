@@ -2208,8 +2208,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
   it should "use braces syntax for functions that uses preapproved assets" in {
     def code(
         bracesPart: String = "{callerAddress!() -> amount}",
-        usePreapprovedAssets: Boolean = true,
-        useAssetsInContract: Boolean = false
+        usePreapprovedAssets: Boolean = true
     ): String =
       s"""
          |TxScript Main(fooContractId: ByteVec, amount: U256) {
@@ -2228,32 +2227,28 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     Compiler.compileTxScript(code(usePreapprovedAssets = false)).leftValue.message is
       "Function `foo` does not use preapproved assets"
     Compiler
-      .compileTxScript(code(usePreapprovedAssets = false, useAssetsInContract = true))
+      .compileTxScript(code(usePreapprovedAssets = false))
       .leftValue
       .message is
       "Function `foo` does not use preapproved assets"
   }
 
   it should "check if contract assets is used in the function" in {
-    def code(useAssetsInContract: Boolean = false, instr: String = "return"): String =
-      s"""
-         |Contract Foo() {
-         |  fn foo() -> () {
-         |    $instr
-         |  }
-         |}
-         |""".stripMargin
-    Compiler.compileContract(code()).isRight is true
-    Compiler
-      .compileContract(code(true, "transferAlphFromSelf!(callerAddress!(), 1 alph)"))
-      .isRight is true
-    Compiler
-      .compileContract(code(false, "transferAlphFromSelf!(callerAddress!(), 1 alph)"))
-      .isRight is true
-    Compiler
-      .compileContract(code(true))
-      .leftValue
-      .message is "Function \"Foo.foo\" does not use contract assets, but its annotation of contract assets is turn on"
+    def test(instr: String, useContractAssets: Boolean) = {
+      val code = s"""
+                    |Contract Foo() {
+                    |  fn foo() -> () {
+                    |    $instr
+                    |  }
+                    |}
+                    |""".stripMargin
+      val method = Compiler.compileContract(code).rightValue.methods.head
+      StaticAnalysis.methodUsesContractAssets(method.instrs.toIterable) is useContractAssets
+    }
+
+    test("return", false)
+    test("transferAlphFromSelf!(callerAddress!(), 1 alph)", true)
+    test("transferAlphFromSelf!(callerAddress!(), 1 alph)", true)
   }
 
   it should "check types for braces syntax" in {

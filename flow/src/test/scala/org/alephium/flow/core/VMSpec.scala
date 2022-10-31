@@ -1189,7 +1189,7 @@ class VMSpec extends AlephiumSpec {
   }
 
   it should "not destroy a contract after approving assets" in new DestroyFixture {
-    def buildFoo(useAssetsInContract: Boolean) =
+    def buildFoo() =
       s"""
          |Contract Foo() {
          |  pub fn destroy(targetAddress: Address) -> () {
@@ -1205,14 +1205,13 @@ class VMSpec extends AlephiumSpec {
          |}
          |$foo
          |""".stripMargin
-    def test(useAssetsInContract: Boolean, error: ExeFailure) = {
-      val foo   = buildFoo(useAssetsInContract)
+    def test(error: ExeFailure) = {
+      val foo   = buildFoo()
       val fooId = createContract(foo, AVector.empty, initialAttoAlphAmount = ALPH.alph(10))._1
       failCallTxScript(main(fooId, foo), error)
     }
 
-    test(useAssetsInContract = true, ContractAssetAlreadyFlushed)
-    test(useAssetsInContract = false, NoBalanceAvailable)
+    test(ContractAssetAlreadyFlushed)
   }
 
   it should "migrate contract" in new DestroyFixture {
@@ -3503,10 +3502,7 @@ class VMSpec extends AlephiumSpec {
          |
          |$foo
          |""".stripMargin
-    callTxScript(script)
-
-    val worldState = blockFlow.getBestPersistedWorldState(chainIndex.from).fold(throw _, identity)
-    worldState.getContractAsset(fooId).rightValue.amount is ALPH.alph(2)
+    failCallTxScript(script, ContractAssetAlreadyInUsing)
   }
 
   it should "test AssertWithErrorCode instruction" in new ContractFixture {
