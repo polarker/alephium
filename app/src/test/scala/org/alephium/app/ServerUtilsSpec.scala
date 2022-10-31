@@ -900,7 +900,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     val fooCode =
       s"""
          |Contract Foo(mut value: U256) {
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true)
          |  pub fn addOne() -> U256 {
          |    transferAlphToSelf!(@$callerAddress, ${ALPH.oneNanoAlph})
          |    value = value + 1
@@ -993,7 +993,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn destroy() -> () {
          |    destroySelf!(@$assetAddress)
          |  }
@@ -1008,7 +1007,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val bar =
       s"""
          |Contract Bar() {
-         |  @using(assetsInContract = true)
          |  pub fn bar() -> () {
          |    createSubContract!{selfAddress!() -> 1 alph}(#$createContractPath, #$fooByteCode, #$encodedState)
          |    Foo(subContractId!(#$destroyContractPath)).destroy()
@@ -1059,7 +1057,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn destroy(address: Address) -> () {
          |    destroySelf!(address)
          |  }
@@ -1118,7 +1115,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     override def fooCaller: String =
       s"""
          |Contract FooCaller(fooId: ByteVec) {
-         |  @using(assetsInContract = true)
          |  pub fn destroyFoo() -> () {
          |    let foo = Foo(fooId)
          |    foo.destroy(selfAddress!())
@@ -1165,7 +1161,120 @@ class ServerUtilsSpec extends AlephiumSpec {
         testContractParams.toComplete().rightValue
       )
       .leftValue
-      .detail is "PayToContractAddressNotInCallerTrace"
+      .detail is "VM execution error: PayToContractAddressNotInCallerTrace"
+  }
+
+  it should "show debug message when contract execution failed" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  fn foo() -> () {
+         |    emit Debug(`Hello, Alephium!`)
+         |    assert!(false, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).rightValue
+
+    val serverUtils  = new ServerUtils()
+    val testContract = TestContract(bytecode = code).toComplete().rightValue
+    val testError    = serverUtils.runTestContract(blockFlow, testContract).leftValue.detail
+    testError is
+      s"DEBUG - ${Address.contract(testContract.contractId).toBase58} - Hello, Alephium!\n" ++
+      "VM execution error: AssertionFailedWithErrorCode(tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq,0)"
+  }
+
+  it should "test blockHash function for Ralph" in new TestContractFixture {
+    val blockHash = BlockHash.random
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  fn foo() -> (ByteVec) {
+         |    assert!(blockHash!() == #${blockHash.toHexString}, 0)
+         |    return blockHash!()
+         |  }
+         |}
+         |""".stripMargin
+
+    val code = Compiler.compileContract(contract).rightValue
+
+    val testContract0 = TestContract(bytecode = code).toComplete().rightValue
+    val testResult0   = serverUtils.runTestContract(blockFlow, testContract0).leftValue
+    testResult0.detail is s"VM execution error: AssertionFailedWithErrorCode(tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq,0)"
+
+    val testContract1 =
+      TestContract(bytecode = code, blockHash = Some(blockHash)).toComplete().rightValue
+    val testResult1 = serverUtils.runTestContract(blockFlow, testContract1).rightValue
+    testResult1.returns.head is api.ValByteVec(blockHash.bytes)
+  }
+
+  it should "extract debug message from contract event" in new Fixture {
+    val serverUtils     = new ServerUtils()
+    val contractAddress = Address.contract(ContractId.random)
+    def buildEvent(fields: Val*): ContractEventByTxId = {
+      ContractEventByTxId(BlockHash.random, contractAddress, 0, AVector.from(fields))
+    }
+
+    serverUtils
+      .extractDebugMessage(buildEvent())
+      .leftValue
+      .detail is "Invalid debug message"
+
+    serverUtils
+      .extractDebugMessage(buildEvent(ValBool(true)))
+      .leftValue
+      .detail is "Invalid debug message"
+
+    serverUtils
+      .extractDebugMessage(buildEvent(ValByteVec(ByteString.fromString("Hello, Alephium!")))) isE
+      DebugMessage(contractAddress, "Hello, Alephium!")
+
+    serverUtils
+      .extractDebugMessage(
+        buildEvent(ValByteVec(ByteString.fromString("Hello, Alephium!")), ValBool(true))
+      )
+      .leftValue
+      .detail is "Invalid debug message"
+  }
+
+  it should "test debug function for Ralph" in new Fixture {
+    val contract: String =
+      s"""
+         |Contract Foo(name: ByteVec) {
+         |  pub fn foo() -> () {
+         |    emit Debug(`Hello, $${name}!`)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).rightValue
+
+    val testContract = TestContract(
+      bytecode = code,
+      initialFields = Some(AVector(ValByteVec(ByteString.fromString("Alephium"))))
+    ).toComplete().rightValue
+    val serverUtils = new ServerUtils()
+    val testResult  = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.events.isEmpty is true
+    testResult.debugMessages is AVector(
+      DebugMessage(Address.contract(testContract.contractId), "Hello, Alephium!")
+    )
+  }
+
+  it should "test contract asset only function" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {
+         |    assert!(alphRemaining!(selfAddress!()) == 1 alph, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val code         = Compiler.compileContract(contract).rightValue
+    val testContract = TestContract(bytecode = code).toComplete().rightValue
+    val serverUtils  = new ServerUtils()
+    val testResult   = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.txInputs.isEmpty is true
+    testResult.txOutputs.isEmpty is true
   }
 
   trait TestContractFixture extends Fixture {
@@ -1633,12 +1742,12 @@ class ServerUtilsSpec extends AlephiumSpec {
     result.contracts.length is 1
     contracts.length is 1
     val contractCode = result.contracts(0).bytecode
-    contractCode is Hex.toHexString(serialize(contracts(0)._1))
+    contractCode is Hex.toHexString(serialize(contracts(0).code))
 
     result.scripts.length is 1
     scripts.length is 1
     val scriptCode = result.scripts(0).bytecodeTemplate
-    scriptCode is scripts(0)._1.toTemplateString()
+    scriptCode is scripts(0).code.toTemplateString()
   }
 
   it should "compile script" in new Fixture {
@@ -1766,6 +1875,73 @@ class ServerUtilsSpec extends AlephiumSpec {
           Some(U256.unsafe(50))
         ) is expected
     }
+  }
+
+  it should "fail when the number of parameters is not as specified by the test method" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {
+         |    return
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).toOption.get
+
+    val testContract =
+      TestContract(bytecode = code, args = Some(AVector[Val](Val.True))).toComplete().rightValue
+    val serverUtils = new ServerUtils()
+    serverUtils
+      .runTestContract(blockFlow, testContract)
+      .leftValue
+      .detail is "The number of parameters is different from the number specified by the target method"
+  }
+
+  it should "test utxo splits for generated outputs" in new Fixture {
+    val tokenId = TokenId.random
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {
+         |    transferTokenFromSelf!(callerAddress!(), #${tokenId.toHexString}, 1)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).toOption.get
+
+    val caller = Address.p2pkh(PublicKey.generate)
+    val inputAssets = TestInputAsset(
+      caller,
+      AssetState(
+        ALPH.alph(3),
+        Some(AVector.fill(2 * maxTokenPerUtxo)(Token(TokenId.random, 1)))
+      )
+    )
+    val testContract = TestContract(
+      blockHash = Some(BlockHash.random),
+      txId = Some(TransactionId.random),
+      bytecode = code,
+      initialFields = Some(AVector.empty[Val]),
+      initialAsset = Some(AssetState(ALPH.oneAlph, Some(AVector(Token(tokenId, 10))))),
+      args = Some(AVector.empty[Val]),
+      inputAssets = Some(AVector(inputAssets))
+    ).toComplete().rightValue
+
+    val serverUtils  = new ServerUtils()
+    val tokensSorted = (inputAssets.asset.tokens.get :+ Token(tokenId, 1)).sortBy(_.id)
+    val testResult   = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.txOutputs.length is 4
+    testResult.txOutputs(0).address is caller
+    testResult.txOutputs(0).tokens.length is maxTokenPerUtxo
+    testResult.txOutputs(0).tokens is tokensSorted.slice(0, maxTokenPerUtxo)
+    testResult.txOutputs(1).address is caller
+    testResult.txOutputs(1).tokens.length is maxTokenPerUtxo
+    testResult.txOutputs(1).tokens is tokensSorted
+      .slice(maxTokenPerUtxo, 2 * maxTokenPerUtxo)
+    testResult.txOutputs(2).address is caller
+    testResult.txOutputs(2).tokens.length is 1
+    testResult.txOutputs(2).tokens is tokensSorted.slice(2 * maxTokenPerUtxo, tokensSorted.length)
+    testResult.txOutputs(3).address is Address.contract(testContract.contractId)
   }
 
   private def generateDestination(

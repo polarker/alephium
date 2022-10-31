@@ -25,6 +25,7 @@ import org.alephium.api._
 import org.alephium.api.ApiError
 import org.alephium.api.model
 import org.alephium.api.model.{AssetOutput => _, TransactionTemplate => _, _}
+import org.alephium.crypto.Byte32
 import org.alephium.flow.core.{BlockFlow, BlockFlowState, UtxoSelectionAlgo}
 import org.alephium.flow.core.UtxoSelectionAlgo._
 import org.alephium.flow.gasestimation._
@@ -61,11 +62,27 @@ class ServerUtils(implicit
     } yield blocks
   }
 
-  def getBlockflow(blockFlow: BlockFlow, timeInterval: TimeInterval): Try[FetchResponse] = {
+  def getBlocks(blockFlow: BlockFlow, timeInterval: TimeInterval): Try[BlocksPerTimeStampRange] = {
     getHeightedBlocks(blockFlow, timeInterval).map { heightedBlocks =>
-      FetchResponse(heightedBlocks.map(_._2.map { case (block, height) =>
+      BlocksPerTimeStampRange(heightedBlocks.map(_._2.map { case (block, height) =>
         BlockEntry.from(block, height)
       }))
+    }
+  }
+
+  def getBlocksAndEvents(
+      blockFlow: BlockFlow,
+      timeInterval: TimeInterval
+  ): Try[BlocksAndEventsPerTimeStampRange] = {
+    getHeightedBlocks(blockFlow, timeInterval).flatMap { heightedBlocks =>
+      heightedBlocks
+        .mapE(_._2.mapE { case (block, height) =>
+          val blockEntry = BlockEntry.from(block, height)
+          getEventsByBlockHash(blockFlow, blockEntry.hash).map(events =>
+            BlockAndEvents(blockEntry, events.events)
+          )
+        })
+        .map(BlocksAndEventsPerTimeStampRange)
     }
   }
 
@@ -359,25 +376,29 @@ class ServerUtils(implicit
   ): Try[Int] = {
     val contractId = contractAddress.lockupScript.contractId
     for {
-      groupIndex <- blockFlow.getGroupForContract(contractId).left.map(failed)
-      chainIndex = ChainIndex(groupIndex, groupIndex)
-      countOpt <- wrapResult(blockFlow.getEventsCurrentCount(chainIndex, contractId.value))
+      countOpt <- wrapResult(blockFlow.getEventsCurrentCount(contractId))
       count    <- countOpt.toRight(notFound(s"Current events count for contract $contractAddress"))
     } yield count
   }
 
-  def getBlock(blockFlow: BlockFlow, query: GetBlock): Try[BlockEntry] =
+  def getBlock(blockFlow: BlockFlow, hash: BlockHash): Try[BlockEntry] =
     for {
-      _ <- checkHashChainIndex(query.hash)
+      _ <- checkHashChainIndex(hash)
       block <- blockFlow
-        .getBlock(query.hash)
+        .getBlock(hash)
         .left
-        .map(_ => failed(s"Fail fetching block with header ${query.hash.toHexString}"))
+        .map(_ => failed(s"Fail fetching block with header ${hash.toHexString}"))
       height <- blockFlow
         .getHeight(block.header)
         .left
         .map(failedInIO)
     } yield BlockEntry.from(block, height)
+
+  def getBlockAndEvents(blockFlow: BlockFlow, hash: BlockHash): Try[BlockAndEvents] =
+    for {
+      block  <- getBlock(blockFlow, hash)
+      events <- getEventsByBlockHash(blockFlow, hash)
+    } yield BlockAndEvents(block, events.events)
 
   def isBlockInMainChain(blockFlow: BlockFlow, blockHash: BlockHash): Try[Boolean] = {
     for {
@@ -413,7 +434,7 @@ class ServerUtils(implicit
       hashes <- blockFlow
         .getHashes(chainIndex, query.height)
         .left
-        .map(_ => failedInIO)
+        .map(failedInIO)
     } yield HashesAtHeight(hashes)
 
   def getChainInfo(blockFlow: BlockFlow, chainIndex: ChainIndex): Try[ChainInfo] =
@@ -421,7 +442,7 @@ class ServerUtils(implicit
       maxHeight <- blockFlow
         .getMaxHeight(chainIndex)
         .left
-        .map(_ => failedInIO)
+        .map(failedInIO)
     } yield ChainInfo(maxHeight)
 
   def searchLocalTransactionStatus(
@@ -453,32 +474,21 @@ class ServerUtils(implicit
       txId: TransactionId
   ): Try[ContractEventsByTxId] = {
     wrapResult(
-      for {
-        result <- blockFlow.getEvents(txId.value, 0, CounterRange.MaxCounterRange)
-        (nextStart, logStatesVec) = result
-        events <- logStatesVec.flatMapE { logStates =>
-          logStates.states
-            .mapE { state =>
-              if (state.isRef) {
-                LogStateRef
-                  .fromFields(state.fields)
-                  .toRight(IOError.Other(new Throwable(s"Invalid state ref: ${state.fields}")))
-                  .flatMap(blockFlow.getEventByRef(_))
-                  .map(p => ContractEventByTxId.from(p._1, p._2, p._3))
-              } else {
-                Right(
-                  ContractEventByTxId(
-                    logStates.blockHash,
-                    Address.contract(ContractId.unsafe(logStates.eventKey)),
-                    state.index.toInt,
-                    state.fields.map(Val.from)
-                  )
-                )
-              }
-            }
-        }
-      } yield {
-        ContractEventsByTxId(events, nextStart)
+      blockFlow.getEventsByHash(Byte32.unsafe(txId.bytes)).map { logs =>
+        val events = logs.map(p => ContractEventByTxId.from(p._1, p._2, p._3))
+        ContractEventsByTxId(events)
+      }
+    )
+  }
+
+  def getEventsByBlockHash(
+      blockFlow: BlockFlow,
+      blockHash: BlockHash
+  ): Try[ContractEventsByBlockHash] = {
+    wrapResult(
+      blockFlow.getEventsByHash(Byte32.unsafe(blockHash.bytes)).map { logs =>
+        val events = logs.map(p => ContractEventByBlockHash.from(p._2, p._3))
+        ContractEventsByBlockHash(events)
       }
     )
   }
@@ -486,16 +496,12 @@ class ServerUtils(implicit
   def getEventsByContractId(
       blockFlow: BlockFlow,
       start: Int,
-      endOpt: Option[Int],
+      limit: Int,
       contractId: ContractId
   ): Try[ContractEvents] = {
     wrapResult(
       blockFlow
-        .getEvents(
-          contractId.value,
-          start,
-          endOpt.getOrElse(start + CounterRange.MaxCounterRange)
-        )
+        .getEvents(contractId, start, start + limit)
         .map {
           case (nextStart, logStatesVec) => {
             ContractEvents.from(logStatesVec, nextStart)
@@ -838,7 +844,7 @@ class ServerUtils(implicit
   def compileScript(query: Compile.Script): Try[CompileScriptResult] = {
     Compiler
       .compileTxScriptFull(query.code, compilerOptions = query.getLangCompilerOptions())
-      .map(p => CompileScriptResult.from(p._1, p._2, p._3))
+      .map(CompileScriptResult.from)
       .left
       .map(error => failed(error.toString))
   }
@@ -847,7 +853,7 @@ class ServerUtils(implicit
   def compileContract(query: Compile.Contract): Try[CompileContractResult] = {
     Compiler
       .compileContractFull(query.code, compilerOptions = query.getLangCompilerOptions())
-      .map(p => CompileContractResult.from(p._1, p._2, p._3))
+      .map(CompileContractResult.from)
       .left
       .map(error => failed(error.toString))
   }
@@ -941,10 +947,12 @@ class ServerUtils(implicit
       events = fetchContractEvents(worldState)
       contractIds <- getCreatedAndDestroyedContractIds(events)
       postState   <- fetchContractsState(worldState, testContract, contractIds._1, contractIds._2)
+      eventsSplit <- extractDebugMessages(events)
     } yield {
       val executionOutputs = executionResultPair._1
       val executionResult  = executionResultPair._2
       val gasUsed          = maximalGasPerTx.subUnsafe(executionResult.gasBox)
+      logger.info("\n" + showDebugMessages(eventsSplit._2))
       TestContractResult(
         address = Address.contract(testContract.contractId),
         codeHash = postState._2,
@@ -955,8 +963,27 @@ class ServerUtils(implicit
         txOutputs = executionResult.generatedOutputs.mapWithIndex { case (output, index) =>
           Output.from(output, TransactionId.zero, index)
         },
-        events = events
+        events = eventsSplit._1,
+        debugMessages = eventsSplit._2
       )
+    }
+  }
+
+  def extractDebugMessage(event: ContractEventByTxId): Try[DebugMessage] = {
+    (event.fields.length, event.fields.headOption) match {
+      case (1, Some(message: ValByteVec)) =>
+        Right(DebugMessage(event.contractAddress, message.value.utf8String))
+      case _ =>
+        Left(failed("Invalid debug message"))
+    }
+  }
+
+  def extractDebugMessages(
+      events: AVector[ContractEventByTxId]
+  ): Try[(AVector[ContractEventByTxId], AVector[DebugMessage])] = {
+    val nonDebugEvents = events.filter(e => I256.from(e.eventIndex) != debugEventIndex.v)
+    events.filter(e => I256.from(e.eventIndex) == debugEventIndex.v).mapE(extractDebugMessage).map {
+      debugMessages => nonDebugEvents -> debugMessages
     }
   }
 
@@ -1006,24 +1033,18 @@ class ServerUtils(implicit
     }
   }
 
-  private def fetchContractEvents(
-      worldState: WorldState.Staging
-  ): AVector[ContractEventByTxId] = {
+  private def fetchContractEvents(worldState: WorldState.Staging): AVector[ContractEventByTxId] = {
     val allLogStates = worldState.logState.getNewLogs()
     allLogStates.flatMap(logStates =>
       logStates.states.flatMap(state =>
-        if (state.isRef) {
-          AVector.empty
-        } else {
-          AVector(
-            ContractEventByTxId(
-              logStates.blockHash,
-              Address.contract(ContractId.unsafe(logStates.eventKey)),
-              state.index.toInt,
-              state.fields.map(Val.from)
-            )
+        AVector(
+          ContractEventByTxId(
+            logStates.blockHash,
+            Address.contract(logStates.contractId),
+            state.index.toInt,
+            state.fields.map(Val.from)
           )
-        }
+        )
       )
     )
   }
@@ -1093,7 +1114,49 @@ class ServerUtils(implicit
         )
       )
     )
-    wrapExeResult(StatefulVM.runTxScriptWithOutputs(context, script))
+    for {
+      _      <- checkArgs(args, method)
+      result <- runWithDebugError(context, script)
+    } yield result
+  }
+
+  def checkArgs(args: AVector[Val], method: Method[StatefulContext]): Try[Unit] = {
+    if (args.sumBy(_.flattenSize()) != method.argsLength) {
+      Left(
+        failed(
+          "The number of parameters is different from the number specified by the target method"
+        )
+      )
+    } else {
+      Right(())
+    }
+  }
+
+  @SuppressWarnings(Array("org.wartremover.warts.ToString"))
+  def runWithDebugError(
+      context: StatefulContext,
+      script: StatefulScript
+  ): Try[(AVector[vm.Val], StatefulVM.TxScriptExecution)] = {
+    StatefulVM.runTxScriptWithOutputs(context, script) match {
+      case Right(result)         => Right(result)
+      case Left(Left(ioFailure)) => Left(failedInIO(ioFailure.error))
+      case Left(Right(exeFailure)) =>
+        val errorString = s"VM execution error: ${exeFailure.toString()}"
+        val events      = fetchContractEvents(context.worldState)
+        extractDebugMessages(events).flatMap { case (_, debugMessages) =>
+          val detail = showDebugMessages(debugMessages) ++ errorString
+          logger.info("\n" + detail)
+          Left(failed(detail))
+        }
+    }
+  }
+
+  def showDebugMessages(messages: AVector[DebugMessage]): String = {
+    if (messages.isEmpty) {
+      ""
+    } else {
+      messages.mkString("", "\n", "\n")
+    }
   }
 
   private def approveAsset(

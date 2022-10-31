@@ -173,6 +173,34 @@ class ParserSpec extends AlephiumSpec {
       .value is a[Ast.ForLoop[StatelessContext]]
   }
 
+  it should "parse debug statements" in {
+    fastparse.parse(s"$${a}", StatelessParser.stringInterpolator(_)).get.value is
+      Variable[StatelessContext](Ident("a"))
+    fastparse.parse(s"$${ x + y }", StatelessParser.stringInterpolator(_)).get.value is
+      Binop[StatelessContext](Add, Variable(Ident("x")), Variable(Ident("y")))
+
+    fastparse.parse(s"emit Debug(``)", StatelessParser.debug(_)).get.value is
+      Ast.Debug[StatelessContext](AVector(Val.ByteVec(ByteString.empty)), Seq.empty)
+    fastparse.parse(s"emit Debug(`$${a}`)", StatelessParser.debug(_)).get.value is
+      Ast.Debug[StatelessContext](
+        AVector(Val.ByteVec(ByteString.empty), Val.ByteVec(ByteString.empty)),
+        Seq(Variable(Ident("a")))
+      )
+    fastparse
+      .parse(s"emit Debug(`Hello, $${a}$${b} $${c} $$$$ $$` !`)", StatelessParser.debug(_))
+      .get
+      .value is
+      Ast.Debug[StatelessContext](
+        AVector(
+          Val.ByteVec(ByteString.fromString("Hello, ")),
+          Val.ByteVec(ByteString.empty),
+          Val.ByteVec(ByteString.fromString(" ")),
+          Val.ByteVec(ByteString.fromString(" $ ` !"))
+        ),
+        Seq(Variable(Ident("a")), Variable(Ident("b")), Variable(Ident("c")))
+      )
+  }
+
   it should "parse if-else statements" in {
     fastparse
       .parse("if (x) { return }", StatelessParser.statement(_))
@@ -245,7 +273,6 @@ class ParserSpec extends AlephiumSpec {
     parsed0.id is Ast.FuncId("add", false)
     parsed0.isPublic is false
     parsed0.usePreapprovedAssets is false
-    parsed0.useAssetsInContract is false
     parsed0.args.size is 2
     parsed0.rtypes is Seq(Type.U256, Type.U256)
 
@@ -261,7 +288,6 @@ class ParserSpec extends AlephiumSpec {
     parsed1.id is Ast.FuncId("add", false)
     parsed1.isPublic is true
     parsed1.usePreapprovedAssets is true
-    parsed1.useAssetsInContract is false
     parsed1.useExternalCallCheck is true
     parsed1.useReadonly is false
     parsed1.args.size is 2
@@ -270,7 +296,7 @@ class ParserSpec extends AlephiumSpec {
     info("Simple return type")
     val parsed2 = fastparse
       .parse(
-        """@using(preapprovedAssets = true, assetsInContract = true)
+        """@using(preapprovedAssets = true)
           |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
         StatelessParser.func(_)
       )
@@ -279,7 +305,6 @@ class ParserSpec extends AlephiumSpec {
     parsed2.id is Ast.FuncId("add", false)
     parsed2.isPublic is true
     parsed2.usePreapprovedAssets is true
-    parsed2.useAssetsInContract is true
     parsed2.useExternalCallCheck is true
     parsed2.useReadonly is false
     parsed2.args.size is 2
@@ -288,25 +313,15 @@ class ParserSpec extends AlephiumSpec {
     info("More use annotation")
     val parsed3 = fastparse
       .parse(
-        """@using(assetsInContract = true, readonly = true)
+        """@using(readonly = true)
           |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
         StatelessParser.func(_)
       )
       .get
       .value
     parsed3.usePreapprovedAssets is false
-    parsed3.useAssetsInContract is true
     parsed3.useExternalCallCheck is true
     parsed3.useReadonly is true
-
-    val error = intercept[Compiler.Error](
-      fastparse.parse(
-        """@using(assetsInContract = true)
-          |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
-        StatelessParser.assetScriptFunc(_)
-      )
-    )
-    error.message is "AssetScript does not support using annotation"
   }
 
   it should "parser contract initial states" in {
@@ -675,11 +690,10 @@ class ParserSpec extends AlephiumSpec {
           FuncDef(
             Seq.empty,
             FuncId("foo", false),
-            false,
-            false,
-            false,
-            true,
-            false,
+            isPublic = false,
+            usePreapprovedAssets = false,
+            useExternalCallCheck = true,
+            useReadonly = false,
             Seq.empty,
             Seq.empty,
             Some(Seq.empty)
@@ -797,11 +811,10 @@ class ParserSpec extends AlephiumSpec {
           FuncDef(
             Seq.empty,
             FuncId("foo", false),
-            false,
-            false,
-            false,
-            true,
-            false,
+            isPublic = false,
+            usePreapprovedAssets = false,
+            useExternalCallCheck = true,
+            useReadonly = false,
             Seq.empty,
             Seq.empty,
             None
@@ -843,11 +856,10 @@ class ParserSpec extends AlephiumSpec {
           FuncDef(
             Seq.empty,
             FuncId("foo", false),
-            false,
-            false,
-            false,
-            true,
-            false,
+            isPublic = false,
+            usePreapprovedAssets = false,
+            useExternalCallCheck = true,
+            useReadonly = false,
             Seq.empty,
             Seq.empty,
             Some(Seq(ReturnStmt(Seq.empty)))
@@ -879,11 +891,10 @@ class ParserSpec extends AlephiumSpec {
           FuncDef(
             Seq.empty,
             FuncId("foo", false),
-            false,
-            false,
-            false,
-            true,
-            false,
+            isPublic = false,
+            usePreapprovedAssets = false,
+            useExternalCallCheck = true,
+            useReadonly = false,
             Seq.empty,
             Seq.empty,
             Some(Seq(ReturnStmt(Seq.empty)))
@@ -920,11 +931,10 @@ class ParserSpec extends AlephiumSpec {
       FuncDef[StatefulContext](
         Seq.empty,
         FuncId("foo", false),
-        false,
-        false,
-        false,
-        externalCallCheck,
-        false,
+        isPublic = false,
+        usePreapprovedAssets = false,
+        useExternalCallCheck = externalCallCheck,
+        useReadonly = false,
         Seq.empty,
         Seq.empty,
         if (isAbstract) None else Some(Seq(Ast.ReturnStmt(List())))
@@ -934,11 +944,10 @@ class ParserSpec extends AlephiumSpec {
       FuncDef[StatefulContext](
         Seq.empty,
         FuncId("bar", false),
-        false,
-        false,
-        false,
-        externalCallCheck,
-        false,
+        isPublic = false,
+        usePreapprovedAssets = false,
+        useExternalCallCheck = externalCallCheck,
+        useReadonly = false,
         Seq.empty,
         Seq.empty,
         if (isAbstract) None else Some(Seq(Ast.ReturnStmt(List())))
@@ -1024,11 +1033,10 @@ class ParserSpec extends AlephiumSpec {
       FuncDef(
         Seq.empty,
         FuncId("main", false),
-        true,
-        usePreapprovedAssets,
-        false,
-        true,
-        false,
+        isPublic = true,
+        usePreapprovedAssets = usePreapprovedAssets,
+        useExternalCallCheck = true,
+        useReadonly = false,
         Seq.empty,
         Seq.empty,
         Some(Seq(Ast.ReturnStmt(List())))
@@ -1086,5 +1094,19 @@ class ParserSpec extends AlephiumSpec {
     fastparse.parse(script(""), StatefulParser.txScript(_)).isSuccess is true
     fastparse.parse(script("()"), StatefulParser.txScript(_)).isSuccess is true
     fastparse.parse(script("(x: U256)"), StatefulParser.txScript(_)).isSuccess is true
+  }
+
+  it should "fail to define Debug event" in {
+    val code =
+      s"""
+         |Contract Foo() {
+         |  event Debug(x: U256)
+         |  pub fn foo() -> () {
+         |    emit Debug(0)
+         |  }
+         |}
+         |""".stripMargin
+    intercept[Compiler.Error](fastparse.parse(code, StatefulParser.contract(_))).message is
+      "Debug is a built-in event name"
   }
 }

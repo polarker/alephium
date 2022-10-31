@@ -31,6 +31,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       s"""
          |// comment
          |AssetScript Foo {
+         |  @using(readonly = true)
          |  pub fn bar(a: U256, b: U256) -> (U256) {
          |    return (a + b)
          |  }
@@ -116,6 +117,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
+
       Compiler.compileContract(contract).isRight is true
     }
 
@@ -163,7 +165,6 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         .leftValue
         .message is "These functions are implemented multiple times: add1, add2"
     }
-
   }
 
   it should "infer types" in {
@@ -447,11 +448,13 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         fields: AVector[Val] = AVector.empty,
         methodIndex: Int = 0
     ): Assertion = {
-      val contract = Compiler.compileContract(input).rightValue
+      val compiled = Compiler.compileContractFull(input).rightValue
+      compiled.code is compiled.debugCode
+      val contract = compiled.code
 
       deserialize[StatefulContract](serialize(contract)) isE contract
       val (obj, context) = prepareContract(contract, fields)
-      StatefulVM.executeWithOutputs(context, obj, args, methodIndex) isE output
+      StatefulVM.executeWithOutputsWithDebug(context, obj, args, methodIndex) isE output
     }
 
     def fail(
@@ -1174,7 +1177,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |    i = 0
            |    while (i < 2) {
            |      assert!(x[i][0] == i, 0)
-           |      assert!(x[i][1] == i + 1, 0)
+           |      assert!(x[i][1] == i + 1, 1)
            |      i = i + 1
            |    }
            |  }
@@ -1479,6 +1482,30 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     // TODO: optimize following cases
     testConstantFolding("2 * 4 + 4 * i - 2 * 3", "8 + 4 * i - 6")
     testConstantFolding("a + 2 + 3", "a + 2 + 3")
+  }
+
+  it should "use the same generated variable for both production and debug code" in {
+    val code =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {
+         |    assert!(bar() == 0, 0)
+         |    assert!(bas()[0] == 1, 0)
+         |    assert!(bat()[0][1] == 0, 0)
+         |  }
+         |  fn bar() -> U256 {
+         |    return 0
+         |  }
+         |  fn bas() -> [U256; 3] {
+         |    return [0, 1, 2]
+         |  }
+         |  fn bat() -> [[U256; 3]; 2] {
+         |    return [[0, 1, 2]; 2]
+         |  }
+         |}
+         |""".stripMargin
+    val compiled = Compiler.compileContractFull(code).rightValue
+    compiled.code is compiled.debugCode
   }
 
   it should "compile return multiple values failed" in {
@@ -2161,7 +2188,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
   it should "compile TxScript" in {
     val code =
       s"""
-         |@using(preapprovedAssets = true, assetsInContract = false)
+         |@using(preapprovedAssets = true)
          |TxScript Main(address: Address, tokenId: ByteVec, tokenAmount: U256, swapContractKey: ByteVec) {
          |  let swap = Swap(swapContractKey)
          |  swap.swapAlph{
@@ -2170,7 +2197,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |}
          |
          |Interface Swap {
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true)
          |  pub fn swapAlph(buyer: Address, tokenAmount: U256) -> ()
          |}
          |""".stripMargin
@@ -2181,8 +2208,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
   it should "use braces syntax for functions that uses preapproved assets" in {
     def code(
         bracesPart: String = "{callerAddress!() -> amount}",
-        usePreapprovedAssets: Boolean = true,
-        useAssetsInContract: Boolean = false
+        usePreapprovedAssets: Boolean = true
     ): String =
       s"""
          |TxScript Main(fooContractId: ByteVec, amount: U256) {
@@ -2191,7 +2217,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |}
          |
          |Interface Foo {
-         |  @using(preapprovedAssets = $usePreapprovedAssets, assetsInContract = $useAssetsInContract)
+         |  @using(preapprovedAssets = $usePreapprovedAssets)
          |  pub fn foo() -> ()
          |}
          |""".stripMargin
@@ -2201,33 +2227,28 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     Compiler.compileTxScript(code(usePreapprovedAssets = false)).leftValue.message is
       "Function `foo` does not use preapproved assets"
     Compiler
-      .compileTxScript(code(usePreapprovedAssets = false, useAssetsInContract = true))
+      .compileTxScript(code(usePreapprovedAssets = false))
       .leftValue
       .message is
       "Function `foo` does not use preapproved assets"
   }
 
   it should "check if contract assets is used in the function" in {
-    def code(useAssetsInContract: Boolean = false, instr: String = "return"): String =
-      s"""
-         |Contract Foo() {
-         |  @using(assetsInContract = $useAssetsInContract)
-         |  fn foo() -> () {
-         |    $instr
-         |  }
-         |}
-         |""".stripMargin
-    Compiler.compileContract(code()).isRight is true
-    Compiler
-      .compileContract(code(true, "transferAlphFromSelf!(callerAddress!(), 1 alph)"))
-      .isRight is true
-    Compiler
-      .compileContract(code(false, "transferAlphFromSelf!(callerAddress!(), 1 alph)"))
-      .isRight is true
-    Compiler
-      .compileContract(code(true))
-      .leftValue
-      .message is "Function \"Foo.foo\" does not use contract assets, but its annotation of contract assets is turn on"
+    def test(instr: String, useContractAssets: Boolean) = {
+      val code = s"""
+                    |Contract Foo() {
+                    |  fn foo() -> () {
+                    |    $instr
+                    |  }
+                    |}
+                    |""".stripMargin
+      val method = Compiler.compileContract(code).rightValue.methods.head
+      StaticAnalysis.methodUsesContractAssets(method.instrs.toIterable) is useContractAssets
+    }
+
+    test("return", false)
+    test("transferAlphFromSelf!(callerAddress!(), 1 alph)", true)
+    test("transferAlphFromSelf!(callerAddress!(), 1 alph)", true)
   }
 
   it should "check types for braces syntax" in {
@@ -2682,6 +2703,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       val code =
         s"""
            |AssetScript Foo {
+           |  @using(readonly = true)
            |  pub fn foo(a: U256) -> U256 {
            |    let b = 1
            |    let c = 2
@@ -2707,7 +2729,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileTxScriptFull(code).rightValue._3 is
+      Compiler.compileTxScriptFull(code).rightValue.warnings is
         AVector("Found unused variables in Foo: main.b")
     }
 
@@ -2725,7 +2747,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileTxScriptFull(code).rightValue._3 is
+      Compiler.compileTxScriptFull(code).rightValue.warnings is
         AVector("Found unused fields in Foo: b")
     }
 
@@ -2742,7 +2764,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileContractFull(code).rightValue._3 is
+      Compiler.compileContractFull(code).rightValue.warnings is
         AVector("Found unused variables in Foo: foo.a, foo.b")
     }
 
@@ -2757,7 +2779,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileContractFull(code).rightValue._3 is
+      Compiler.compileContractFull(code).rightValue.warnings is
         AVector("Found unused fields in Foo: a, c")
     }
 
@@ -2777,8 +2799,58 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileContractFull(code).rightValue._3 is
+      Compiler.compileContractFull(code).rightValue.warnings is
         AVector("Found unused fields in Foo: b, c")
+    }
+
+    {
+      info("No warnings for used fields")
+      val code =
+        s"""
+           |Interface I {
+           |  @using(readonly = true, externalCallCheck = false)
+           |  pub fn i() -> ()
+           |}
+           |Abstract Contract Base(v: U256) {
+           |  @using(readonly = true)
+           |  fn base() -> () {
+           |    assert!(v == 0, 0)
+           |  }
+           |}
+           |Contract Bar(v: U256) extends Base(v) implements I {
+           |  @using(readonly = true, externalCallCheck = false)
+           |  pub fn i() -> () {
+           |    assert!(v == 0, 0)
+           |    base()
+           |  }
+           |}
+           |Contract Foo(v: U256) extends Base(v) {
+           |  @using(readonly = true)
+           |  pub fn foo() -> () {
+           |    base()
+           |  }
+           |}
+           |""".stripMargin
+      val result = Compiler.compileProject(code).rightValue
+      result._1.flatMap(_.warnings) is AVector.empty[String]
+    }
+
+    {
+      info("Unused variable in abstract contract")
+      val code =
+        s"""
+           |Abstract Contract Foo() {
+           |  @using(readonly = true)
+           |  pub fn foo(x: U256) -> () {}
+           |}
+           |Contract Bar() extends Foo() {}
+           |Contract Baz() extends Foo() {}
+           |""".stripMargin
+      val result = Compiler.compileProject(code).rightValue
+      result._1.flatMap(_.warnings) is AVector(
+        "Found unused variables in Bar: foo.x",
+        "Found unused variables in Baz: foo.x"
+      )
     }
 
     {
@@ -2794,7 +2866,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileContractFull(code).rightValue._3 is
+      Compiler.compileContractFull(code).rightValue.warnings is
         AVector("Found unused constants in Foo: C0")
     }
 
@@ -2820,7 +2892,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      Compiler.compileContractFull(code).rightValue._3 is
+      Compiler.compileContractFull(code).rightValue.warnings is
         AVector("Found unused constants in Foo: Chain.Eth, Language.Solidity")
     }
 
@@ -2845,7 +2917,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |""".stripMargin
       val (contracts, _) = Compiler.compileProject(code).rightValue
       contracts.length is 2
-      contracts.foreach(_._3.isEmpty is true)
+      contracts.foreach(_.warnings.isEmpty is true)
     }
   }
 
@@ -2973,8 +3045,8 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
 
     {
       info("Fields and variables are unused")
-      val warnings = Compiler.compileContractFull(code("")).rightValue._3
-      warnings is AVector(
+      val warnings = Compiler.compileContractFull(code("")).rightValue.warnings
+      warnings.toSet is Set(
         "Found unused variables in Foo: foo.x, foo.y",
         "Found unused fields in Foo: a, b"
       )
@@ -2982,7 +3054,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
 
     {
       info("Fields and variables are annotated as unused")
-      val warnings = Compiler.compileContractFull(code("@unused")).rightValue._3
+      val warnings = Compiler.compileContractFull(code("@unused")).rightValue.warnings
       warnings.isEmpty is true
     }
   }
@@ -2996,7 +3068,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  assert!(true, 0)
            |}
            |""".stripMargin
-      val (_, _, warnings) = Compiler.compileTxScriptFull(code).rightValue
+      val warnings = Compiler.compileTxScriptFull(code).rightValue.warnings
       warnings.isEmpty is true
     }
 
@@ -3134,7 +3206,6 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  pub fn foo(tokenId: ByteVec) -> () {
            |    assert!(tokenRemaining!(callerAddress!(), tokenId) == 1, 0)
            |    assert!(alphRemaining!(callerAddress!()) == 1, 0)
-           |    assert!(isPaying!(callerAddress!()), 0)
            |  }
            |}
            |""".stripMargin
@@ -3193,7 +3264,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  pub fn foo() -> () {}
            |}
            |""".stripMargin
-      val (_, _, warnings) = Compiler.compileContractFull(code, 0).rightValue
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings is AVector(
         "Function Foo.foo is readonly, please use @using(readonly = true) for the function"
       )
@@ -3225,16 +3296,16 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
   it should "compile all contracts" in new MultiContractFixture {
     val contracts = multiContract.genStatefulContracts()(CompilerOptions.Default)
     contracts.length is 2
-    contracts(0)._2.ident.name is "Foo"
-    contracts(0)._4 is 1
-    contracts(1)._2.ident.name is "Bar"
-    contracts(1)._4 is 3
+    contracts(0)._1.ast.ident.name is "Foo"
+    contracts(0)._2 is 1
+    contracts(1)._1.ast.ident.name is "Bar"
+    contracts(1)._2 is 3
   }
 
   it should "compile all scripts" in new MultiContractFixture {
     val scripts = multiContract.genStatefulScripts()(CompilerOptions.Default)
     scripts.length is 2
-    scripts(0)._2.ident.name is "M1"
-    scripts(1)._2.ident.name is "M2"
+    scripts(0).ast.ident.name is "M1"
+    scripts(1).ast.ident.name is "M2"
   }
 }

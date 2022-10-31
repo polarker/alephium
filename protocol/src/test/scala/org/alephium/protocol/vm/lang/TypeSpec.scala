@@ -16,7 +16,7 @@
 
 package org.alephium.protocol.vm.lang
 
-import org.alephium.util.{AlephiumSpec, AVector}
+import org.alephium.util.{AlephiumFixture, AlephiumSpec, AVector}
 
 class TypeSpec extends AlephiumSpec {
   it should "return correct signature" in new TypeSignatureFixture {
@@ -29,7 +29,7 @@ class TypeSpec extends AlephiumSpec {
     contractAst.getFieldMutability() is
       AVector(false, true, false, true, false, false)
     contractAst.funcs.map(_.signature) is Seq(
-      "@using(preapprovedAssets=true,assetsInContract=true) pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])"
+      "@using(preapprovedAssets=true) pub bar(a:Bool,mut b:U256,c:I256,mut d:ByteVec,e:Address,f:[[Bool;1];2])->(U256,I256,ByteVec,Address,[[Bool;1];2])"
     )
     contractAst.funcs.map(_.getArgNames()) is
       Seq(AVector("a", "b", "c", "d", "e", "f"))
@@ -63,33 +63,35 @@ class TypeSpec extends AlephiumSpec {
   }
 }
 
-trait TypeSignatureFixture {
+trait TypeSignatureFixture extends AlephiumFixture {
   val contractStr =
     s"""
        |Contract Foo(aa: Bool, mut bb: U256, cc: I256, mut dd: ByteVec, ee: Address, ff: [[Bool;1];2]) {
        |  event Bar(a: Bool, b: U256, d: ByteVec, e: Address)
        |
-       |  @using(preapprovedAssets = true, assetsInContract = true)
+       |  @using(preapprovedAssets = true)
        |  pub fn bar(a: Bool, mut b: U256, c: I256, mut d: ByteVec, e: Address, f: [[Bool;1];2]) -> (U256, I256, ByteVec, Address, [[Bool;1];2]) {
        |    emit Bar(aa, bb, dd, ee)
+       |    emit Debug(`xx`)
        |    transferAlphToSelf!(callerAddress!(), 1 alph)
        |    return b, c, d, e, f
        |  }
        |}
        |""".stripMargin
-  lazy val (contract, contractAst, contractWarnings) =
-    Compiler.compileContractFull(contractStr).toOption.get
+  lazy val compiledContract = Compiler.compileContractFull(contractStr).rightValue
+  lazy val CompiledContract(contract, contractAst, contractWarnings, _) = compiledContract
 
   val scriptStr =
     s"""
        |TxScript Foo(aa: Bool, bb: U256, cc: I256, dd: ByteVec, ee: Address) {
        |  return
        |  pub fn bar(a: Bool, mut b: U256, c: I256, mut d: ByteVec, e: Address, f: [[Bool;1];2]) -> (U256, I256, ByteVec, Address, [[Bool;1];2]) {
+       |    emit Debug(`xx`)
        |    return b, c, d, e, f
        |  }
        |}
        |""".stripMargin
 
-  lazy val (script, scriptAst, scriptWarnings) =
-    Compiler.compileTxScriptFull(scriptStr).toOption.get
+  lazy val compiledScript = Compiler.compileTxScriptFull(scriptStr).rightValue
+  lazy val CompiledScript(script, scriptAst, scriptWarnings, _) = compiledScript
 }

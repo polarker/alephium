@@ -180,6 +180,15 @@ trait EndpointsExamples extends ErrorExamples {
     hash.bytes
   )
 
+  private val eventByBlockHash = ContractEventByBlockHash(
+    txId,
+    Address.contract(contractId),
+    eventIndex = 1,
+    fields = AVector(ValAddress(address), ValU256(U256.unsafe(10)))
+  )
+
+  private val blockAndEvents = BlockAndEvents(blockEntry, AVector(eventByBlockHash))
+
   private val blockCandidate = BlockCandidate(
     fromGroup = 1,
     toGroup = 0,
@@ -327,14 +336,21 @@ trait EndpointsExamples extends ErrorExamples {
   implicit val hashrateResponseExamples: List[Example[HashRateResponse]] =
     simpleExample(HashRateResponse("100 MH/s"))
 
-  implicit val fetchResponseExamples: List[Example[FetchResponse]] =
-    simpleExample(FetchResponse(AVector(AVector(blockEntry))))
+  implicit val blocksPerTimeStampRangeExamples: List[Example[BlocksPerTimeStampRange]] =
+    simpleExample(BlocksPerTimeStampRange(AVector(AVector(blockEntry))))
+
+  implicit val blocksAndEventsPerTimeStampRangeExamples
+      : List[Example[BlocksAndEventsPerTimeStampRange]] =
+    simpleExample(BlocksAndEventsPerTimeStampRange(AVector(AVector(blockAndEvents))))
 
   implicit val unconfirmedTransactionsExamples: List[Example[AVector[UnconfirmedTransactions]]] =
     simpleExample(AVector(UnconfirmedTransactions(0, 1, AVector(transactionTemplate))))
 
   implicit val blockEntryExamples: List[Example[BlockEntry]] =
     simpleExample(blockEntry)
+
+  implicit val blockAndEventsExamples: List[Example[BlockAndEvents]] =
+    simpleExample(blockAndEvents)
 
   implicit val blockEntryTemplateExamples: List[Example[BlockCandidate]] =
     simpleExample(blockCandidate)
@@ -531,6 +547,7 @@ trait EndpointsExamples extends ErrorExamples {
   private val compileScriptResult = CompileScriptResult(
     name = "Main",
     bytecodeTemplate = hexString,
+    bytecodeDebugPatch = CompileProjectResult.Patch("=1-1+ef"),
     fields = CompileResult.FieldsSig(
       names = AVector("aa", "bb", "cc", "dd", "ee"),
       types = AVector("Bool", "U256", "I256", "ByteVec", "Address"),
@@ -556,7 +573,9 @@ trait EndpointsExamples extends ErrorExamples {
   private val compileContractResult = CompileContractResult(
     name = "Foo",
     bytecode = hexString,
+    bytecodeDebugPatch = CompileProjectResult.Patch("=1-1+ef"),
     codeHash = hash,
+    codeHashDebug = hash,
     fields = CompileResult.FieldsSig(
       names = AVector("aa", "bb", "cc", "dd", "ee"),
       types = AVector("Bool", "U256", "I256", "ByteVec", "Address"),
@@ -692,7 +711,8 @@ trait EndpointsExamples extends ErrorExamples {
         txInputs = AVector(contractAddress),
         txOutputs =
           AVector(ContractOutput(1234, hash, Amount(ALPH.oneAlph), contractAddress, tokens)),
-        events = AVector(eventByTxId)
+        events = AVector(eventByTxId),
+        debugMessages = AVector(DebugMessage(contractAddress, "Debugging!"))
       )
     )
 
@@ -746,7 +766,10 @@ trait EndpointsExamples extends ErrorExamples {
     simpleExample(ContractEvents(events = AVector(event), 2))
 
   implicit val eventsByTxIdExamples: List[Example[ContractEventsByTxId]] =
-    simpleExample(ContractEventsByTxId(events = AVector(eventByTxId), 2))
+    simpleExample(ContractEventsByTxId(events = AVector(eventByTxId)))
+
+  implicit val eventsByBlockHashExamples: List[Example[ContractEventsByBlockHash]] =
+    simpleExample(ContractEventsByBlockHash(events = AVector(eventByBlockHash)))
 
   implicit val eventsVectorExamples: List[Example[AVector[ContractEvents]]] =
     simpleExample(AVector(ContractEvents(events = AVector(event), 3)))
