@@ -473,7 +473,6 @@ object Ast {
       id: FuncId,
       isPublic: Boolean,
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean,
       useExternalCallCheck: Boolean,
       useReadonly: Boolean,
       args: Seq[Argument],
@@ -488,17 +487,10 @@ object Ast {
 
     def signature: String = {
       val publicPrefix = if (isPublic) "pub " else ""
-      val assetModifier = {
-        (usePreapprovedAssets, useAssetsInContract) match {
-          case (true, true) =>
-            s"@using(preapprovedAssets=true,assetsInContract=true) "
-          case (true, false) =>
-            s"@using(preapprovedAssets=true) "
-          case (false, true) =>
-            s"@using(assetsInContract=true) "
-          case (false, false) =>
-            ""
-        }
+      val assetModifier = if (usePreapprovedAssets) {
+        s"@using(preapprovedAssets=true,assetsInContract=true) "
+      } else {
+        ""
       }
       s"${assetModifier}${publicPrefix}${name}(${args.map(_.signature).mkString(",")})->(${rtypes.map(_.signature).mkString(",")})"
     }
@@ -550,8 +542,9 @@ object Ast {
 
     def genMethod(state: Compiler.State[Ctx]): Method[Ctx] = {
       state.setFuncScope(id)
-      val instrs    = body.flatMap(_.genCode(state))
-      val localVars = state.getLocalVars(id)
+      val instrs              = body.flatMap(_.genCode(state))
+      val localVars           = state.getLocalVars(id)
+      val useAssetsInContract = StaticAnalysis.methodUsesContractAssets(instrs)
 
       Method[Ctx](
         isPublic,
@@ -569,7 +562,6 @@ object Ast {
     def main(
         stmts: Seq[Ast.Statement[StatefulContext]],
         usePreapprovedAssets: Boolean,
-        useAssetsInContract: Boolean,
         useReadonly: Boolean
     ): FuncDef[StatefulContext] = {
       FuncDef[StatefulContext](
@@ -577,7 +569,6 @@ object Ast {
         id = FuncId("main", false),
         isPublic = true,
         usePreapprovedAssets = usePreapprovedAssets,
-        useAssetsInContract = useAssetsInContract,
         useExternalCallCheck = true,
         useReadonly = useReadonly,
         args = Seq.empty,

@@ -232,14 +232,13 @@ abstract class Parser[Ctx <: StatelessContext] {
         throw Compiler.Error(s"Duplicated function modifiers: $modifiers")
       } else {
         val isPublic = modifiers.contains(Lexer.FuncModifier.Pub)
-        val (usePreapprovedAssets, useContractAssets, useExternalCallCheck, useReadonly) =
-          Parser.extractFuncModifier(annotations, false, false, true, false)
+        val (usePreapprovedAssets, useExternalCallCheck, useReadonly) =
+          Parser.extractFuncModifier(annotations, false, true, false)
         FuncDefTmp(
           annotations,
           funcId,
           isPublic,
           usePreapprovedAssets,
-          useContractAssets,
           useExternalCallCheck,
           useReadonly,
           params,
@@ -254,7 +253,6 @@ abstract class Parser[Ctx <: StatelessContext] {
       f.id,
       f.isPublic,
       f.usePreapprovedAssets,
-      f.useContractAssets,
       f.useExternalCallCheck,
       f.useReadonly,
       f.args,
@@ -362,7 +360,6 @@ final case class FuncDefTmp[Ctx <: StatelessContext](
     id: FuncId,
     isPublic: Boolean,
     usePreapprovedAssets: Boolean,
-    useContractAssets: Boolean,
     useExternalCallCheck: Boolean,
     useReadonly: Boolean,
     args: Seq[Argument],
@@ -383,10 +380,9 @@ object Parser {
   def extractFuncModifier(
       annotations: Seq[Annotation],
       usePreapprovedAssetsDefault: Boolean,
-      useContractAssetsDefault: Boolean,
       useExternalCallCheckDefault: Boolean,
       useReadonlyDefault: Boolean
-  ): (Boolean, Boolean, Boolean, Boolean) = {
+  ): (Boolean, Boolean, Boolean) = {
     if (annotations.exists(_.id.name != usingAnnotationId)) {
       throw Compiler.Error(s"Generic annotation is not supported yet")
     } else {
@@ -404,11 +400,6 @@ object Parser {
             usePreapprovedAssetsKey,
             usePreapprovedAssetsDefault
           )
-          val useContractAssets = extractAnnotationBoolean(
-            useAnnotation,
-            useContractAssetsKey,
-            useContractAssetsDefault
-          )
           val useExternalCallCheck = extractAnnotationBoolean(
             useAnnotation,
             useExternalCallCheckKey,
@@ -419,11 +410,10 @@ object Parser {
             useReadonlyKey,
             useReadonlyDefault
           )
-          (usePreapprovedAssets, useContractAssets, useExternalCallCheck, useReadonly)
+          (usePreapprovedAssets, useExternalCallCheck, useReadonly)
         case None =>
           (
             usePreapprovedAssetsDefault,
-            useContractAssetsDefault,
             useExternalCallCheckDefault,
             useReadonlyDefault
           )
@@ -512,11 +502,10 @@ object StatefulParser extends Parser[StatefulContext] {
         if (mainStmts.isEmpty) {
           throw Compiler.Error(s"No main statements defined in TxScript ${typeId.name}")
         } else {
-          val (usePreapprovedAssets, useContractAssets, _, useReadonly) =
+          val (usePreapprovedAssets, _, useReadonly) =
             Parser.extractFuncModifier(
               annotations,
               true,
-              false,
               true,
               false
             )
@@ -524,7 +513,7 @@ object StatefulParser extends Parser[StatefulContext] {
             typeId,
             templateVars.getOrElse(Seq.empty),
             Ast.FuncDef
-              .main(mainStmts, usePreapprovedAssets, useContractAssets, useReadonly) +: funcs
+              .main(mainStmts, usePreapprovedAssets, useReadonly) +: funcs
           )
         }
       }
@@ -621,7 +610,6 @@ object StatefulParser extends Parser[StatefulContext] {
             f.id,
             f.isPublic,
             f.usePreapprovedAssets,
-            f.useContractAssets,
             f.useExternalCallCheck,
             f.useReadonly,
             f.args,

@@ -45,9 +45,6 @@ object StaticAnalysis {
       state: Compiler.State[vm.StatefulContext]
   ): Unit = {
     checkMethodsStateless(ast, methods, state)
-    ast.funcs.zip(methods.toIterable).foreach { case (func, method) =>
-      checkCodeUsingContractAssets(ast.ident, func, method)
-    }
   }
 
   def checkMethods(
@@ -79,16 +76,10 @@ object StaticAnalysis {
       vm.SelfAddress
     )
 
-  def checkCodeUsingContractAssets(
-      contractId: Ast.TypeId,
-      func: Ast.FuncDef[vm.StatefulContext],
-      method: vm.Method[vm.StatefulContext]
-  ): Unit = {
-    if (func.useAssetsInContract && !method.instrs.exists(contractAssetsInstrs.contains(_))) {
-      throw Compiler.Error(
-        s"Function ${Ast.funcName(contractId, func.id)} does not use contract assets, but its annotation of contract assets is turn on"
-      )
-    }
+  def methodUsesContractAssets[Ctx <: vm.StatelessContext](
+      instrs: Iterable[vm.Instr[_]]
+  ): Boolean = {
+    instrs.exists(contractAssetsInstrs.contains)
   }
 
   def checkReadonly[Ctx <: vm.StatelessContext](

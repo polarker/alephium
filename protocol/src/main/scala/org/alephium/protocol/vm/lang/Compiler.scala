@@ -137,7 +137,6 @@ object Compiler {
     def isPublic: Boolean
     def isVariadic: Boolean = false
     def usePreapprovedAssets: Boolean
-    def useAssetsInContract: Boolean
     def isReadonly: Boolean
     def getReturnType(inputType: Seq[Type]): Seq[Type]
     def getReturnLength(inputType: Seq[Type]): Int = {
@@ -221,7 +220,6 @@ object Compiler {
       id: Ast.FuncId,
       isPublic: Boolean,
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean,
       isReadonly: Boolean,
       argsType: Seq[Type],
       returnType: Seq[Type],
@@ -256,7 +254,6 @@ object Compiler {
           func.id,
           func.isPublic,
           func.usePreapprovedAssets,
-          func.useAssetsInContract,
           func.useReadonly,
           func.args.map(_.tpe),
           func.rtypes,

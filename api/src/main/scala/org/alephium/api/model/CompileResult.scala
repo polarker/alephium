@@ -19,8 +19,8 @@ package org.alephium.api.model
 import scala.jdk.CollectionConverters.IteratorHasAsScala
 
 import org.alephium.protocol.Hash
-import org.alephium.protocol.vm.StatefulContext
-import org.alephium.protocol.vm.lang.{Ast, CompiledContract, CompiledScript}
+import org.alephium.protocol.vm.{Instr, StatefulContext}
+import org.alephium.protocol.vm.lang.{Ast, CompiledContract, CompiledScript, StaticAnalysis}
 import org.alephium.serde.serialize
 import org.alephium.util.{AVector, DiffMatchPatch, Hex}
 
@@ -43,12 +43,20 @@ object CompileScriptResult {
       scriptAst.getTemplateVarsTypes(),
       scriptAst.getTemplateVarsMutability()
     )
+    val functions = AVector.from(scriptAst.funcs.indices.view.map { k =>
+      val func = scriptAst.funcs(k)
+      val instrs = compiled.code
+        .getMethod(k)
+        .getOrElse(throw new RuntimeException("Unable to extract method"))
+        .instrs
+      CompileResult.FunctionSig.from(func, instrs.toIterable)
+    })
     CompileScriptResult(
       scriptAst.name,
       bytecodeTemplate,
       CompileProjectResult.diffPatch(bytecodeTemplate, bytecodeDebugTemplate),
       fields = fields,
-      functions = AVector.from(scriptAst.funcs.view.map(CompileResult.FunctionSig.from)),
+      functions = functions,
       warnings = compiled.warnings
     )
   }
@@ -77,6 +85,10 @@ object CompileContractResult {
       contractAst.getFieldTypes(),
       contractAst.getFieldMutability()
     )
+    val functions = AVector.from(contractAst.funcs.zipWithIndex.map { case (func, k) =>
+      val instrs = compiled.code.getMethod(k).getOrElse(throw new RuntimeException("")).instrs
+      CompileResult.FunctionSig.from(func, instrs.toIterable)
+    })
     CompileContractResult(
       contractAst.name,
       bytecode,
@@ -84,7 +96,7 @@ object CompileContractResult {
       compiled.code.hash,
       compiled.debugCode.hash,
       fields,
-      functions = AVector.from(contractAst.funcs.view.map(CompileResult.FunctionSig.from)),
+      functions = functions,
       events = AVector.from(contractAst.events.map(CompileResult.EventSig.from)),
       warnings = compiled.warnings
     )
@@ -164,11 +176,11 @@ object CompileResult {
       returnTypes: AVector[String]
   )
   object FunctionSig {
-    def from(func: Ast.FuncDef[StatefulContext]): FunctionSig = {
+    def from(func: Ast.FuncDef[StatefulContext], instrs: Iterable[Instr[_]]): FunctionSig = {
       FunctionSig(
         func.id.name,
         func.usePreapprovedAssets,
-        func.useAssetsInContract,
+        StaticAnalysis.methodUsesContractAssets(instrs),
         func.isPublic,
         func.getArgNames(),
         func.getArgTypeSignatures(),

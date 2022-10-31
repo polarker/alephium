@@ -576,7 +576,6 @@ object BuiltIn {
     def category: Category            = Category.ByteVec
     override def isVariadic: Boolean  = true
     def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
     def isReadonly: Boolean           = true
 
     def getReturnType(inputType: Seq[Type]): Seq[Type] = Seq(Type.ByteVec)
@@ -767,7 +766,6 @@ object BuiltIn {
     val name: String                  = "panic"
     def category: Category            = Category.Utils
     def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
     def isReadonly                    = true
     override def getReturnType(inputType: Seq[Type]): Seq[Type] = {
       if (inputType.nonEmpty && inputType != Seq(Type.U256)) {

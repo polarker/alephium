@@ -16,8 +16,7 @@
 
 package org.alephium.protocol.vm.lang
 
-import org.alephium.protocol.vm.{Instr, SelfAddress, StatefulContext}
-import org.alephium.protocol.vm.lang.BuiltIn.{OverloadedSimpleBuiltIn, SimpleBuiltIn}
+import org.alephium.protocol.vm.StatefulContext
 import org.alephium.util.AlephiumSpec
 
 class BuiltInSpec extends AlephiumSpec {
@@ -35,20 +34,5 @@ class BuiltInSpec extends AlephiumSpec {
         BuiltIn.copyCreateSubContract,
         BuiltIn.copyCreateSubContractWithToken
       )
-  }
-
-  it should "check all functions that can use assets in contract" in {
-    BuiltIn.statelessFuncs.values.count(_.useAssetsInContract) is 0
-    BuiltIn.statefulFuncs.values
-      .filter(_.useAssetsInContract)
-      .flatMap {
-        case f: SimpleBuiltIn[_] => f.instrs
-        case f: OverloadedSimpleBuiltIn[_] =>
-          f.argsTypeWithInstrs(0)
-            .instrs
-            .asInstanceOf[Seq[Instr[_]]]
-        case _: Any => Seq.empty[Instr[_]]
-      }
-      .toSet is StaticAnalysis.contractAssetsInstrs.-(SelfAddress)
   }
 }
