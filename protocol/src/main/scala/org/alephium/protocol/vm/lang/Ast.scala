@@ -488,7 +488,7 @@ object Ast {
     def signature: String = {
       val publicPrefix = if (isPublic) "pub " else ""
       val assetModifier = if (usePreapprovedAssets) {
-        s"@using(preapprovedAssets=true,assetsInContract=true) "
+        s"@using(preapprovedAssets=true) "
       } else {
         ""
       }

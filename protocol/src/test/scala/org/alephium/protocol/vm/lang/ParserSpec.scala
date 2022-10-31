@@ -296,7 +296,7 @@ class ParserSpec extends AlephiumSpec {
     info("Simple return type")
     val parsed2 = fastparse
       .parse(
-        """@using(preapprovedAssets = true, assetsInContract = true)
+        """@using(preapprovedAssets = true)
           |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
         StatelessParser.func(_)
       )
@@ -313,7 +313,7 @@ class ParserSpec extends AlephiumSpec {
     info("More use annotation")
     val parsed3 = fastparse
       .parse(
-        """@using(assetsInContract = true, readonly = true)
+        """@using(readonly = true)
           |pub fn add(x: U256, y: U256) -> U256 { return x + y }""".stripMargin,
         StatelessParser.func(_)
       )

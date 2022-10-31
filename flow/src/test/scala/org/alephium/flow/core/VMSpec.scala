@@ -390,7 +390,6 @@ class VMSpec extends AlephiumSpec {
     val code =
       s"""
          |Contract ShinyToken() {
-         |  @using(assetsInContract = true)
          |  pub fn transfer(to: Address, amount: U256) -> () {
          |    transferTokenFromSelf!(to, selfContractId!(), amount)
          |    transferAlphFromSelf!(to, dustAmount!())
@@ -467,12 +466,11 @@ class VMSpec extends AlephiumSpec {
     val contract =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn mint() -> () {
          |    transferTokenFromSelf!(@$genesisAddress, selfTokenId!(), 2 alph)
          |  }
          |
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true)
          |  pub fn burn() -> () {
          |    burnToken!(@$genesisAddress, selfTokenId!(), 1 alph)
          |    burnToken!(selfAddress!(), selfTokenId!(), 1 alph)
@@ -520,7 +518,6 @@ class VMSpec extends AlephiumSpec {
     val token =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn mint() -> () {
          |    transferTokenFromSelf!(@$genesisAddress, selfTokenId!(), 10 alph)
          |  }
@@ -602,7 +599,6 @@ class VMSpec extends AlephiumSpec {
     val input =
       """
         |Contract Foo() {
-        |  @using(assetsInContract = true)
         |  pub fn foo(address: Address) -> () {
         |    transferAlphFromSelf!(address, alphRemaining!(selfAddress!()))
         |  }
@@ -1066,7 +1062,6 @@ class VMSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo(mut x: U256) {
-         |  @using(assetsInContract = true)
          |  pub fn destroy(targetAddress: Address) -> () {
          |    x = x + 1
          |    destroySelf!(targetAddress) // in practice, the contract should check the caller before destruction
@@ -1083,7 +1078,6 @@ class VMSpec extends AlephiumSpec {
          |    Foo(#$fooId).destroy(targetAddress)
          |  }
          |
-         |  @using(assetsInContract = true)
          |  pub fn destroyFoo() -> () {
          |    Foo(#$fooId).destroy(selfAddress!())
          |  }
@@ -1096,7 +1090,6 @@ class VMSpec extends AlephiumSpec {
     lazy val callerOfFooCaller =
       s"""
          |Contract CallerOfFooCaller() {
-         |  @using(assetsInContract = true)
          |  pub fn destroyFoo() -> () {
          |    FooCaller(#$fooCallerId).destroyFooWithAddress(selfAddress!())
          |  }
@@ -1199,7 +1192,6 @@ class VMSpec extends AlephiumSpec {
     def buildFoo(useAssetsInContract: Boolean) =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = $useAssetsInContract)
          |  pub fn destroy(targetAddress: Address) -> () {
          |    approveAlph!(selfAddress!(), 2 alph)
          |    destroySelf!(targetAddress)
@@ -1309,7 +1301,6 @@ class VMSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn destroy(targetAddress: Address) -> () {
          |    destroySelf!(targetAddress) // in practice, the contract should check the caller before destruction
          |  }
@@ -1347,13 +1338,11 @@ class VMSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn foo(targetAddress: Address) -> () {
          |    approveAlph!(selfAddress!(), alphRemaining!(selfAddress!()))
          |    destroy(targetAddress)
          |  }
          |
-         |  @using(assetsInContract = true)
          |  pub fn destroy(targetAddress: Address) -> () {
          |    destroySelf!(targetAddress) // in practice, the contract should check the caller before destruction
          |  }
@@ -1602,7 +1591,7 @@ class VMSpec extends AlephiumSpec {
          |// credits to @chloekek
          |Contract Nft(author: Address, price: U256)
          |{
-         |    @using(preapprovedAssets = true, assetsInContract = true)
+         |    @using(preapprovedAssets = true)
          |    pub fn buy(buyer: Address) -> ()
          |    {
          |        transferAlph!(buyer, author, price)
@@ -1637,7 +1626,6 @@ class VMSpec extends AlephiumSpec {
     val tokenContract =
       s"""
          |Contract Token() {
-         |  @using(assetsInContract = true)
          |  pub fn withdraw(address: Address, amount: U256) -> () {
          |    transferTokenFromSelf!(address, selfTokenId!(), amount)
          |  }
@@ -1742,7 +1730,6 @@ class VMSpec extends AlephiumSpec {
     val testContract =
       s"""
          |Contract Foo(mut x: U256) {
-         |  @using(assetsInContract = true)
          |  pub fn foo(address: Address) -> () {
          |    x = x + 1
          |    transferAlphFromSelf!(address, ${ALPH.cent(1).v})
@@ -2262,7 +2249,6 @@ class VMSpec extends AlephiumSpec {
          |    return result
          |  }
          |
-         |  @using(assetsInContract = true)
          |  pub fn destroy(targetAddress: Address) -> () {
          |    destroySelf!(targetAddress)
          |  }
@@ -3368,7 +3354,7 @@ class VMSpec extends AlephiumSpec {
       val bar: String =
         s"""
            |Contract Bar() {
-           |  @using(preapprovedAssets = true, assetsInContract = $transferAlph)
+           |  @using(preapprovedAssets = true)
            |  pub fn bar() -> () {
            |    let contractId = createContract!{@$genesisAddress -> $minimalAlphInContract}(#$fooByteCode, #$fooInitialState)
            |    let contractAddress = contractIdToAddress!(contractId)
@@ -3420,7 +3406,6 @@ class VMSpec extends AlephiumSpec {
       val foo: String =
         s"""
            |Contract Foo() {
-           |  @using(assetsInContract = true)
            |  pub fn foo() -> () {
            |    transferAlphFromSelf!(@${randomContract}, 0.01 alph)
            |  }
@@ -3448,7 +3433,6 @@ class VMSpec extends AlephiumSpec {
       val foo: String =
         s"""
            |Contract Foo() {
-           |  @using(assetsInContract = true)
            |  pub fn foo(to: Address) -> () {
            |    transferAlphFromSelf!(to, 0.01 alph)
            |  }
@@ -3459,7 +3443,6 @@ class VMSpec extends AlephiumSpec {
       val bar: String =
         s"""
            |Contract Bar(index: U256, nextBarId: ByteVec) {
-           |  @using(assetsInContract = true)
            |  pub fn bar(to: Address) -> () {
            |    if (index == 0) {
            |      let foo = Foo(#${fooId.toHexString})
@@ -3499,7 +3482,6 @@ class VMSpec extends AlephiumSpec {
     val foo: String =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
          |    bar{selfAddress!() -> 0.1 alph}()
          |  }
@@ -3596,7 +3578,7 @@ class VMSpec extends AlephiumSpec {
     val foo: String =
       s"""
          |Contract Foo() {
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true)
          |  pub fn foo() -> () {
          |    transferAlphToSelf!(callerAddress!(), 0.01 alph)
          |  }
@@ -3656,7 +3638,6 @@ class VMSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
          |    assert!(alphRemaining!(selfAddress!()) == 1 alph, 0)
          |  }

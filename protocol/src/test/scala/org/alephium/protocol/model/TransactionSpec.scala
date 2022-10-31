@@ -229,7 +229,7 @@ class TransactionSpec
 
       val script =
         s"""
-           |@using(preapprovedAssets = true, assetsInContract = true)
+           |@using(preapprovedAssets = true)
            |TxScript Main {
            |  verifyTxSignature!(#${pubKey1.toHexString})
            |  transferAlphFromSelf!(@$address1, 1)
@@ -411,7 +411,7 @@ class TransactionSpec
       val script = {
         val raw =
           s"""
-             |@using(preapprovedAssets = true, assetsInContract = true)
+             |@using(preapprovedAssets = true)
              |TxScript Main {
              |  verifyTxSignature!(#${pubKey1.toHexString})
              |  transferAlphFromSelf!(@$contractAddress, 1000)

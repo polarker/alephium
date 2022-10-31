@@ -900,7 +900,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     val fooCode =
       s"""
          |Contract Foo(mut value: U256) {
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true)
          |  pub fn addOne() -> U256 {
          |    transferAlphToSelf!(@$callerAddress, ${ALPH.oneNanoAlph})
          |    value = value + 1
@@ -993,7 +993,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn destroy() -> () {
          |    destroySelf!(@$assetAddress)
          |  }
@@ -1008,7 +1007,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val bar =
       s"""
          |Contract Bar() {
-         |  @using(assetsInContract = true)
          |  pub fn bar() -> () {
          |    createSubContract!{selfAddress!() -> 1 alph}(#$createContractPath, #$fooByteCode, #$encodedState)
          |    Foo(subContractId!(#$destroyContractPath)).destroy()
@@ -1059,7 +1057,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val foo =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn destroy(address: Address) -> () {
          |    destroySelf!(address)
          |  }
@@ -1118,7 +1115,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     override def fooCaller: String =
       s"""
          |Contract FooCaller(fooId: ByteVec) {
-         |  @using(assetsInContract = true)
          |  pub fn destroyFoo() -> () {
          |    let foo = Foo(fooId)
          |    foo.destroy(selfAddress!())
@@ -1268,7 +1264,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val contract =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
          |    assert!(alphRemaining!(selfAddress!()) == 1 alph, 0)
          |  }
@@ -1907,7 +1902,6 @@ class ServerUtilsSpec extends AlephiumSpec {
     val contract =
       s"""
          |Contract Foo() {
-         |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
          |    transferTokenFromSelf!(callerAddress!(), #${tokenId.toHexString}, 1)
          |  }
