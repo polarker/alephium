@@ -32,7 +32,7 @@ import org.alephium.flow.validation.{TxScriptExeFailed, TxValidation}
 import org.alephium.protocol.{ALPH, Hash, PublicKey}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm._
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.serde.{deserialize, serialize, Serde}
 import org.alephium.util._
 
@@ -240,9 +240,9 @@ class VMSpec extends AlephiumSpec {
       block1
     }
 
-    def testSimpleScript(main: String) = {
+    def testSimpleScript(main: String, gas: Int = 100000) = {
       val script = Compiler.compileTxScript(main).rightValue
-      val block  = simpleScript(blockFlow, chainIndex, script)
+      val block  = simpleScript(blockFlow, chainIndex, script, gas)
       addAndCheck(blockFlow, block)
     }
 
@@ -384,6 +384,83 @@ class VMSpec extends AlephiumSpec {
 
       failCallTxScript(script, InvalidAssetAddress)
     }
+  }
+
+  it should "create contract and transfer tokens from the contract" in new ContractFixture {
+    val code =
+      s"""
+         |Contract ShinyToken() {
+         |  @using(assetsInContract = true)
+         |  pub fn transfer(to: Address, amount: U256) -> () {
+         |    transferTokenFromSelf!(to, selfContractId!(), amount)
+         |    transferAlphFromSelf!(to, dustAmount!())
+         |  }
+         |}
+         |""".stripMargin
+
+    def script(shinyTokenId: String, to: String, amount: U256): String =
+      s"""
+         |TxScript Transfer() {
+         |  ShinyToken(#$shinyTokenId).transfer(@$to, ${amount.v})
+         |}
+         |
+         |$code
+         |""".stripMargin
+
+    info("create contract with token")
+    val contractId = createContract(
+      code,
+      initialState = AVector.empty,
+      Some(TokenIssuance.Info(Val.U256.unsafe(1000), None)),
+      ALPH.alph(10000)
+    )._1
+    val tokenId = TokenId.from(contractId)
+
+    getTokenBalance(blockFlow, genesisAddress.lockupScript, tokenId) is 0
+
+    val contractAsset = getContractAsset(contractId, chainIndex)
+    contractAsset.tokens is AVector((tokenId, U256.unsafe(1000)))
+    contractAsset.amount is ALPH.alph(10000)
+
+    info("transfer token to genesisAddress")
+    callTxScript(script(tokenId.toHexString, genesisAddress.toBase58, 10))
+    getTokenBalance(blockFlow, genesisAddress.lockupScript, tokenId) is 10
+
+    info("transfer token from contract to address in group 0")
+    val (privateKey0, publicKey0) = GroupIndex.unsafe(0).generateKey
+    val address0                  = Address.p2pkh(publicKey0)
+    callTxScript(script(tokenId.toHexString, address0.toBase58, 100))
+    getTokenBalance(blockFlow, address0.lockupScript, tokenId) is 100
+    getAlphBalance(blockFlow, address0.lockupScript) is dustUtxoAmount
+
+    info("fail to transfer token from contract to address in group 1")
+    val (_, publicKey1) = GroupIndex.unsafe(1).generateKey
+    val address1        = Address.p2pkh(publicKey1)
+    address1.groupIndex.value is 1
+    intercept[AssertionError](callTxScript(script(tokenId.toHexString, address1.toBase58, 50)))
+      .getMessage() is "Right(InvalidOutputGroupIndex)"
+
+    info("transfer some ALPH to adress in group 0")
+    val genesisPrivateKey = genesisKeys(chainIndex.from.value)._1
+    val block = transfer(
+      blockFlow,
+      genesisPrivateKey,
+      address0.lockupScript,
+      AVector.empty[(TokenId, U256)],
+      ALPH.oneAlph
+    )
+    addAndCheck(blockFlow, block)
+    getAlphBalance(blockFlow, address0.lockupScript) is (dustUtxoAmount + ALPH.oneAlph)
+
+    info("transfer token from address in group 0 to address in group 1")
+    val tokens: AVector[(TokenId, U256)] = AVector(tokenId -> 10)
+    transfer(
+      blockFlow,
+      privateKey0,
+      address1.lockupScript,
+      tokens,
+      minimalAttoAlphAmountPerTxOutput(1)
+    )
   }
 
   it should "burn token" in new ContractFixture {
@@ -754,8 +831,9 @@ class VMSpec extends AlephiumSpec {
          |  assert!(size!(toByteVec!(@${address.toBase58})) == 33, 0)
          |  assert!(size!(#${bytes0} ++ #${bytes1}) == 64, 0)
          |  assert!(zeros!(2) == #0000, 0)
-         |  assert!(nullAddress!() == @${Address.contract(ContractId.zero)}, 0)
-         |  assert!(nullAddress!() == @tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq, 0)
+         |  assert!(nullContractAddress!() == @${Address.contract(ContractId.zero)}, 0)
+         |  assert!(nullContractAddress!() == @tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq, 0)
+         |  assert!(blockHash!() != #${Hash.zero.toHexString}, 0)
          |}
          |""".stripMargin
 
@@ -885,8 +963,6 @@ class VMSpec extends AlephiumSpec {
          |    assert!(contractInitialStateHash!(barId) == barHash, 0)
          |    Foo(#$fooId).foo(fooId, fooHash, fooCodeHash, barId, barHash, barCodeHash, barAddress)
          |    assert!(isCalledFromTxScript!() == true, 0)
-         |    assert!(isPaying!(@$genesisAddress) == true, 0)
-         |    assert!(isPaying!(selfAddress!()) == false, 0)
          |    assert!(isAssetAddress!(@$genesisAddress) == true, 0)
          |    assert!(isContractAddress!(@$genesisAddress) == false, 0)
          |  }
@@ -901,9 +977,7 @@ class VMSpec extends AlephiumSpec {
          |TxScript Main {
          |  Bar(#$barId).bar{ @$genesisAddress -> 1 alph }(#$fooId, #$fooHash, #$fooCodeHash, #$barId, #$barHash, #$barCodeHash, @$barAddress)
          |  copyCreateContract!{ @$genesisAddress -> 1 alph }(#$fooId, #$state)
-         |  assert!(isPaying!(@$genesisAddress) == true, 0)
          |}
-         |
          |$bar
          |""".stripMargin
 
@@ -1296,10 +1370,7 @@ class VMSpec extends AlephiumSpec {
          |
          |$foo
          |""".stripMargin
-    val script = Compiler.compileTxScript(main).rightValue
-    val errorMessage =
-      intercept[AssertionError](payableCall(blockFlow, chainIndex, script)).getMessage
-    errorMessage.startsWith("Right(TxScriptExeFailed(UncaughtKeyNotFoundError") is true
+    failCallTxScript(main, ContractAssetAlreadyInUsing)
   }
 
   it should "fetch block env" in new ContractFixture {
@@ -1326,7 +1397,8 @@ class VMSpec extends AlephiumSpec {
   }
 
   it should "fetch tx env" in new ContractFixture {
-    val zeroId = Hash.zero
+    val zeroId    = Hash.zero
+    val gasAmount = GasBox.unsafe(150000)
     def main(index: Int) =
       s"""
          |@using(preapprovedAssets = false)
@@ -1334,9 +1406,12 @@ class VMSpec extends AlephiumSpec {
          |  assert!(txId!() != #${zeroId.toHexString}, 0)
          |  assert!(txInputAddress!($index) == @${genesisAddress.toBase58}, 0)
          |  assert!(txInputsSize!() == 1, 0)
+         |  assert!(txGasPrice!() == ${defaultGasPrice.value}, 0)
+         |  assert!(txGasAmount!() == ${gasAmount.value}, 0)
+         |  assert!(txGasFee!() == ${defaultGasPrice * gasAmount}, 0)
          |}
          |""".stripMargin
-    testSimpleScript(main(0))
+    testSimpleScript(main(0), gasAmount.value)
     failSimpleScript(main(1), InvalidTxInputIndex)
   }
 
@@ -2132,10 +2207,10 @@ class VMSpec extends AlephiumSpec {
       val worldState    = blockFlow.getBestCachedWorldState(chainIndex.from).rightValue
       val contractState = worldState.getContractState(contractId).rightValue
       contractState.fields is AVector[Val](Val.U256(3))
-      getLogStates(blockFlow, chainIndex.from, contractId, 0).value is
+      getLogStates(blockFlow, contractId, 0).value is
         LogStates(
           block.hash,
-          contractId.value,
+          contractId,
           AVector(
             LogState(txId, 0, AVector(Val.U256(1))),
             LogState(txId, 1, AVector(Val.U256(1))),
@@ -2218,7 +2293,7 @@ class VMSpec extends AlephiumSpec {
         currentCount: Int
     ) = {
       logStates.blockHash is block.hash
-      logStates.eventKey is contractId.value
+      logStates.contractId is contractId
       logStates.states.length is 2
 
       getCurrentCount(blockFlow, chainIndex.from, contractId).value is currentCount
@@ -2241,7 +2316,7 @@ class VMSpec extends AlephiumSpec {
     {
       info("Events emitted from the contract exist in the block")
 
-      val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+      val logStatesOpt = getLogStates(blockFlow, contractId, 0)
       val logStates    = logStatesOpt.value
 
       verifyCallingEvents(logStates, callingBlock, result = 10, currentCount = 1)
@@ -2250,12 +2325,11 @@ class VMSpec extends AlephiumSpec {
     {
       info("Events emitted from the create contract block")
 
-      val logStatesOpt =
-        getLogStates(blockFlow, chainIndex.from, createContractEventId, 0)
-      val logStates = logStatesOpt.value
+      val logStatesOpt = getLogStates(blockFlow, createContractEventId, 0)
+      val logStates    = logStatesOpt.value
 
       logStates.blockHash is createContractBlock.hash
-      logStates.eventKey is createContractEventId.value
+      logStates.contractId is createContractEventId
       logStates.states.length is 1
 
       getCurrentCount(blockFlow, chainIndex.from, createContractEventId).value is 1
@@ -2282,12 +2356,11 @@ class VMSpec extends AlephiumSpec {
       val destroyContractBlock = payableCall(blockFlow, chainIndex, destroyScript)
       addAndCheck(blockFlow, destroyContractBlock, 3)
 
-      val logStatesOpt =
-        getLogStates(blockFlow, chainIndex.from, destroyContractEventId, 0)
-      val logStates = logStatesOpt.value
+      val logStatesOpt = getLogStates(blockFlow, destroyContractEventId, 0)
+      val logStates    = logStatesOpt.value
 
       logStates.blockHash is destroyContractBlock.hash
-      logStates.eventKey is destroyContractEventId.value
+      logStates.contractId is destroyContractEventId
       logStates.states.length is 1
 
       getCurrentCount(blockFlow, chainIndex.from, destroyContractEventId).value is 1
@@ -2302,14 +2375,14 @@ class VMSpec extends AlephiumSpec {
     {
       info("Events emitted from the contract with wrong counter")
 
-      val logStatesOpt1 = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+      val logStatesOpt1 = getLogStates(blockFlow, contractId, 0)
       val logStates1    = logStatesOpt1.value
       val newCounter    = logStates1.states.length
 
       newCounter is 2
 
       AVector(1, 2, 100).foreach { count =>
-        getLogStates(blockFlow, chainIndex.from, contractId, count) is None
+        getLogStates(blockFlow, contractId, count) is None
       }
     }
 
@@ -2317,51 +2390,53 @@ class VMSpec extends AlephiumSpec {
       info("Events emitted from a non-existent contract")
 
       val wrongContractId = ContractId.generate
-      val logStatesOpt    = getLogStates(blockFlow, chainIndex.from, wrongContractId, 0)
+      val logStatesOpt    = getLogStates(blockFlow, wrongContractId, 0)
       logStatesOpt is None
     }
   }
 
   it should "not write to the log storage when logging is disabled" in new EventFixtureWithContract {
-    implicit override lazy val logConfig: LogConfig =
-      LogConfig(enabled = false, indexByTxId = false, contractAddresses = None)
+    implicit override lazy val logConfig: LogConfig = LogConfig.disabled()
 
-    getLogStates(blockFlow, chainIndex.from, contractId, 0) is None
+    getLogStates(blockFlow, contractId, 0) is None
   }
 
   it should "not write to the log storage when logging is enabled but contract is not whitelisted" in new EventFixtureWithContract {
     implicit override lazy val logConfig: LogConfig = LogConfig(
       enabled = true,
       indexByTxId = true,
+      indexByBlockHash = true,
       contractAddresses =
         Some(AVector(ContractId.generate, ContractId.generate).map(Address.contract))
     )
 
-    getLogStates(blockFlow, chainIndex.from, contractId, 0) is None
+    getLogStates(blockFlow, contractId, 0) is None
   }
 
   it should "write to the log storage without tx id indexing" in new EventFixtureWithContract {
     implicit override lazy val logConfig: LogConfig = LogConfig(
       enabled = true,
       indexByTxId = false,
+      indexByBlockHash = false,
       contractAddresses = None
     )
 
-    getLogStates(blockFlow, chainIndex.from, contractId, 0) isnot None
+    getLogStates(blockFlow, contractId, 0) isnot None
     val txId = callingBlock.nonCoinbase.head.id
-    getLogStatesByTxId(blockFlow, chainIndex.from, txId) is None
+    getLogStatesByTxId(blockFlow, txId).isEmpty is true
   }
 
   it should "write to the log storage with tx id indexing" in new EventFixtureWithContract {
     implicit override lazy val logConfig: LogConfig = LogConfig(
       enabled = true,
       indexByTxId = true,
+      indexByBlockHash = false,
       contractAddresses = None
     )
 
-    getLogStates(blockFlow, chainIndex.from, contractId, 0) isnot None
+    getLogStates(blockFlow, contractId, 0) isnot None
     val txId = callingBlock.nonCoinbase.head.id
-    getLogStatesByTxId(blockFlow, chainIndex.from, txId) isnot None
+    getLogStatesByTxId(blockFlow, txId).isEmpty is false
   }
 
   it should "write script events to log storage" in new EventFixture {
@@ -2390,25 +2465,21 @@ class VMSpec extends AlephiumSpec {
          |}
          |""".stripMargin
 
-    val contractLogStates = getLogStates(blockFlow, chainIndex.from, contractId, 0).value
+    val contractLogStates = getLogStates(blockFlow, contractId, 0).value
     val txId              = callingBlock.nonCoinbase.head.id
     contractLogStates.blockHash is callingBlock.hash
-    contractLogStates.eventKey is contractId.value
+    contractLogStates.contractId is contractId
     contractLogStates.states.length is 2
     val fields = AVector[Val](Val.U256(1), Val.U256(2))
     contractLogStates.states(0) is LogState(txId, 0, fields)
     contractLogStates.states(1) is LogState(txId, 1, fields)
 
-    val txIdLogStates = getLogStatesByTxId(blockFlow, chainIndex.from, txId).value
-    txIdLogStates.blockHash is callingBlock.hash
-    txIdLogStates.eventKey is txId.value
-    txIdLogStates.states.length is 2
+    val txIdLogRefs = getLogStatesByTxId(blockFlow, txId)
+    txIdLogRefs.length is 2
 
-    val logStatesId = LogStatesId(contractId.value, 0)
-    txIdLogStates
-      .states(0) is LogState(txId, eventRefIndex, LogStateRef(logStatesId, 0).toFields)
-    txIdLogStates
-      .states(1) is LogState(txId, eventRefIndex, LogStateRef(logStatesId, 1).toFields)
+    val logStatesId = LogStatesId(contractId, 0)
+    txIdLogRefs(0) is LogStateRef(logStatesId, 0)
+    txIdLogRefs(1) is LogStateRef(logStatesId, 1)
   }
 
   it should "emit events with all supported field types" in new EventFixture {
@@ -2443,11 +2514,11 @@ class VMSpec extends AlephiumSpec {
          |}
          |""".stripMargin
 
-    val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+    val logStatesOpt = getLogStates(blockFlow, contractId, 0)
     val logStates    = logStatesOpt.value
 
     logStates.blockHash is callingBlock.hash
-    logStates.eventKey is contractId.value
+    logStates.contractId is contractId
     logStates.states.length is 2
 
     getCurrentCount(blockFlow, chainIndex.from, contractId).value is 1
@@ -2494,11 +2565,11 @@ class VMSpec extends AlephiumSpec {
          |}
          |""".stripMargin
 
-    val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+    val logStatesOpt = getLogStates(blockFlow, contractId, 0)
     val logStates    = logStatesOpt.value
 
     logStates.blockHash is callingBlock.hash
-    logStates.eventKey is contractId.value
+    logStates.contractId is contractId
     logStates.states.length is 1
     val logState = logStates.states.head
     logState.index is 0.toByte
@@ -2524,7 +2595,7 @@ class VMSpec extends AlephiumSpec {
       info("All events emitted from the contract after the second method call")
 
       val (nextCount1, _) = getEvents(blockFlow, contractId, 0, 1)
-      nextCount1.value is 2
+      nextCount1.value is 1
       val (nextCount2, _) = getEvents(blockFlow, contractId, 0, 2)
       nextCount2 is 2
 
@@ -2550,7 +2621,7 @@ class VMSpec extends AlephiumSpec {
       verifyCallingEvents(logStates1, callingBlock, result = 10, currentCount = 2)
 
       logStates2.blockHash is secondCallingBlock.hash
-      logStates2.eventKey is contractId.value
+      logStates2.contractId is contractId
       logStates2.states.length is 2
 
       val addingLogState = logStates2.states(0)
@@ -2582,32 +2653,25 @@ class VMSpec extends AlephiumSpec {
 
   private def getLogStates(
       blockFlow: BlockFlow,
-      groupIndex: GroupIndex,
       contractId: ContractId,
       count: Int
   ): Option[LogStates] = {
-    val logStatesId = LogStatesId(contractId.value, count)
-    getLogStates(blockFlow, groupIndex, logStatesId)
+    val logStatesId = LogStatesId(contractId, count)
+    getLogStates(blockFlow, logStatesId)
   }
 
   private def getLogStatesByTxId(
       blockFlow: BlockFlow,
-      groupIndex: GroupIndex,
       txId: TransactionId
-  ): Option[LogStates] = {
-    val logStatesId = LogStatesId(txId.value, 0)
-    getLogStates(blockFlow, groupIndex, logStatesId)
+  ): AVector[LogStateRef] = {
+    blockFlow.getEventsByHash(Byte32.unsafe(txId.bytes)).map(_.map(_._2)).rightValue
   }
 
-  private def getLogStates(
-      blockFlow: BlockFlow,
-      groupIndex: GroupIndex,
-      logStatesId: LogStatesId
-  ): Option[LogStates] = {
-    (for {
-      worldState   <- blockFlow.getBestPersistedWorldState(groupIndex)
-      logStatesOpt <- worldState.logState.getOpt(logStatesId)
-    } yield logStatesOpt).rightValue
+  private def getLogStates(blockFlow: BlockFlow, logStatesId: LogStatesId): Option[LogStates] = {
+    blockFlow
+      .getEvents(logStatesId.contractId, logStatesId.counter, logStatesId.counter + 1)
+      .map(_._2.headOption)
+      .rightValue
   }
 
   it should "return contract id in contract creation" in new ContractFixture {
@@ -2642,7 +2706,7 @@ class VMSpec extends AlephiumSpec {
          |""".stripMargin
     val block = callTxScript(main)
 
-    val logStatesOpt = getLogStates(blockFlow, chainIndex.from, contractId, 0)
+    val logStatesOpt = getLogStates(blockFlow, contractId, 0)
     val logStates    = logStatesOpt.value
     logStates.blockHash is block.hash
     logStates.states.length is 1
@@ -3277,7 +3341,7 @@ class VMSpec extends AlephiumSpec {
          |""".stripMargin
     val block = callTxScript(main)
 
-    val logStatesOpt = getLogStates(blockFlow, chainIndex.from, barId, 0)
+    val logStatesOpt = getLogStates(blockFlow, barId, 0)
     val logStates    = logStatesOpt.value
     logStates.blockHash is block.hash
     logStates.states.length is 2
@@ -3492,7 +3556,7 @@ class VMSpec extends AlephiumSpec {
          |""".stripMargin
     val script = Compiler.compileTxScript(main).rightValue
     intercept[AssertionError](simpleScript(blockFlow, chainIndex, script)).getMessage is
-      s"Right(TxScriptExeFailed(AssertionFailedWithErrorCode(${fooId.toHexString},0)))"
+      s"Right(TxScriptExeFailed(AssertionFailedWithErrorCode(${Address.contract(fooId).toBase58},0)))"
   }
 
   it should "test Contract type" in new ContractFixture {
@@ -3563,13 +3627,65 @@ class VMSpec extends AlephiumSpec {
     fooOutputRefNew.asInstanceOf[TxOutputRef] is TxOutputRef.unsafe(tx, 0)
   }
 
+  it should "test debug function" in new EventFixture {
+    override lazy val initialState: AVector[Val] = AVector(Val.ByteVec.fromString("Alephium"))
+    override def contractRaw: String =
+      s"""
+         |Contract Foo(name: ByteVec) {
+         |  pub fn foo() -> () {
+         |    emit Debug(`Hello, $${name}!`)
+         |  }
+         |}
+         |""".stripMargin
+
+    override def callingScriptRaw: String =
+      s"""
+         |$contractRaw
+         |
+         |@using(preapprovedAssets = false)
+         |TxScript Main {
+         |  Foo(#${contractId.toHexString}).foo()
+         |}
+         |""".stripMargin
+
+    val logStates = getLogStates(blockFlow, contractId, 0).value
+    logStates.blockHash is callingBlock.hash
+    logStates.states.length is 1
+    val event = logStates.states.head
+    event.index is debugEventIndex.v.v.toInt.toByte
+    event.fields is AVector[Val](Val.ByteVec(ByteString.fromString("Hello, Alephium!")))
+  }
+
+  it should "test contract asset only function" in new ContractFixture {
+    val foo =
+      s"""
+         |Contract Foo() {
+         |  @using(assetsInContract = true)
+         |  pub fn foo() -> () {
+         |    assert!(alphRemaining!(selfAddress!()) == 1 alph, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val contractId = createContract(foo, AVector.empty)._1
+
+    val script =
+      s"""
+         |@using(preapprovedAssets = false)
+         |TxScript Main() {
+         |  Foo(#${contractId.toHexString}).foo()
+         |}
+         |$foo
+         |""".stripMargin
+    testSimpleScript(script)
+  }
+
   private def getEvents(
       blockFlow: BlockFlow,
       contractId: ContractId,
       start: Int,
       end: Int = Int.MaxValue
   ): (Int, AVector[LogStates]) = {
-    blockFlow.getEvents(contractId.value, start, end).rightValue
+    blockFlow.getEvents(contractId, start, end).rightValue
   }
 
   private def getCurrentCount(
@@ -3579,7 +3695,7 @@ class VMSpec extends AlephiumSpec {
   ): Option[Int] = {
     (for {
       worldState <- blockFlow.getBestPersistedWorldState(groupIndex)
-      countOpt   <- worldState.logCounterState.getOpt(contractId.value)
+      countOpt   <- worldState.logStorage.logCounterState.getOpt(contractId)
     } yield countOpt).rightValue
   }
 }

@@ -23,7 +23,7 @@ import org.alephium.protocol.ALPH
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm.{GasBox, LockupScript, UnlockScript, Val}
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.util._
 
 class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
@@ -265,7 +265,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |  assert!(1 == 2, 0)
            |}
            |""".stripMargin
-      ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailedWithErrorCode(,0)"
+      ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailedWithErrorCode(null,0)"
       // scalastyle:on no.equal
     }
   }
@@ -276,8 +276,9 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
   ): Either[String, UnsignedTransaction] = {
     val group                 = lockup.groupIndex
     val (genesisPriKey, _, _) = genesisKeys(group.value)
-    val block                 = transfer(blockFlow, genesisPriKey, lockup, ALPH.alph(2))
-    val output                = AVector(TxOutputInfo(lockup, ALPH.alph(1), AVector.empty, None))
+    val block =
+      transfer(blockFlow, genesisPriKey, lockup, AVector.empty[(TokenId, U256)], ALPH.alph(2))
+    val output = AVector(TxOutputInfo(lockup, ALPH.alph(1), AVector.empty, None))
     addAndCheck(blockFlow, block)
 
     blockFlow

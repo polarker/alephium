@@ -31,7 +31,7 @@ import org.alephium.protocol.model._
 import org.alephium.protocol.model.ModelGenerators.AssetInputInfo
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm.{InvalidSignature => _, NetworkId => _, _}
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.util.{AVector, TimeStamp, U256}
 
 // scalastyle:off number.of.methods file.size.limit
@@ -79,8 +79,9 @@ class TxValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike 
     def prepareOutput(lockup: LockupScript.Asset, unlock: UnlockScript) = {
       val group                 = lockup.groupIndex
       val (genesisPriKey, _, _) = genesisKeys(group.value)
-      val block                 = transfer(blockFlow, genesisPriKey, lockup, ALPH.alph(2))
-      val output                = AVector(TxOutputInfo(lockup, ALPH.alph(1), AVector.empty, None))
+      val block =
+        transfer(blockFlow, genesisPriKey, lockup, AVector.empty[(TokenId, U256)], ALPH.alph(2))
+      val output = AVector(TxOutputInfo(lockup, ALPH.alph(1), AVector.empty, None))
       addAndCheck(blockFlow, block)
 
       blockFlow
