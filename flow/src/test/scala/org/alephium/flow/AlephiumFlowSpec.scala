@@ -33,7 +33,7 @@ import org.alephium.protocol.mining.PoW
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm._
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.serde.serialize
 import org.alephium.util._
 
@@ -136,21 +136,20 @@ trait FlowFixture
   }
 
   def transfer(blockFlow: BlockFlow, from: PrivateKey, to: PublicKey, amount: U256): Block = {
-    transfer(blockFlow, from, LockupScript.p2pkh(to), amount)
+    transfer(blockFlow, from, LockupScript.p2pkh(to), AVector.empty[(TokenId, U256)], amount)
   }
 
   def transfer(
       blockFlow: BlockFlow,
       from: PrivateKey,
       to: LockupScript.Asset,
+      tokens: AVector[(TokenId, U256)],
       amount: U256
   ): Block = {
     val unsigned = blockFlow
       .transfer(
         from.publicKey,
-        to,
-        None,
-        amount,
+        AVector(TxOutputInfo(to, amount, tokens, None)),
         None,
         defaultGasPrice,
         defaultUtxoLimit
@@ -377,7 +376,7 @@ trait FlowFixture
     val parentTs         = blockFlow.getBlockHeaderUnsafe(deps.parentHash(chainIndex)).timestamp
     val blockTs          = FlowUtils.nextTimeStamp(parentTs)
 
-    val target     = blockFlow.getNextHashTarget(chainIndex, deps).rightValue
+    val target     = blockFlow.getNextHashTarget(chainIndex, deps, blockTs).rightValue
     val coinbaseTx = Transaction.coinbase(chainIndex, txs, lockupScript, target, blockTs)
     mine0(blockFlow, chainIndex, deps, txs :+ coinbaseTx, blockTs, target)
   }
@@ -556,8 +555,7 @@ trait FlowFixture
     tips ++ bestDeps
   }
 
-  def getBalance(blockFlow: BlockFlow, address: PublicKey): U256 = {
-    val lockupScript = LockupScript.p2pkh(address)
+  def getAlphBalance(blockFlow: BlockFlow, lockupScript: LockupScript.Asset): U256 = {
     brokerConfig.contains(lockupScript.groupIndex) is true
     val query = blockFlow.getUsableUtxos(lockupScript, defaultUtxoLimit)
     U256.unsafe(query.rightValue.sumBy(_.output.amount.v: BigInt).underlying())

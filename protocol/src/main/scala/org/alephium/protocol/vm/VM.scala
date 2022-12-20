@@ -330,6 +330,8 @@ final class StatefulVM(
     for {
       _ <- ctx.updateContractStates()
       _ <- cleanBalances(lastFrame)
+      _ <- ctx
+        .removeOutdatedContractAssets() // this must run after cleanBalances so that unused inputs are removed
     } yield ()
   }
 
@@ -349,7 +351,14 @@ final class StatefulVM(
         _ <- ctx.checkAllAssetsFlushed()
       } yield ()
     } else {
-      Right(())
+      if (ctx.getHardFork().isLemanEnabled()) {
+        for {
+          _ <- outputGeneratedBalances(ctx.outputBalances)
+          _ <- ctx.checkAllAssetsFlushed()
+        } yield ()
+      } else {
+        Right(())
+      }
     }
   }
 
@@ -488,6 +497,29 @@ object StatefulVM {
   ): ExeResult[AVector[Val]] = {
     val vm = default(context)
     vm.executeWithOutputs(obj, methodIndex, args)
+  }
+
+  def executeWithOutputsWithDebug(
+      context: StatefulContext,
+      obj: ContractObj[StatefulContext],
+      args: AVector[Val],
+      methodIndex: Int
+  ): ExeResult[AVector[Val]] = {
+    val results = executeWithOutputs(context, obj, args, methodIndex)
+    context.worldState.logState.getNewLogs().map { logStates =>
+      logStates.states.foreach { logState =>
+        if (logState.index == debugEventIndex.v.v.intValue().toByte) {
+          logState.fields.headOption.foreach {
+            case Val.ByteVec(bytes) =>
+              print(
+                s"Debug - ${Address.contract(logStates.contractId).toBase58} - ${bytes.utf8String}\n"
+              )
+            case _ => ()
+          }
+        }
+      }
+    }
+    results
   }
 
   def executeWithOutputs(

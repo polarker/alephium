@@ -37,8 +37,10 @@ lazy val root: Project = Project("alephium-scala-blockflow", file("."))
     json,
     conf,
     protocol,
+    ralph,
     http,
     wallet,
+    ralphc,
     tools
   )
 
@@ -108,6 +110,7 @@ lazy val api = project("api")
   .dependsOn(
     json,
     protocol % "test->test;compile->compile",
+    ralph    % "test->test;compile->compile",
     crypto,
     serde,
     util % "test->test;compile->compile"
@@ -274,7 +277,7 @@ lazy val flow = project("flow")
     ),
     publish / skip := true
   )
-  .dependsOn(protocol % "test->test;compile->compile")
+  .dependsOn(protocol % "test->test;compile->compile", ralph % "test->test;compile->compile")
 
 lazy val protocol = project("protocol")
   .enablePlugins(BuildInfoPlugin)
@@ -295,6 +298,9 @@ lazy val protocol = project("protocol")
       fastparse
     )
   )
+
+lazy val ralph = project("ralph")
+  .dependsOn(protocol % "test->test;compile->compile")
 
 lazy val wallet = project("wallet")
   .dependsOn(
@@ -334,6 +340,34 @@ lazy val wallet = project("wallet")
     }
   )
 
+lazy val ralphc = project("ralphc")
+  .dependsOn(
+    json,
+    api,
+    crypto,
+    ralph,
+    util     % "test->test",
+    protocol % "compile->compile;test->test"
+  )
+  .settings(
+    libraryDependencies ++= Seq(
+      upickle,
+      scopt
+    ),
+    publish / skip             := true,
+    assembly / mainClass       := Some("org.alephium.ralphc.Main"),
+    assembly / assemblyJarName := s"alephium-ralphc-${version.value}.jar",
+    assembly / test            := {},
+    assemblyMergeStrategy := {
+      case PathList("module-info.class") =>
+        MergeStrategy.discard
+      case x if x.endsWith("module-info.class") =>
+        MergeStrategy.discard
+      case other =>
+        assemblyMergeStrategy.value(other)
+    }
+  )
+
 val publishSettings = Seq(
   organization := "org.alephium",
   homepage     := Some(url("https://github.com/alephium/alephium")),
@@ -349,7 +383,7 @@ val publishSettings = Seq(
 )
 
 val commonSettings = publishSettings ++ Seq(
-  scalaVersion             := "2.13.8",
+  scalaVersion             := "2.13.10",
   Test / parallelExecution := false,
   scalacOptions ++= Seq(
     "-Xsource:3",
@@ -404,7 +438,8 @@ val commonSettings = publishSettings ++ Seq(
     scalacheck,
     scalatest,
     scalatestplus
-  )
+  ),
+  Compile / doc / sources ~= (_ filter (_.getName endsWith ".scala"))
 )
 
 val wartsCompileExcludes = Seq(
