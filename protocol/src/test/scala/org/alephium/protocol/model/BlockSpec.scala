@@ -24,7 +24,7 @@ import org.alephium.crypto.{Blake2b, Blake3, MerkleHashable}
 import org.alephium.protocol._
 import org.alephium.protocol.vm.{GasPrice, LockupScript, StatefulScript}
 import org.alephium.serde._
-import org.alephium.util.{AlephiumSpec, AVector, Hex, TimeStamp, U256}
+import org.alephium.util.{AlephiumSpec, AVector, Hex, Math, TimeStamp, U256}
 
 class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
   it should "serde" in {
@@ -99,6 +99,48 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
     }
   }
 
+  trait TxExecutionOrderFixture {
+    def genTxs(num: Int): AVector[Transaction] = {
+      val chainIndex = ChainIndex.unsafe(0, 0)
+      AVector.tabulate(num)(index => {
+        val scriptOpt  = if (index % 2 == 0) None else Some(StatefulScript.unsafe(AVector.empty))
+        val assetInfos = assetsToSpendGen(scriptGen = p2pkScriptGen(chainIndex.from))
+        val gen = unsignedTxGen(chainIndex)(assetInfos).map(tx =>
+          Transaction.from(tx.copy(scriptOpt = scriptOpt), AVector.empty[Signature])
+        )
+        gen.sample.get
+      })
+    }
+
+    val txs                                   = genTxs(20)
+    val hash                                  = BlockHash.random
+    val txIndexes                             = Seq.from(0 until 20)
+    val (nonScriptTxIndexes, scriptTxIndexes) = txIndexes.partition(_ % 2 == 0)
+  }
+
+  it should "get non coinbase txs execution order" in new TxExecutionOrderFixture {
+    val preLemanOrder = Block.getNonCoinbaseExecutionOrder(hash, txs, HardFork.Mainnet)
+    preLemanOrder.length is 20
+    preLemanOrder.toSeq isnot txIndexes
+    preLemanOrder.slice(10, 20).toSeq is nonScriptTxIndexes
+    preLemanOrder.toSet is Set.from(txIndexes)
+
+    val lemanOrder = Block.getNonCoinbaseExecutionOrder(BlockHash.random, txs, HardFork.Leman)
+    lemanOrder.length is 20
+    lemanOrder.toSeq is txIndexes
+  }
+
+  it should "get script execution order" in new TxExecutionOrderFixture {
+    val preLemanOrder = Block.getScriptExecutionOrder(hash, txs, HardFork.Mainnet)
+    preLemanOrder.length is 10
+    preLemanOrder.toSeq isnot scriptTxIndexes
+    preLemanOrder.toSet is Set.from(scriptTxIndexes)
+
+    val lemanOrder = Block.getScriptExecutionOrder(BlockHash.random, txs, HardFork.Leman)
+    lemanOrder.length is 10
+    lemanOrder.toSeq is scriptTxIndexes
+  }
+
   it should "put non-script txs at the last" in {
     forAll(posLongGen, posLongGen) { (gasPrice0: Long, gasPrice1: Long) =>
       val header: BlockHeader =
@@ -135,7 +177,7 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
         U256.Zero,
         LockupScript.p2pkh(PublicKey.generate),
         Target.Max,
-        ALPH.LaunchTimestamp
+        Math.max(networkConfig.lemanHardForkTimestamp, ALPH.LaunchTimestamp)
       )
 
       val block0 = Block(header, AVector(tx0, tx1, coinbase))
@@ -234,15 +276,22 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
     {
       info("with optional script")
 
-      val script =
-        s"""
-           |@using(preapprovedAssets = true, assetsInContract = false)
-           |TxScript Foo {
-           |  return
-           |  pub fn add() -> () {
-           |  }
-           |}
-           |""".stripMargin
+//      val script =
+//        s"""
+//           |@using(preapprovedAssets = true, assetsInContract = false)
+//           |TxScript Foo {
+//           |  return
+//           |  pub fn add() -> () {
+//           |  }
+//           |}
+//           |""".stripMargin
+      // Compiled from the script above
+      val script = StatefulScript.unsafe(
+        AVector(
+          vm.Method(true, true, false, 0, 0, 0, AVector(vm.Return)),
+          vm.Method(true, false, false, 0, 0, 0, AVector())
+        )
+      )
 
       val transaction = {
         val unsignedTx = unsignedTransaction(
@@ -267,20 +316,40 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
       info("with contract inputs and outputs")
 
       // Pay to pubKey2
-      val address = Address.p2pkh(pubKey2).toBase58
-      def script(address: String) =
-        s"""
-           |@using(preapprovedAssets = true, assetsInContract = true)
-           |TxScript Main {
-           |  verifyTxSignature!(#${pubKey2.toHexString})
-           |  transferAlphFromSelf!(@$address, 5)
-           |}
-           |""".stripMargin
+//      val address = Address.p2pkh(pubKey2).toBase58
+//      def script(address: String) =
+//        s"""
+//           |@using(preapprovedAssets = true, assetsInContract = true)
+//           |TxScript Main {
+//           |  verifyTxSignature!(#${pubKey2.toHexString})
+//           |  transferAlphFromSelf!(@$address, 5)
+//           |}
+//           |""".stripMargin
+      // Compiled from the script above
+      val script = StatefulScript.unsafe(
+        AVector(
+          vm.Method(
+            isPublic = true,
+            usePreapprovedAssets = true,
+            useContractAssets = true,
+            argsLength = 0,
+            localsLength = 0,
+            returnLength = 0,
+            instrs = AVector(
+              vm.BytesConst(vm.Val.ByteVec(pubKey2.bytes)),
+              vm.VerifyTxSignature,
+              vm.AddressConst(vm.Val.Address(LockupScript.p2pkh(pubKey2))),
+              vm.U256Const5,
+              vm.TransferAlphFromSelf
+            )
+          )
+        )
+      )
 
       val transaction = {
         val unsignedTx = unsignedTransaction(
           pubKey1,
-          Some(script(address)),
+          Some(script),
           p2pkhOutput(
             1000,
             hex"b03ce271334db24f37313cccf2d4aced9c6223d1378b1f472ec56f0b30aaac0f",

@@ -18,6 +18,7 @@ package org.alephium.protocol.vm
 
 import java.math.BigInteger
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 import akka.util.ByteString
@@ -65,20 +66,22 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
 
   trait LemanForkFixture extends AllInstrsFixture {
     // format: off
-    val lemanStatelessInstrs = AVector(
+    val lemanStatelessInstrs = AVector[LemanInstr[StatelessContext]](
       ByteVecSlice, ByteVecToAddress, Encode, Zeros,
       U256To1Byte, U256To2Byte, U256To4Byte, U256To8Byte, U256To16Byte, U256To32Byte,
       U256From1Byte, U256From2Byte, U256From4Byte, U256From8Byte, U256From16Byte, U256From32Byte,
       EthEcRecover,
       Log6, Log7, Log8, Log9,
       ContractIdToAddress,
-      LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap
+      LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap,
+      vm.BlockHash, DEBUG(AVector.empty), TxGasPrice, TxGasAmount, TxGasFee
     )
-    val lemanStatefulInstrs = AVector(
+    val lemanStatefulInstrs = AVector[LemanInstr[StatefulContext]](
       MigrateSimple, MigrateWithFields, CopyCreateContractWithToken, BurnToken, LockApprovedAssets,
       CreateSubContract, CreateSubContractWithToken, CopyCreateSubContract, CopyCreateSubContractWithToken,
       LoadFieldByIndex, StoreFieldByIndex, ContractExists, CreateContractAndTransferToken, CopyCreateContractAndTransferToken,
-      CreateSubContractAndTransferToken, CopyCreateSubContractAndTransferToken
+      CreateSubContractAndTransferToken, CopyCreateSubContractAndTransferToken,
+      NullContractAddress, SubContractId, SubContractIdOf, ALPHTokenId
     )
     // format: on
   }
@@ -96,7 +99,10 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     with StatelessFixture {
     val frame0 = prepareFrame(AVector.empty)(NetworkConfigFixture.Leman) // Leman is activated
     lemanStatelessInstrs.foreach { instr =>
-      instr.runWith(frame0).leftValue isnotE InactiveInstr(instr)
+      val result = instr.runWith(frame0)
+      if (result.isLeft) {
+        result.leftValue isnotE InactiveInstr(instr)
+      }
     }
     val frame1 =
       prepareFrame(AVector.empty)(NetworkConfigFixture.PreLeman) // Leman is not activated yet
@@ -106,11 +112,14 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
   it should "fail if the fork is not activated yet for stateful instrs" in new LemanForkFixture
     with StatefulFixture {
     val frame0 = prepareFrame()(NetworkConfigFixture.Leman) // Leman is activated
-    lemanStatefulInstrs.foreach(instr =>
-      instr.runWith(frame0).leftValue isnotE InactiveInstr(instr)
-    )
+    lemanStatefulInstrs.foreach { instr =>
+      val result = instr.runWith(frame0)
+      if (result.isLeft) {
+        result.leftValue isnotE InactiveInstr(instr)
+      }
+    }
     val frame1 = prepareFrame()(NetworkConfigFixture.PreLeman) // Leman is not activated yet
-    lemanStatelessInstrs.foreach(instr => instr.runWith(frame1).leftValue isE InactiveInstr(instr))
+    lemanStatefulInstrs.foreach(instr => instr.runWith(frame1).leftValue isE InactiveInstr(instr))
   }
 
   trait GenFixture extends ContextGenerators {
@@ -167,7 +176,20 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     lazy val context = frame.ctx
     lazy val locals  = frame.locals
 
-    def runAndCheckGas[I <: Instr[StatelessContext] with GasSimple](instr: I) = {
+    lazy val mockBlockEnv =
+      BlockEnv(
+        ChainIndex.randomIntraGroup,
+        AlephiumMainNet,
+        TimeStamp.now(),
+        Target.Max,
+        Some(BlockHash.generate)
+      )
+
+    def runAndCheckGas[I <: Instr[StatelessContext] with GasSimple](
+        instr: I,
+        frame: Frame[StatelessContext] = frame
+    ) = {
+      val context    = frame.ctx
       val initialGas = context.gasRemaining
       instr.runWith(frame) isE ()
       initialGas.subUnsafe(context.gasRemaining) is instr.gas()
@@ -180,6 +202,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
         AVector.empty,
         blockEnv = Some(
           BlockEnv(
+            ChainIndex.randomIntraGroup,
             AlephiumMainNet,
             blockTs,
             Target.Max,
@@ -225,6 +248,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
         AVector.empty,
         blockEnv = Some(
           BlockEnv(
+            ChainIndex.randomIntraGroup,
             AlephiumMainNet,
             blockTs,
             Target.Max,
@@ -1444,8 +1468,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
   it should "NetworkId" in new StatelessInstrFixture {
     override lazy val frame = prepareFrame(
       AVector.empty,
-      blockEnv =
-        Some(BlockEnv(AlephiumMainNet, TimeStamp.now(), Target.Max, Some(BlockHash.generate)))
+      blockEnv = Some(mockBlockEnv)
     )
 
     val initialGas = context.gasRemaining
@@ -1460,7 +1483,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       private val timestamp = TimeStamp.now()
       override lazy val frame = prepareFrame(
         AVector.empty,
-        blockEnv = Some(BlockEnv(AlephiumMainNet, timestamp, Target.Max, Some(BlockHash.generate)))
+        blockEnv = Some(mockBlockEnv.copy(timeStamp = timestamp))
       )
 
       private val initialGas = context.gasRemaining
@@ -1474,7 +1497,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       val timestamp = new TimeStamp(-1)
       override lazy val frame = prepareFrame(
         AVector.empty,
-        blockEnv = Some(BlockEnv(AlephiumMainNet, timestamp, Target.Max, Some(BlockHash.generate)))
+        blockEnv = Some(mockBlockEnv.copy(timeStamp = timestamp))
       )
 
       BlockTimeStamp.runWith(frame).leftValue isE NegativeTimeStamp(-1)
@@ -1484,8 +1507,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
   it should "BlockTarget" in new StatelessInstrFixture {
     override lazy val frame = prepareFrame(
       AVector.empty,
-      blockEnv =
-        Some(BlockEnv(AlephiumMainNet, TimeStamp.now(), Target.Max, Some(BlockHash.generate)))
+      blockEnv = Some(mockBlockEnv)
     )
 
     private val initialGas = context.gasRemaining
@@ -1508,6 +1530,42 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.size is 1
     stack.top.get is Val.ByteVec(tx.id.bytes)
     initialGas.subUnsafe(context.gasRemaining) is TxId.gas()
+  }
+
+  trait GasInstrFixture extends StatelessInstrFixture {
+    val gasPriceGen = Gen
+      .choose[BigInteger](minimalGasPrice.value.v, ALPH.oneAlph.v)
+      .map(v => GasPrice(U256.unsafe(v)))
+    val gasAmountGen = Gen.choose[Int](minimalGas.value, maximalGasPerTx.value).map(GasBox.unsafe)
+    val txEnv = TxEnv.mockup(
+      TransactionId.random,
+      Stack.ofCapacity(0),
+      AVector.empty,
+      AVector.empty,
+      gasPriceGen.sample.get,
+      gasAmountGen.sample.get,
+      isEntryMethodPayable = false
+    )
+
+    override lazy val frame = prepareFrame(AVector.empty, txEnv = Some(txEnv))
+  }
+
+  it should "TxGasPrice" in new GasInstrFixture {
+    runAndCheckGas(TxGasPrice, frame)
+    stack.size is 1
+    stack.top.get is Val.U256(txEnv.gasPrice.value)
+  }
+
+  it should "TxGasAmount" in new GasInstrFixture {
+    runAndCheckGas(TxGasAmount, frame)
+    stack.size is 1
+    stack.top.get is Val.U256(txEnv.gasAmount.toU256)
+  }
+
+  it should "TxGasFee" in new GasInstrFixture {
+    runAndCheckGas(TxGasFee, frame)
+    stack.size is 1
+    stack.top.get is Val.U256(txEnv.gasFeeUnsafe)
   }
 
   trait TxEnvFixture extends StatefulInstrFixture {
@@ -1746,6 +1804,25 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       MutBalances(ArrayBuffer((lockupScript, MutBalancesPerLockup.token(tokenId, amount))))
     }
 
+    def balances(
+        lockupScript: LockupScript,
+        alphAmount: Option[U256],
+        tokens: Map[TokenId, U256]
+    ): MutBalances = {
+      MutBalances(
+        ArrayBuffer(
+          (
+            lockupScript,
+            MutBalancesPerLockup(
+              alphAmount.getOrElse(U256.Zero),
+              mutable.Map.from(tokens),
+              0
+            )
+          )
+        )
+      )
+    }
+
     def prepareFrame(
         balanceState: Option[MutBalanceState] = None,
         contractOutputOpt: Option[(ContractId, ContractOutput, ContractOutputRef)] = None,
@@ -1783,11 +1860,12 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
 
     def runAndCheckGas[I <: Instr[StatefulContext] with GasSimple](
         instr: I,
-        extraGasOpt: Option[GasBox] = None
+        extraGasOpt: Option[GasBox] = None,
+        frame: Frame[StatefulContext] = frame
     ) = {
-      val initialGas = context.gasRemaining
+      val initialGas = frame.ctx.gasRemaining
       instr.runWith(frame) isE ()
-      initialGas.subUnsafe(context.gasRemaining) is
+      initialGas.subUnsafe(frame.ctx.gasRemaining) is
         instr.gas().addUnsafe(extraGasOpt.getOrElse(GasBox.zero))
     }
   }
@@ -1870,23 +1948,95 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
 
   it should "ApproveToken" in new StatefulInstrFixture {
     val lockupScript = lockupScriptGen.sample.get
-    val balanceState =
+
+    def test(
+        frame: Frame[StatefulContext],
+        initBalanceState: MutBalanceState,
+        tokenId: TokenId,
+        amount: U256,
+        remainBalanceState: MutBalanceState
+    ) = {
+      frame.opStack.push(Val.Address(lockupScript))
+      frame.opStack.push(Val.ByteVec(tokenId.bytes))
+      frame.opStack.push(Val.U256(amount))
+      frame.balanceStateOpt.get is initBalanceState
+
+      runAndCheckGas(ApproveToken, None, frame)
+
+      frame.balanceStateOpt.get is remainBalanceState
+    }
+
+    val initBalanceState0 =
       MutBalanceState.from(
-        tokenBalance(lockupScript, tokenId, ALPH.oneAlph)
+        balances(lockupScript, None, Map(tokenId -> ALPH.oneAlph, TokenId.alph -> ALPH.oneAlph))
       )
-    override lazy val frame = prepareFrame(Some(balanceState))
+    val genesisFrame = prepareFrame(Some(initBalanceState0))(NetworkConfigFixture.PreLeman)
+    test(
+      genesisFrame,
+      initBalanceState0,
+      tokenId,
+      ALPH.oneNanoAlph,
+      MutBalanceState(
+        balances(
+          lockupScript,
+          None,
+          Map(tokenId -> ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph), TokenId.alph -> ALPH.oneAlph)
+        ),
+        tokenBalance(lockupScript, tokenId, ALPH.oneNanoAlph)
+      )
+    )
+    test(
+      genesisFrame,
+      initBalanceState0,
+      TokenId.alph,
+      ALPH.oneNanoAlph,
+      MutBalanceState(
+        balances(
+          lockupScript,
+          None,
+          Map(
+            tokenId      -> ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph),
+            TokenId.alph -> ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph)
+          )
+        ),
+        balances(
+          lockupScript,
+          None,
+          Map(tokenId -> ALPH.oneNanoAlph, TokenId.alph -> ALPH.oneNanoAlph)
+        )
+      )
+    )
 
-    stack.push(Val.Address(lockupScript))
-    stack.push(Val.ByteVec(tokenId.bytes))
-    stack.push(Val.U256(ALPH.oneNanoAlph))
-
-    frame.balanceStateOpt.get is balanceState
-
-    runAndCheckGas(ApproveToken)
-
-    frame.balanceStateOpt.get is MutBalanceState(
-      tokenBalance(lockupScript, tokenId, ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph)),
-      tokenBalance(lockupScript, tokenId, ALPH.oneNanoAlph)
+    val initBalanceState1 =
+      MutBalanceState.from(balances(lockupScript, Some(ALPH.oneAlph), Map(tokenId -> ALPH.oneAlph)))
+    val lemanFrame = prepareFrame(Some(initBalanceState1))(NetworkConfigFixture.Leman)
+    test(
+      lemanFrame,
+      initBalanceState1,
+      tokenId,
+      ALPH.oneNanoAlph,
+      MutBalanceState(
+        balances(
+          lockupScript,
+          Some(ALPH.oneAlph),
+          Map(tokenId -> ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph))
+        ),
+        tokenBalance(lockupScript, tokenId, ALPH.oneNanoAlph)
+      )
+    )
+    test(
+      lemanFrame,
+      initBalanceState1,
+      TokenId.alph,
+      ALPH.oneNanoAlph,
+      MutBalanceState(
+        balances(
+          lockupScript,
+          Some(ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph)),
+          Map(tokenId -> ALPH.oneAlph.subUnsafe(ALPH.oneNanoAlph))
+        ),
+        balances(lockupScript, Some(ALPH.oneNanoAlph), Map(tokenId -> ALPH.oneNanoAlph))
+      )
     )
   }
 
@@ -1906,19 +2056,37 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
 
   it should "TokenRemaining" in new StatefulInstrFixture {
     val lockupScript = lockupScriptGen.sample.get
-    val balanceState =
+
+    def test(frame: Frame[StatefulContext], tokenId: TokenId, amount: U256) = {
+      frame.opStack.push(Val.Address(lockupScript))
+      frame.opStack.push(Val.ByteVec(tokenId.bytes))
+
+      runAndCheckGas(TokenRemaining, None, frame)
+
+      frame.opStack.size is 1
+      frame.opStack.top.get is Val.U256(amount)
+      frame.opStack.pop()
+    }
+
+    val balanceState0 =
       MutBalanceState.from(
-        tokenBalance(lockupScript, tokenId, ALPH.oneAlph)
+        balances(lockupScript, None, Map(tokenId -> ALPH.oneAlph, TokenId.alph -> ALPH.oneAlph))
       )
-    override lazy val frame = prepareFrame(Some(balanceState))
+    val genesisFrame = prepareFrame(Some(balanceState0))(NetworkConfigFixture.PreLeman)
+    test(genesisFrame, tokenId, ALPH.oneAlph)
+    test(genesisFrame, TokenId.alph, ALPH.oneAlph)
 
-    stack.push(Val.Address(lockupScript))
-    stack.push(Val.ByteVec(tokenId.bytes))
-
-    runAndCheckGas(TokenRemaining)
-
-    stack.size is 1
-    stack.top.get is Val.U256(ALPH.oneAlph)
+    val balanceState1 =
+      MutBalanceState.from(
+        balances(
+          lockupScript,
+          Some(ALPH.oneAlph),
+          Map(tokenId -> ALPH.oneAlph, TokenId.alph -> ALPH.oneNanoAlph)
+        )
+      )
+    val lemanFrame = prepareFrame(Some(balanceState1))(NetworkConfigFixture.Leman)
+    test(lemanFrame, tokenId, ALPH.oneAlph)
+    test(lemanFrame, TokenId.alph, ALPH.oneAlph)
   }
 
   it should "IsPaying" in new StatefulFixture {
@@ -2000,6 +2168,12 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.push(Val.U256(ALPH.alph(2)))
 
     BurnToken.runWith(frame).leftValue isE NotEnoughBalance
+
+    stack.push(Val.Address(from))
+    stack.push(Val.ByteVec(TokenId.alph.bytes))
+    stack.push(Val.U256(ALPH.alph(2)))
+
+    BurnToken.runWith(frame).leftValue isE BurningAlphNotAllowed
   }
 
   it should "LockApprovedAssets" in new StatefulInstrFixture {
@@ -2123,26 +2297,81 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     )
   }
 
-  it should "TransferToken" in new ContractOutputFixture {
-    val from = lockupScriptGen.sample.get
-    val to   = assetLockupScriptGen.sample.get
-    val balanceState =
-      MutBalanceState.from(
-        tokenBalance(from, tokenId, ALPH.oneAlph)
+  trait TransferTokenFixture extends ContractOutputFixture {
+    def instr: Instr[StatefulContext] with GasSimple
+    def from: LockupScript
+    def to: LockupScript
+    def contractOutputOpt: Option[(ContractId, ContractOutput, ContractOutputRef)]
+    def prepareOpStack(frame: Frame[StatefulContext]): ExeResult[Unit]
+
+    def createBalanceState(tokenId: TokenId, address: LockupScript, amount: U256) = {
+      MutBalanceState.from(tokenBalance(address, tokenId, amount))
+    }
+
+    private def test(
+        frame: Frame[StatefulContext],
+        tokenId: TokenId,
+        amount: U256,
+        outputBalances: MutBalances
+    ) = {
+      prepareOpStack(frame)
+      frame.opStack.push(Val.ByteVec(tokenId.bytes))
+      frame.opStack.push(Val.U256(amount))
+
+      runAndCheckGas(instr, None, frame)
+
+      frame.ctx.outputBalances is outputBalances
+    }
+
+    def testTransferToken() = {
+      val balanceState0 = createBalanceState(tokenId, from, ALPH.oneAlph)
+      val genesisFrame0 =
+        prepareFrame(Some(balanceState0), contractOutputOpt)(NetworkConfigFixture.PreLeman)
+      val outputBalances0 = MutBalances(
+        ArrayBuffer((to, MutBalancesPerLockup.token(tokenId, ALPH.oneNanoAlph)))
       )
+      test(genesisFrame0, tokenId, ALPH.oneNanoAlph, outputBalances0)
 
-    override lazy val frame = prepareFrame(Some(balanceState))
+      val balanceState1 = createBalanceState(TokenId.alph, from, ALPH.oneAlph)
+      val genesisFrame1 =
+        prepareFrame(Some(balanceState1), contractOutputOpt)(NetworkConfigFixture.PreLeman)
+      val outputBalances1 = MutBalances(
+        ArrayBuffer((to, MutBalancesPerLockup.token(TokenId.alph, ALPH.oneNanoAlph)))
+      )
+      test(genesisFrame1, TokenId.alph, ALPH.oneNanoAlph, outputBalances1)
 
-    stack.push(Val.Address(from))
-    stack.push(Val.Address(to))
-    stack.push(Val.ByteVec(tokenId.bytes))
-    stack.push(Val.U256(ALPH.oneNanoAlph))
+      val balanceState2 = createBalanceState(tokenId, from, ALPH.oneAlph)
+      val genesisFrame2 =
+        prepareFrame(Some(balanceState2), contractOutputOpt)(NetworkConfigFixture.Leman)
+      val outputBalances2 = MutBalances(
+        ArrayBuffer((to, MutBalancesPerLockup.token(tokenId, ALPH.oneNanoAlph)))
+      )
+      test(genesisFrame2, tokenId, ALPH.oneNanoAlph, outputBalances2)
 
-    runAndCheckGas(TransferToken)
+      val balanceState3 = MutBalanceState.from(alphBalance(from, ALPH.oneAlph))
+      val genesisFrame3 =
+        prepareFrame(Some(balanceState3), contractOutputOpt)(NetworkConfigFixture.Leman)
+      val outputBalances3 = MutBalances(
+        ArrayBuffer((to, MutBalancesPerLockup.alph(ALPH.oneNanoAlph)))
+      )
+      test(genesisFrame3, TokenId.alph, ALPH.oneNanoAlph, outputBalances3)
+    }
+  }
 
-    frame.ctx.outputBalances is MutBalances(
-      ArrayBuffer((to, MutBalancesPerLockup.token(tokenId, ALPH.oneNanoAlph)))
-    )
+  it should "TransferToken" in new TransferTokenFixture {
+    val instr             = TransferToken
+    val from              = lockupScriptGen.sample.get
+    val to                = assetLockupScriptGen.sample.get
+    val contractOutputOpt = None
+
+    def prepareOpStack(frame: Frame[StatefulContext]): ExeResult[Unit] = {
+      frame.opStack.push(Val.Address(from))
+      frame.opStack.push(Val.Address(to))
+    }
+
+    testTransferToken()
+
+    override lazy val frame = prepareFrame(Some(createBalanceState(tokenId, from, ALPH.oneAlph)))
 
     stack.push(Val.Address(from))
     stack.push(Val.Address(contractAddress))
@@ -2151,27 +2380,20 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     TransferToken.runWith(frame).leftValue isE PayToContractAddressNotInCallerTrace
   }
 
-  it should "TransferTokenFromSelf" in new ContractOutputFixture {
-    val from = LockupScript.P2C(contractId)
-    val to   = assetLockupScriptGen.sample.get
+  it should "TransferTokenFromSelf" in new TransferTokenFixture {
+    val instr             = TransferTokenFromSelf
+    val from              = LockupScript.P2C(contractId)
+    val to                = assetLockupScriptGen.sample.get
+    val contractOutputOpt = Some((contractId, contractOutput, contractOutputRef))
 
-    val balanceState =
-      MutBalanceState.from(
-        tokenBalance(from, tokenId, ALPH.oneAlph)
-      )
+    def prepareOpStack(frame: Frame[StatefulContext]): ExeResult[Unit] = {
+      frame.opStack.push(Val.Address(to))
+    }
+
+    testTransferToken()
 
     override lazy val frame =
-      prepareFrame(Some(balanceState), Some((contractId, contractOutput, contractOutputRef)))
-
-    stack.push(Val.Address(to))
-    stack.push(Val.ByteVec(tokenId.bytes))
-    stack.push(Val.U256(ALPH.oneNanoAlph))
-
-    runAndCheckGas(TransferTokenFromSelf)
-
-    frame.ctx.outputBalances is MutBalances(
-      ArrayBuffer((to, MutBalancesPerLockup.token(tokenId, ALPH.oneNanoAlph)))
-    )
+      prepareFrame(Some(createBalanceState(tokenId, from, ALPH.oneAlph)), contractOutputOpt)
 
     stack.push(Val.Address(contractAddress))
     stack.push(Val.ByteVec(tokenId.bytes))
@@ -2179,27 +2401,39 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     TransferTokenFromSelf.runWith(frame).leftValue isE PayToContractAddressNotInCallerTrace
   }
 
-  it should "TransferTokenToSelf" in new ContractOutputFixture {
-    val from = lockupScriptGen.sample.get
-    val to   = LockupScript.P2C(contractId)
+  it should "TransferTokenToSelf" in new TransferTokenFixture {
+    val instr             = TransferTokenToSelf
+    val from              = lockupScriptGen.sample.get
+    val to                = LockupScript.P2C(contractId)
+    val contractOutputOpt = Some((contractId, contractOutput, contractOutputRef))
 
-    val balanceState =
-      MutBalanceState.from(
-        tokenBalance(from, tokenId, ALPH.oneAlph)
-      )
+    def prepareOpStack(frame: Frame[StatefulContext]): ExeResult[Unit] = {
+      frame.opStack.push(Val.Address(from))
+    }
 
-    override lazy val frame =
-      prepareFrame(Some(balanceState), Some((contractId, contractOutput, contractOutputRef)))
+    testTransferToken()
+  }
 
-    stack.push(Val.Address(from))
-    stack.push(Val.ByteVec(tokenId.bytes))
-    stack.push(Val.U256(ALPH.oneNanoAlph))
+  it should "generate contract id for different network" in new StatefulInstrFixture {
+    val groupIndex   = GroupIndex.random
+    val path         = Hash.random.bytes
+    val genesisFrame = prepareFrame()(NetworkConfigFixture.PreLeman)
+    val lemanFrame   = prepareFrame()(NetworkConfigFixture.Leman)
 
-    runAndCheckGas(TransferTokenToSelf)
+    CreateContractAbstract.getContractId(genesisFrame, false, groupIndex).rightValue is
+      ContractId.deprecatedFrom(genesisFrame.ctx.txId, 0)
 
-    frame.ctx.outputBalances is MutBalances(
-      ArrayBuffer((to, MutBalancesPerLockup.token(tokenId, ALPH.oneNanoAlph)))
-    )
+    CreateContractAbstract.getContractId(lemanFrame, false, groupIndex).rightValue is
+      ContractId.from(lemanFrame.ctx.txId, 0, groupIndex)
+
+    genesisFrame.pushOpStack(Val.ByteVec(path))
+    intercept[RuntimeException](
+      CreateContractAbstract.getContractId(genesisFrame, true, groupIndex)
+    ).getMessage is "Dead branch while creating a new contract"
+
+    lemanFrame.pushOpStack(Val.ByteVec(path))
+    CreateContractAbstract.getContractId(lemanFrame, true, groupIndex).rightValue is
+      ContractId.subContract(lemanFrame.obj.getContractId().rightValue.bytes ++ path, groupIndex)
   }
 
   trait CreateContractAbstractFixture extends StatefulInstrFixture {
@@ -2223,6 +2457,10 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       callerFrameOpt = Some(callerFrame)
     )
     lazy val fromContractId = frame.obj.contractIdOpt.get
+
+    def getSubContractId(path: String): ContractId = {
+      fromContractId.subContractId(serialize(path), frame.ctx.blockEnv.chainIndex.from)
+    }
 
     def test(
         instr: CreateContractAbstract,
@@ -2342,7 +2580,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.push(Val.ByteVec(contractBytes))
     stack.push(Val.ByteVec(serialize(fields)))
 
-    val subContractId = fromContractId.subContractId(serialize("nft-01"))
+    val subContractId = getSubContractId("nft-01")
     test(CreateSubContract, ALPH.oneAlph, AVector.empty, None, Some(subContractId))
   }
 
@@ -2358,7 +2596,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.push(Val.ByteVec(serialize(fields)))
     stack.push(Val.U256(ALPH.oneNanoAlph))
 
-    val subContractId = fromContractId.subContractId(serialize("nft-01"))
+    val subContractId = getSubContractId("nft-01")
     test(
       CreateSubContractWithToken,
       U256.Zero,
@@ -2386,7 +2624,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       stack.push(Val.U256(ALPH.oneNanoAlph))
       stack.push(Val.Address(assetLockupScriptGen.sample.get))
 
-      val subContractId = fromContractId.subContractId(serialize("nft-01"))
+      val subContractId = getSubContractId("nft-01")
       test(
         CreateSubContractAndTransferToken,
         U256.Zero,
@@ -2651,7 +2889,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.push(Val.ByteVec(fromContractId.bytes))
     stack.push(Val.ByteVec(serialize(AVector[Val](Val.True))))
 
-    val subContractId = fromContractId.subContractId(serialize("nft-01"))
+    val subContractId = getSubContractId("nft-01")
     test(CopyCreateSubContract, ALPH.oneAlph, AVector.empty, None, Some(subContractId))
   }
 
@@ -2673,7 +2911,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.push(state)
     stack.push(Val.U256(ALPH.oneNanoAlph))
 
-    val subContractId = fromContractId.subContractId(serialize("nft-01"))
+    val subContractId = getSubContractId("nft-01")
     test(
       CopyCreateSubContractWithToken,
       U256.Zero,
@@ -2702,7 +2940,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       stack.push(Val.U256(ALPH.oneNanoAlph))
       stack.push(assetAddress)
 
-      val subContractId = fromContractId.subContractId(serialize("nft-01"))
+      val subContractId = getSubContractId("nft-01")
       test(
         CopyCreateSubContractAndTransferToken,
         U256.Zero,
@@ -2962,6 +3200,36 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     test(SelfContractId, Val.ByteVec(frame.obj.contractIdOpt.get.bytes))
   }
 
+  trait SubContractIdBaseFixture extends StatefulInstrFixture {
+    def test(instr: SubContractIdBase, expected: ContractId, initialVals: Val*) = {
+      initialVals.foreach(frame.pushOpStack)
+      frame.opStack.size is initialVals.length
+      instr.runWithLeman(frame) isE ()
+      frame.popContractId().rightValue is expected
+    }
+  }
+
+  it should "SubContractId" in new SubContractIdBaseFixture {
+    val path = Hash.random.bytes
+    val expectedId =
+      frame.obj.getContractId().rightValue.subContractId(path, frame.ctx.blockEnv.chainIndex.from)
+    test(SubContractId, expectedId, Val.ByteVec(path))
+  }
+
+  it should "SubContractIdOf" in new SubContractIdBaseFixture {
+    val parentId   = ContractId.random
+    val path       = Hash.random.bytes
+    val expectedId = parentId.subContractId(path, frame.ctx.blockEnv.chainIndex.from)
+    test(SubContractIdOf, expectedId, Val.ByteVec(parentId.bytes), Val.ByteVec(path))
+  }
+
+  it should "ALPHTokenId" in new StatefulInstrFixture {
+    stack.size is 0
+    runAndCheckGas(ALPHTokenId)
+    stack.size is 1
+    stack.top.get is Val.ByteVec(TokenId.alph.bytes)
+  }
+
   it should "SelfAddress" in new ContractInstrFixture {
     test(SelfAddress, Val.Address(LockupScript.p2c(frame.obj.contractIdOpt.get)))
   }
@@ -2996,7 +3264,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
         .asInstanceOf[StatefulFrame]
         .copy(obj = script)
       val frame = prepareFrame(callerFrameOpt = Some(callerFrame))(PreLeman)
-      CallerAddress.runWith(frame).leftValue isE PartiallyEnabledInstr(CallerAddress)
+      CallerAddress.runWith(frame).leftValue isE PartiallyActiveInstr(CallerAddress)
     }
 
     {
@@ -3022,7 +3290,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       val frame = prepareFrame(txEnvOpt = Some(txEnvWithUniqueAddress))(PreLeman)
         .asInstanceOf[StatefulFrame]
         .copy(obj = script)
-      CallerAddress.runWith(frame).leftValue isE PartiallyEnabledInstr(CallerAddress)
+      CallerAddress.runWith(frame).leftValue isE PartiallyActiveInstr(CallerAddress)
     }
 
     {
@@ -3078,6 +3346,62 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
     stack.top.get is Val.ByteVec(frame.obj.code.hash.bytes)
   }
 
+  it should "NullContractAddress" in new StatefulInstrFixture {
+    runAndCheckGas(NullContractAddress)
+    frame.opStack.pop() isE Val.NullContractAddress
+    frame.opStack.isEmpty is true
+  }
+
+  it should "BlockHash" in new StatelessInstrFixture {
+    val frameWithBlockHash = prepareFrame(AVector.empty)
+    frameWithBlockHash.ctx.blockEnv.blockId.nonEmpty is true
+    runAndCheckGas(vm.BlockHash, frameWithBlockHash)
+
+    val frameWithoutBlockHash =
+      prepareFrame(AVector.empty, Some(genBlockEnv().copy(blockId = None)))
+    frameWithoutBlockHash.ctx.blockEnv.blockId.nonEmpty is false
+    vm.BlockHash.runWith(frameWithoutBlockHash).leftValue isE NoBlockHashAvailable
+  }
+
+  it should "combine debug messages" in {
+    DEBUG(AVector(Val.ByteVec.fromString("Hello"))).combineUnsafe(AVector.empty) is
+      Val.ByteVec.fromString("Hello")
+    DEBUG(AVector(Val.ByteVec.fromString("Hello "), Val.ByteVec.fromString("!")))
+      .combineUnsafe(AVector(Val.ByteVec.fromString("Alephium"))) is
+      Val.ByteVec.fromString("Hello Alephium!")
+  }
+
+  it should "Debug" in new StatefulInstrFixture {
+    {
+      info("No debug message")
+      DEBUG(AVector.empty).runWith(frame).leftValue isE DebugMessageIsEmpty
+    }
+
+    {
+      info("Simple message")
+      DEBUG(AVector(Val.ByteVec.fromString("Hello, Alephium!"))).runWith(frame) isE ()
+    }
+
+    {
+      info("Interpolation")
+      val frame = prepareFrame()
+      DEBUG(AVector(Val.ByteVec.fromString("Hello, "), Val.ByteVec.fromString("!")))
+        .runWith(frame)
+        .leftValue isE
+        StackUnderflow
+
+      frame.pushOpStack(Val.ByteVec.fromString("Alephium"))
+      DEBUG(AVector(Val.ByteVec.fromString("Hello, "), Val.ByteVec.fromString("!")))
+        .runWith(frame) isE ()
+      frame.ctx.worldState.logState.eventLog
+        .get(LogStatesId(frame.obj.contractIdOpt.value, 0))
+        .rightValue
+        .states
+        .head
+        .fields is AVector[Val](Val.ByteVec.fromString("Hello, Alephium!"))
+    }
+  }
+
   it should "test gas amount" in new FrameFixture {
     val bytes      = AVector[Byte](0, 255.toByte, Byte.MaxValue, Byte.MinValue)
     val ints       = AVector[Int](0, 1 << 16, -(1 << 16))
@@ -3113,7 +3437,8 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       EthEcRecover -> 2500,
       Log6 -> 220, Log7 -> 240, Log8 -> 260, Log9 -> 280,
       ContractIdToAddress -> 5,
-      LoadLocalByIndex -> 5, StoreLocalByIndex -> 5, Dup -> 2, AssertWithErrorCode -> 3, Swap -> 2
+      LoadLocalByIndex -> 5, StoreLocalByIndex -> 5, Dup -> 2, AssertWithErrorCode -> 3, Swap -> 2,
+      vm.BlockHash -> 2, DEBUG(AVector.empty) -> 0, TxGasPrice -> 2, TxGasAmount -> 2, TxGasFee -> 2
     )
     val statefulCases: AVector[(Instr[_], Int)] = AVector(
       LoadField(byte) -> 3, StoreField(byte) -> 3, /* CallExternal(byte) -> ???, */
@@ -3126,7 +3451,8 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       BurnToken -> 30, LockApprovedAssets -> 30,
       CreateSubContract -> 32000, CreateSubContractWithToken -> 32000, CopyCreateSubContract -> 24000, CopyCreateSubContractWithToken -> 24000,
       LoadFieldByIndex -> 5, StoreFieldByIndex -> 5, ContractExists -> 800, CreateContractAndTransferToken -> 32000,
-      CopyCreateContractAndTransferToken -> 24000, CreateSubContractAndTransferToken -> 32000, CopyCreateSubContractAndTransferToken -> 24000
+      CopyCreateContractAndTransferToken -> 24000, CreateSubContractAndTransferToken -> 32000, CopyCreateSubContractAndTransferToken -> 24000,
+      NullContractAddress -> 2, SubContractId -> 199, SubContractIdOf -> 199, ALPHTokenId -> 2
     )
     // format: on
     statelessCases.length is Instr.statelessInstrs0.length - 1
@@ -3240,6 +3566,7 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       Log6 -> 115, Log7 -> 116, Log8 -> 117, Log9 -> 118,
       ContractIdToAddress -> 119,
       LoadLocalByIndex -> 120, StoreLocalByIndex -> 121, Dup -> 122, AssertWithErrorCode -> 123, Swap -> 124,
+      vm.BlockHash -> 125, DEBUG(AVector.empty) -> 126, TxGasPrice -> 127, TxGasAmount -> 128, TxGasFee -> 129,
       // stateful instructions
       LoadField(byte) -> 160, StoreField(byte) -> 161,
       ApproveAlph -> 162, ApproveToken -> 163, AlphRemaining -> 164, TokenRemaining -> 165, IsPaying -> 166,
@@ -3251,7 +3578,8 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       BurnToken -> 189, LockApprovedAssets -> 190,
       CreateSubContract -> 191, CreateSubContractWithToken -> 192, CopyCreateSubContract -> 193, CopyCreateSubContractWithToken -> 194,
       LoadFieldByIndex -> 195, StoreFieldByIndex -> 196, ContractExists -> 197, CreateContractAndTransferToken -> 198,
-      CopyCreateContractAndTransferToken -> 199, CreateSubContractAndTransferToken -> 200, CopyCreateSubContractAndTransferToken -> 201
+      CopyCreateContractAndTransferToken -> 199, CreateSubContractAndTransferToken -> 200, CopyCreateSubContractAndTransferToken -> 201,
+      NullContractAddress -> 202, SubContractId -> 203, SubContractIdOf -> 204, ALPHTokenId -> 205
     )
     // format: on
 
@@ -3295,7 +3623,8 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       EthEcRecover,
       Log6, Log7, Log8, Log9,
       ContractIdToAddress,
-      LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap
+      LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap,
+      vm.BlockHash, DEBUG(AVector.empty), TxGasPrice, TxGasAmount, TxGasFee
     )
     val statefulInstrs: AVector[Instr[StatefulContext]] = AVector(
       LoadField(byte), StoreField(byte), CallExternal(byte),
@@ -3307,7 +3636,8 @@ class InstrSpec extends AlephiumSpec with NumericHelpers {
       MigrateSimple, MigrateWithFields, CopyCreateContractWithToken, BurnToken, LockApprovedAssets,
       CreateSubContract, CreateSubContractWithToken, CopyCreateSubContract, CopyCreateSubContractWithToken,
       LoadFieldByIndex, StoreFieldByIndex, ContractExists, CreateContractAndTransferToken, CopyCreateContractAndTransferToken,
-      CreateSubContractAndTransferToken, CopyCreateSubContractAndTransferToken
+      CreateSubContractAndTransferToken, CopyCreateSubContractAndTransferToken,
+      NullContractAddress, SubContractId, SubContractIdOf, ALPHTokenId
     )
     // format: on
   }

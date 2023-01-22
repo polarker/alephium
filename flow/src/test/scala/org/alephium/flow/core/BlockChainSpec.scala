@@ -153,9 +153,11 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
 
     shortChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
     longChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
 
     addBlocks(chain, shortChain)
@@ -164,21 +166,25 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
         chain.getTxStatus(tx.id) isE Some(
           TxStatus(TxIndex(block.hash, txIndex), shortChain.length - blockIndex)
         )
+        chain.getTransaction(tx.id) isE Some(tx)
       }
     }
     longChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
 
     addBlocks(chain, longChain)
     shortChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
     longChain.foreachWithIndex { case (block, blockIndex) =>
       block.transactions.foreachWithIndex { case (tx, txIndex) =>
         chain.getTxStatus(tx.id) isE Some(
           TxStatus(TxIndex(block.hash, txIndex), longChain.length - blockIndex)
         )
+        chain.getTransaction(tx.id) isE Some(tx)
       }
     }
   }
@@ -194,9 +200,11 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
 
     shortChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
     longChain.foreach { block =>
       block.transactions.foreach { tx => chain.getTxStatus(tx.id) isE None }
+      block.transactions.foreach { tx => chain.getTransaction(tx.id) isE None }
     }
 
     addBlocks(chain, shortChain)
@@ -205,6 +213,7 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
         chain.getTxStatus(tx.id) isE Some(
           TxStatus(TxIndex(block.hash, txIndex), shortChain.length - blockIndex)
         )
+        chain.getTransaction(tx.id) isE Some(tx)
       }
     }
     longChain.foreachWithIndex { case (block, blockIndex) =>
@@ -216,8 +225,10 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
               shortChain.length - blockIndex
             )
           )
+          chain.getTransaction(tx.id) isE Some(tx)
         } else {
           chain.getTxStatus(tx.id) isE None
+          chain.getTransaction(tx.id) isE None
         }
       }
     }
@@ -228,6 +239,7 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
         chain.getTxStatus(tx.id) isE Some(
           TxStatus(TxIndex(longChain(blockIndex).hash, txIndex), longChain.length - blockIndex)
         )
+        chain.getTransaction(tx.id) isE Some(tx)
       }
     }
     longChain.foreachWithIndex { case (block, blockIndex) =>
@@ -235,6 +247,7 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
         chain.getTxStatus(tx.id) isE Some(
           TxStatus(TxIndex(block.hash, txIndex), longChain.length - blockIndex)
         )
+        chain.getTransaction(tx.id) isE Some(tx)
       }
     }
   }
@@ -519,6 +532,15 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
       chain.isBefore(block.hash, genesis.hash) isE false
       chain.isBefore(block.hash, chain0.last.hash) isE false
     }
+
+    val chain2 = chainGenOf(2, chain0.last).sample.get
+    addBlocks(chain, chain2)
+    chain2.foreach { block =>
+      chain.isBefore(genesis.hash, block.hash) isE true
+      chain.isBefore(block.hash, chain2.last.hash) isE true
+      chain.isBefore(chain0.last.hash, block.hash) isE true
+    }
+    chain.isBefore(chain1.last.hash, chain2.last.hash) isE false
   }
 
   it should "test getBlockHashesBetween" in new ForkedFixture {
