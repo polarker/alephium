@@ -17,6 +17,7 @@
 package org.alephium.util
 
 import scala.{specialized => sp}
+import scala.collection.IndexedSeqView
 import scala.collection.immutable.ArraySeq
 import scala.reflect.ClassTag
 import scala.runtime.Statics
@@ -39,7 +40,7 @@ final class AVector[@sp A](
     with IterableOnce[A] { self =>
   import HPC.cfor
 
-  final def capacity: Int = elems.length
+  def capacity: Int = elems.length
 
   @inline def length: Int = end - start
 
@@ -705,6 +706,8 @@ final class AVector[@sp A](
   def asUnsafe[T <: A: ClassTag]: AVector[T] = {
     AVector.unsafe(elems.asInstanceOf[Array[T]], start, end, false)
   }
+
+  def view: IndexedSeqView[A] = elems.view.slice(start, end)
 }
 // scalastyle:on
 

@@ -141,7 +141,7 @@ trait ApiModelCodec {
     Address.fromBase58(input) match {
       case Some(address: Address.Asset) => address
       case Some(_: Address.Contract) =>
-        throw Abort(s"Expect asset address, but got contract address: $input")
+        throw Abort(s"Expect asset address, but was contract address: $input")
       case None =>
         throw Abort(s"Unable to decode address from $input")
     }
@@ -153,7 +153,7 @@ trait ApiModelCodec {
       Address.fromBase58(input) match {
         case Some(address: Address.Contract) => address
         case Some(_: Address.Asset) =>
-          throw Abort(s"Expect contract address, but got asset address: $input")
+          throw Abort(s"Expect contract address, but was asset address: $input")
         case None =>
           throw Abort(s"Unable to decode address from $input")
       }
@@ -178,7 +178,9 @@ trait ApiModelCodec {
 
   implicit val hashrateResponseRW: RW[HashRateResponse] = macroRW
 
-  implicit val fetchResponseRW: RW[FetchResponse] = macroRW
+  implicit val blocksPerTimeStampRangeRW: RW[BlocksPerTimeStampRange] = macroRW
+
+  implicit val blocksAndEventsPerTimeStampRangeRW: RW[BlocksAndEventsPerTimeStampRange] = macroRW
 
   implicit val unconfirmedTransactionsRW: RW[UnconfirmedTransactions] = macroRW
 
@@ -210,6 +212,8 @@ trait ApiModelCodec {
   implicit val exportFileRW: RW[ExportFile] = macroRW
 
   implicit val blockEntryRW: RW[BlockEntry] = macroRW
+
+  implicit val blockAndEventsRW: RW[BlockAndEvents] = macroRW
 
   implicit val blockHeaderEntryRW: RW[BlockHeaderEntry] = macroRW
 
@@ -262,7 +266,7 @@ trait ApiModelCodec {
   implicit val decodeTransactionResultRW: RW[DecodeUnsignedTxResult] = macroRW
 
   implicit val txStatusRW: RW[TxStatus] =
-    RW.merge(macroRW[Confirmed], macroRW[MemPooled.type], macroRW[TxNotFound.type])
+    RW.merge(macroRW[Confirmed], macroRW[MemPooled], macroRW[TxNotFound])
 
   implicit val buildDeployContractTxRW: RW[BuildDeployContractTx] = macroRW
 
@@ -288,6 +292,8 @@ trait ApiModelCodec {
 
   implicit val compileProjectRW: RW[Compile.Project] = macroRW
 
+  implicit val compilePatchRW: RW[CompileProjectResult.Patch] =
+    readwriter[String].bimap(_.value, CompileProjectResult.Patch(_))
   implicit val compileResultFieldsRW: RW[CompileResult.FieldsSig]     = macroRW
   implicit val compileResultFunctionRW: RW[CompileResult.FunctionSig] = macroRW
   implicit val compileResultEventRW: RW[CompileResult.EventSig]       = macroRW
@@ -310,6 +316,7 @@ trait ApiModelCodec {
   implicit val existingContractRW: ReadWriter[ContractState]        = macroRW
   implicit val testContractInputAssetRW: ReadWriter[TestInputAsset] = macroRW
   implicit val testContractRW: ReadWriter[TestContract]             = macroRW
+  implicit val debugMessageRW: ReadWriter[DebugMessage]             = macroRW
   implicit val testContractResultRW: ReadWriter[TestContractResult] = macroRW
 
   implicit val callContractRW: ReadWriter[CallContract]             = macroRW
@@ -418,10 +425,12 @@ trait ApiModelCodec {
     }
   }
 
-  implicit val contractEventRW: RW[ContractEvent]             = macroRW
-  implicit val eventsRW: RW[ContractEvents]                   = macroRW
-  implicit val contractEventByTxIdRW: RW[ContractEventByTxId] = macroRW
-  implicit val eventsByTxIdRW: RW[ContractEventsByTxId]       = macroRW
+  implicit val contractEventRW: RW[ContractEvent]                       = macroRW
+  implicit val eventsRW: RW[ContractEvents]                             = macroRW
+  implicit val contractEventByTxIdRW: RW[ContractEventByTxId]           = macroRW
+  implicit val eventsByTxIdRW: RW[ContractEventsByTxId]                 = macroRW
+  implicit val contractEventByBlockHashRW: RW[ContractEventByBlockHash] = macroRW
+  implicit val eventsByBlockHashRW: RW[ContractEventsByBlockHash]       = macroRW
 
   private def bytesWriter[T <: RandomBytes]: Writer[T] =
     StringWriter.comap[T](_.toHexString)

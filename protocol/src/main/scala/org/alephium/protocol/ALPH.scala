@@ -34,14 +34,17 @@ object ALPH {
 
   val OneYear: Duration                                 = Duration.ofDaysUnsafe(365)
   val OneAndHalfYear: Duration                          = Duration.ofDaysUnsafe(365 + 365 / 2)
-  val LemanDifficultyBombEnabledTimestamp: TimeStamp    = LaunchTimestamp.plusUnsafe(OneAndHalfYear)
   val PreLemanDifficultyBombEnabledTimestamp: TimeStamp = LaunchTimestamp.plusUnsafe(OneYear)
   val ExpDiffPeriod: Duration                           = Duration.ofDaysUnsafe(30)
+  val DifficultyBombPatchEnabledTimeStamp: TimeStamp =
+    TimeStamp.unsafe(1670612400000L) // Dec 09 2022 19:00:00 GMT+0000
+  val DifficultyBombPatchHeightDiff: Int = 2700 // around 2 days
 
   val MaxTxInputNum: Int     = 256
   val MaxTxOutputNum: Int    = 256
   val MaxOutputDataSize: Int = 256
   val MaxScriptSigNum: Int   = 32
+  val MaxKeysInP2MPK: Int    = 16
   // scalastyle:on magic.number
 
   def alph(amount: U256): Option[U256] = amount.mul(CoinInOneALPH)

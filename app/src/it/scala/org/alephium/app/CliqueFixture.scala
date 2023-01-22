@@ -194,6 +194,15 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     confirmed.toGroupConfirmations > 1 is true
   }
 
+  def getTransaction(txId: TransactionId, restPort: Int): Assertion = eventually {
+    val tx = request[Transaction](getTransaction(txId), restPort)
+    tx.unsigned.txId is txId
+  }
+
+  def txNotFound(txId: TransactionId, restPort: Int): Assertion = {
+    requestFailed(getTransaction(txId), restPort, StatusCode.NotFound)
+  }
+
   def transferFromWallet(toAddress: String, amount: U256, restPort: Int): TransferResult =
     eventually {
       val walletName = "wallet-name"
@@ -246,7 +255,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       configOverrides: Map[String, Any]
   ) = {
     new ItConfigFixture with StoragesFixture {
-      override val configValues = Map(
+      override val configValues = Map[String, Any](
         ("alephium.network.leman-hard-fork-timestamp", "1643500800000"),
         ("alephium.network.bind-address", s"127.0.0.1:$publicPort"),
         ("alephium.network.internal-address", s"127.0.0.1:$publicPort"),
@@ -302,7 +311,22 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       )
     }
 
+    servers.foreach(_.config.network.networkId.id is 4.toByte)
     Clique(AVector.from(servers))
+  }
+
+  def bootAutoMineClique(
+      nbOfNodes: Int,
+      bootstrap: Option[InetSocketAddress] = None,
+      connectionBuild: ActorRef => ActorRefT[Tcp.Command] = ActorRefT.apply,
+      configOverrides: Map[String, Any] = Map.empty
+  ): Clique = {
+    bootClique(
+      nbOfNodes,
+      bootstrap,
+      connectionBuild,
+      configOverrides + ("alephium.mempool.auto-mine-for-dev" -> true)
+    )
   }
 
   def bootNode(
@@ -573,6 +597,9 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       s"/transactions/status?txId=${tx.txId.toHexString}&fromGroup=${tx.fromGroup.value}&toGroup=${tx.toGroup.value}"
     )
   }
+  def getTransaction(txId: TransactionId) = {
+    httpGet(s"/transactions/details/${txId.toHexString}")
+  }
 
   def compileScript(code: String) = {
     val script = s"""{"code": ${ujson.Str(code)}}"""
@@ -735,12 +762,15 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
 
   val startMining = httpPost("/miners/cpu-mining?action=start-mining")
   val stopMining  = httpPost("/miners/cpu-mining?action=stop-mining")
+  def mineOneBlock(chainIndex: ChainIndex) = httpPost(
+    s"/miners/cpu-mining/mine-one-block?fromGroup=${chainIndex.from.value}&toGroup=${chainIndex.to.value}"
+  )
 
   def exportBlocks(filename: String) =
     httpPost(s"/export-blocks", Some(s"""{"filename": "${filename}"}"""))
 
   def blockflowFetch(fromTs: TimeStamp, toTs: TimeStamp) =
-    httpGet(s"/blockflow?fromTs=${fromTs.millis}&toTs=${toTs.millis}")
+    httpGet(s"/blockflow/blocks?fromTs=${fromTs.millis}&toTs=${toTs.millis}")
 
   case class Clique(servers: AVector[Server]) {
     def coordinator    = servers.head
@@ -783,16 +813,47 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
 
     def stopMining(): Unit = {
       servers.foreach { server =>
-        request[Boolean](
-          Fixture.stopMining,
-          restPort(server.config.network.bindAddress.getPort)
-        ) is true
+        request[Boolean](Fixture.stopMining, server.restPort) is true
       }
     }
 
-    def selfClique(): SelfClique = {
-      request[SelfClique](Fixture.getSelfClique, servers.sample().config.network.restPort)
+    @volatile private var keepMining: Boolean = false
+    def startFakeMining(): Unit = {
+      keepMining = true
+      _startFakeMining()
     }
+    private def _startFakeMining(): Unit = {
+      system.scheduler.scheduleOnce(
+        Duration.ofMillisUnsafe(500).asScala,
+        new Runnable {
+          override def run(): Unit = {
+            fakeMineOneRound()
+            if (keepMining) {
+              _startFakeMining()
+            }
+          }
+        }
+      )(system.dispatcher)
+      ()
+    }
+    private def fakeMineOneRound(): Unit = {
+      servers.foreach { server =>
+        server.config.broker.chainIndexes.foreach { chainIndex =>
+          request[Boolean](Fixture.mineOneBlock(chainIndex), server.restPort) is true
+        }
+      }
+    }
+    def stopFakeMining(): Unit = {
+      keepMining = false
+    }
+
+    def selfClique(): SelfClique = {
+      request[SelfClique](Fixture.getSelfClique, servers.sample().restPort)
+    }
+  }
+
+  implicit class RichServer(server: Server) {
+    def restPort: Int = server.config.network.restPort
   }
 
   def checkTx(tx: SubmitTxResult, port: Int, status: TxStatus): Assertion = {
