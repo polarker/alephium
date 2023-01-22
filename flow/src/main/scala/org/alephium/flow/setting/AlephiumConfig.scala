@@ -36,7 +36,7 @@ import org.alephium.flow.network.nat.Upnp
 import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.config._
 import org.alephium.protocol.mining.Emission
-import org.alephium.protocol.model.{Address, Block, NetworkId, Target, Weight}
+import org.alephium.protocol.model.{Address, Block, Difficulty, NetworkId, Target, Weight}
 import org.alephium.protocol.vm.LogConfig
 import org.alephium.util._
 
@@ -55,7 +55,8 @@ final case class ConsensusSetting(
 ) extends ConsensusConfig {
   val maxMiningTarget: Target =
     Target.unsafe(BigInteger.ONE.shiftLeft(256 - numZerosAtLeastInHash).subtract(BigInteger.ONE))
-  val minBlockWeight: Weight = Weight.from(maxMiningTarget)
+  val minMiningDiff: Difficulty = maxMiningTarget.getDifficulty()
+  val minBlockWeight: Weight    = Weight.from(maxMiningTarget)
 
   val expectedTimeSpan: Duration       = blockTargetTime
   val powAveragingWindow: Int          = 17
@@ -153,11 +154,9 @@ final case class DiscoverySetting(
 ) extends DiscoveryConfig
 
 final case class MemPoolSetting(
-    sharedPoolCapacity: Int,
-    pendingPoolCapacity: Int,
+    mempoolCapacityPerChain: Int,
     txMaxNumberPerBlock: Int,
-    cleanSharedPoolFrequency: Duration,
-    cleanPendingPoolFrequency: Duration,
+    cleanMempoolFrequency: Duration,
     batchBroadcastTxsFrequency: Duration,
     batchDownloadTxsFrequency: Duration,
     autoMineForDev: Boolean // for dev only
@@ -171,11 +170,9 @@ object WalletSetting {
 
 final case class NodeSetting(
     dbSyncWrite: Boolean,
-    eventLog: Option[LogConfig]
+    eventLog: LogConfig
 ) {
-  lazy val logConfig: LogConfig = {
-    eventLog.getOrElse(LogConfig.disabled())
-  }
+  def eventLogConfig: LogConfig = eventLog
 }
 
 final case class Allocation(
@@ -338,12 +335,22 @@ object AlephiumConfig {
       parseMiners(mining.minerAddresses)(broker).map { minerAddresses =>
         val consensusExtracted = consensus.toConsensusSetting(broker)
         val networkExtracted   = network.toNetworkSetting(ActorRefT.apply)
+        val discoveryRefined = if (network.networkId == NetworkId.AlephiumTestNet) {
+          discovery.copy(bootstrap =
+            ArraySeq(
+              new InetSocketAddress("testnet-v16-bootstrap0.alephium.org", 9973),
+              new InetSocketAddress("testnet-v16-bootstrap1.alephium.org", 9973)
+            )
+          )
+        } else {
+          discovery
+        }
         AlephiumConfig(
           broker,
           consensusExtracted,
           mining.toMiningSetting(minerAddresses),
           networkExtracted,
-          discovery,
+          discoveryRefined,
           mempool,
           wallet,
           node,

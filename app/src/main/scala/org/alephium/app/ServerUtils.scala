@@ -24,7 +24,8 @@ import com.typesafe.scalalogging.StrictLogging
 import org.alephium.api._
 import org.alephium.api.ApiError
 import org.alephium.api.model
-import org.alephium.api.model.{AssetOutput => _, TransactionTemplate => _, _}
+import org.alephium.api.model.{AssetOutput => _, Transaction => _, TransactionTemplate => _, _}
+import org.alephium.crypto.Byte32
 import org.alephium.flow.core.{BlockFlow, BlockFlowState, UtxoSelectionAlgo}
 import org.alephium.flow.core.UtxoSelectionAlgo._
 import org.alephium.flow.gasestimation._
@@ -35,7 +36,7 @@ import org.alephium.protocol.config._
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm.{failed => _, ContractState => _, Val => _, _}
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.serde.{deserialize, serialize}
 import org.alephium.util._
 
@@ -61,11 +62,27 @@ class ServerUtils(implicit
     } yield blocks
   }
 
-  def getBlockflow(blockFlow: BlockFlow, timeInterval: TimeInterval): Try[FetchResponse] = {
+  def getBlocks(blockFlow: BlockFlow, timeInterval: TimeInterval): Try[BlocksPerTimeStampRange] = {
     getHeightedBlocks(blockFlow, timeInterval).map { heightedBlocks =>
-      FetchResponse(heightedBlocks.map(_._2.map { case (block, height) =>
+      BlocksPerTimeStampRange(heightedBlocks.map(_._2.map { case (block, height) =>
         BlockEntry.from(block, height)
       }))
+    }
+  }
+
+  def getBlocksAndEvents(
+      blockFlow: BlockFlow,
+      timeInterval: TimeInterval
+  ): Try[BlocksAndEventsPerTimeStampRange] = {
+    getHeightedBlocks(blockFlow, timeInterval).flatMap { heightedBlocks =>
+      heightedBlocks
+        .mapE(_._2.mapE { case (block, height) =>
+          val blockEntry = BlockEntry.from(block, height)
+          getEventsByBlockHash(blockFlow, blockEntry.hash).map(events =>
+            BlockAndEvents(blockEntry, events.events)
+          )
+        })
+        .map(BlocksAndEventsPerTimeStampRange)
     }
   }
 
@@ -86,13 +103,13 @@ class ServerUtils(implicit
     }
   }
 
-  def getBalance(blockFlow: BlockFlow, balanceRequest: GetBalance): Try[Balance] = {
+  def getBalance(blockFlow: BlockFlow, address: Address): Try[Balance] = {
     val utxosLimit = apiConfig.defaultUtxosLimit
     for {
-      _ <- checkGroup(balanceRequest.address.lockupScript)
+      _ <- checkGroup(address.lockupScript)
       balance <- blockFlow
         .getBalance(
-          balanceRequest.address.lockupScript,
+          address.lockupScript,
           utxosLimit
         )
         .map(Balance.from(_, utxosLimit))
@@ -101,10 +118,7 @@ class ServerUtils(implicit
     } yield balance
   }
 
-  def getUTXOsIncludePool(
-      blockFlow: BlockFlow,
-      address: Address.Asset
-  ): Try[UTXOs] = {
+  def getUTXOsIncludePool(blockFlow: BlockFlow, address: Address): Try[UTXOs] = {
     val utxosLimit = apiConfig.defaultUtxosLimit
     for {
       _ <- checkGroup(address.lockupScript)
@@ -153,20 +167,23 @@ class ServerUtils(implicit
   def listUnconfirmedTransactions(
       blockFlow: BlockFlow
   ): Try[AVector[UnconfirmedTransactions]] = {
-    Right(
-      brokerConfig.chainIndexes
-        .map { chainIndex =>
+    val result = brokerConfig.groupRange.foldLeft(
+      AVector.ofCapacity[UnconfirmedTransactions](brokerConfig.chainNum)
+    ) { case (acc, group) =>
+      val groupIndex = GroupIndex.unsafe(group)
+      val txs        = blockFlow.getMemPool(groupIndex).getAll()
+      val groupedTxs = txs.filter(_.chainIndex.from == groupIndex).groupBy(_.chainIndex)
+      acc ++ AVector.from(
+        groupedTxs.map { case (chainIndex, txs) =>
           UnconfirmedTransactions(
             chainIndex.from.value,
             chainIndex.to.value,
-            blockFlow
-              .getMemPool(chainIndex)
-              .getAll(chainIndex)
-              .map(model.TransactionTemplate.fromProtocol(_))
+            txs.map(model.TransactionTemplate.fromProtocol)
           )
         }
-        .filter(_.unconfirmedTransactions.nonEmpty)
-    )
+      )
+    }
+    Right(result)
   }
 
   def buildTransaction(
@@ -315,9 +332,9 @@ class ServerUtils(implicit
           confirmed.toGroupConfirmations
         )
       case Some(BlockFlowState.MemPooled) =>
-        MemPooled
+        MemPooled()
       case None =>
-        TxNotFound
+        TxNotFound()
     }
   }
 
@@ -349,35 +366,35 @@ class ServerUtils(implicit
     }
   }
 
-  def isInMemPool(blockFlow: BlockFlow, txId: TransactionId, chainIndex: ChainIndex): Boolean = {
-    blockFlow.getMemPool(chainIndex).contains(chainIndex, txId)
-  }
-
   def getEventsForContractCurrentCount(
       blockFlow: BlockFlow,
       contractAddress: Address.Contract
   ): Try[Int] = {
     val contractId = contractAddress.lockupScript.contractId
     for {
-      groupIndex <- blockFlow.getGroupForContract(contractId).left.map(failed)
-      chainIndex = ChainIndex(groupIndex, groupIndex)
-      countOpt <- wrapResult(blockFlow.getEventsCurrentCount(chainIndex, contractId.value))
+      countOpt <- wrapResult(blockFlow.getEventsCurrentCount(contractId))
       count    <- countOpt.toRight(notFound(s"Current events count for contract $contractAddress"))
     } yield count
   }
 
-  def getBlock(blockFlow: BlockFlow, query: GetBlock): Try[BlockEntry] =
+  def getBlock(blockFlow: BlockFlow, hash: BlockHash): Try[BlockEntry] =
     for {
-      _ <- checkHashChainIndex(query.hash)
+      _ <- checkHashChainIndex(hash)
       block <- blockFlow
-        .getBlock(query.hash)
+        .getBlock(hash)
         .left
-        .map(_ => failed(s"Fail fetching block with header ${query.hash.toHexString}"))
+        .map(_ => failed(s"Fail fetching block with header ${hash.toHexString}"))
       height <- blockFlow
         .getHeight(block.header)
         .left
         .map(failedInIO)
     } yield BlockEntry.from(block, height)
+
+  def getBlockAndEvents(blockFlow: BlockFlow, hash: BlockHash): Try[BlockAndEvents] =
+    for {
+      block  <- getBlock(blockFlow, hash)
+      events <- getEventsByBlockHash(blockFlow, hash)
+    } yield BlockAndEvents(block, events.events)
 
   def isBlockInMainChain(blockFlow: BlockFlow, blockHash: BlockHash): Try[Boolean] = {
     for {
@@ -413,7 +430,7 @@ class ServerUtils(implicit
       hashes <- blockFlow
         .getHashes(chainIndex, query.height)
         .left
-        .map(_ => failedInIO)
+        .map(failedInIO)
     } yield HashesAtHeight(hashes)
 
   def getChainInfo(blockFlow: BlockFlow, chainIndex: ChainIndex): Try[ChainInfo] =
@@ -421,7 +438,7 @@ class ServerUtils(implicit
       maxHeight <- blockFlow
         .getMaxHeight(chainIndex)
         .left
-        .map(_ => failedInIO)
+        .map(failedInIO)
     } yield ChainInfo(maxHeight)
 
   def searchLocalTransactionStatus(
@@ -432,6 +449,27 @@ class ServerUtils(implicit
     blockFlow.searchLocalTransactionStatus(txId, chainIndexes).left.map(failed).map(convert)
   }
 
+  def getTransaction(
+      blockFlow: BlockFlow,
+      txId: TransactionId,
+      fromGroup: Option[GroupIndex],
+      toGroup: Option[GroupIndex]
+  ): Try[model.Transaction] = {
+    val result = (fromGroup, toGroup) match {
+      case (Some(from), Some(to)) =>
+        blockFlow.getTransaction(txId, ChainIndex(from, to)).left.map(failed)
+      case _ =>
+        val chainIndexes = brokerConfig.chainIndexes.filter { chainIndex =>
+          fromGroup.forall(_ == chainIndex.from) && toGroup.forall(_ == chainIndex.to)
+        }
+        blockFlow.searchTransaction(txId, chainIndexes).left.map(failed)
+    }
+    result.flatMap {
+      case Some(tx) => Right(model.Transaction.fromProtocol(tx))
+      case None     => Left(notFound(s"Transaction ${txId.toHexString}"))
+    }
+  }
+
   def getChainIndexForTx(
       blockFlow: BlockFlow,
       txId: TransactionId
@@ -439,9 +477,9 @@ class ServerUtils(implicit
     searchLocalTransactionStatus(blockFlow, txId, brokerConfig.chainIndexes) match {
       case Right(Confirmed(blockHash, _, _, _, _)) =>
         Right(ChainIndex.from(blockHash))
-      case Right(TxNotFound) =>
+      case Right(TxNotFound()) =>
         Left(notFound(s"Transaction ${txId.toHexString}"))
-      case Right(MemPooled) =>
+      case Right(MemPooled()) =>
         Left(failed(s"Transaction ${txId.toHexString} still in mempool"))
       case Left(error) =>
         Left(error)
@@ -453,32 +491,21 @@ class ServerUtils(implicit
       txId: TransactionId
   ): Try[ContractEventsByTxId] = {
     wrapResult(
-      for {
-        result <- blockFlow.getEvents(txId.value, 0, CounterRange.MaxCounterRange)
-        (nextStart, logStatesVec) = result
-        events <- logStatesVec.flatMapE { logStates =>
-          logStates.states
-            .mapE { state =>
-              if (state.isRef) {
-                LogStateRef
-                  .fromFields(state.fields)
-                  .toRight(IOError.Other(new Throwable(s"Invalid state ref: ${state.fields}")))
-                  .flatMap(blockFlow.getEventByRef(_))
-                  .map(p => ContractEventByTxId.from(p._1, p._2, p._3))
-              } else {
-                Right(
-                  ContractEventByTxId(
-                    logStates.blockHash,
-                    Address.contract(ContractId.unsafe(logStates.eventKey)),
-                    state.index.toInt,
-                    state.fields.map(Val.from)
-                  )
-                )
-              }
-            }
-        }
-      } yield {
-        ContractEventsByTxId(events, nextStart)
+      blockFlow.getEventsByHash(Byte32.unsafe(txId.bytes)).map { logs =>
+        val events = logs.map(p => ContractEventByTxId.from(p._1, p._2, p._3))
+        ContractEventsByTxId(events)
+      }
+    )
+  }
+
+  def getEventsByBlockHash(
+      blockFlow: BlockFlow,
+      blockHash: BlockHash
+  ): Try[ContractEventsByBlockHash] = {
+    wrapResult(
+      blockFlow.getEventsByHash(Byte32.unsafe(blockHash.bytes)).map { logs =>
+        val events = logs.map(p => ContractEventByBlockHash.from(p._2, p._3))
+        ContractEventsByBlockHash(events)
       }
     )
   }
@@ -486,16 +513,12 @@ class ServerUtils(implicit
   def getEventsByContractId(
       blockFlow: BlockFlow,
       start: Int,
-      endOpt: Option[Int],
+      limit: Int,
       contractId: ContractId
   ): Try[ContractEvents] = {
     wrapResult(
       blockFlow
-        .getEvents(
-          contractId.value,
-          start,
-          endOpt.getOrElse(start + CounterRange.MaxCounterRange)
-        )
+        .getEvents(contractId, start, start + limit)
         .map {
           case (nextStart, logStatesVec) => {
             ContractEvents.from(logStatesVec, nextStart)
@@ -507,7 +530,7 @@ class ServerUtils(implicit
   private def publishTx(txHandler: ActorRefT[TxHandler.Command], tx: TransactionTemplate)(implicit
       askTimeout: Timeout
   ): FutureTry[SubmitTxResult] = {
-    val message = TxHandler.AddToGrandPool(AVector(tx))
+    val message = TxHandler.AddToMemPool(AVector(tx), isIntraCliqueSyncing = false)
     txHandler.ask(message).mapTo[TxHandler.Event].map {
       case _: TxHandler.AddSucceeded =>
         Right(SubmitTxResult(tx.id, tx.fromGroup.value, tx.toGroup.value))
@@ -654,7 +677,7 @@ class ServerUtils(implicit
     )
   }
 
-  def checkGroup(lockupScript: LockupScript.Asset): Try[Unit] = {
+  def checkGroup(lockupScript: LockupScript): Try[Unit] = {
     checkGroup(
       lockupScript.groupIndex(brokerConfig),
       Some(s"Address ${Address.from(lockupScript)}")
@@ -757,7 +780,11 @@ class ServerUtils(implicit
       query: BuildDeployContractTx
   ): Try[BuildDeployContractTxResult] = {
     for {
-      initialAttoAlphAmount <- getInitialAttoAlphAmount(query.initialAttoAlphAmount)
+      amounts <- BuildTxCommon
+        .getAlphAndTokenAmounts(query.initialAttoAlphAmount, query.initialTokenAmounts)
+        .left
+        .map(badRequest)
+      initialAttoAlphAmount <- getInitialAttoAlphAmount(amounts._1)
       code                  <- BuildDeployContractTx.decode(query.bytecode)
       address = Address.p2pkh(query.fromPublicKey)
       script <- buildDeployContractTxWithParsedState(
@@ -765,7 +792,7 @@ class ServerUtils(implicit
         address,
         code.initialFields,
         initialAttoAlphAmount,
-        query.initialTokenAmounts.getOrElse(AVector.empty),
+        amounts._2,
         query.issueTokenAmount.map(_.value)
       )
       utx <- unsignedTxFromScript(
@@ -780,10 +807,10 @@ class ServerUtils(implicit
     } yield BuildDeployContractTxResult.from(utx)
   }
 
-  def getInitialAttoAlphAmount(amountOption: Option[Amount]): Try[U256] = {
+  def getInitialAttoAlphAmount(amountOption: Option[U256]): Try[U256] = {
     amountOption match {
       case Some(amount) =>
-        if (amount.value >= minimalAlphInContract) { Right(amount.value) }
+        if (amount >= minimalAlphInContract) { Right(amount) }
         else {
           val error =
             s"Expect ${Amount.toAlphString(minimalAlphInContract)} deposit to deploy a new contract"
@@ -816,17 +843,19 @@ class ServerUtils(implicit
       blockFlow: BlockFlow,
       query: BuildExecuteScriptTx
   ): Try[BuildExecuteScriptTxResult] = {
-    val attoAlphAmount = query.attoAlphAmount.map(_.value).getOrElse(U256.Zero)
-    val tokens = query.tokens.getOrElse(AVector.empty).map(token => (token.id, token.amount))
     for {
+      amounts <- BuildTxCommon
+        .getAlphAndTokenAmounts(query.attoAlphAmount, query.tokens)
+        .left
+        .map(badRequest)
       script <- deserialize[StatefulScript](query.bytecode).left.map(serdeError =>
         badRequest(serdeError.getMessage)
       )
       utx <- unsignedTxFromScript(
         blockFlow,
         script,
-        attoAlphAmount,
-        tokens,
+        amounts._1.getOrElse(U256.Zero),
+        amounts._2,
         query.fromPublicKey,
         query.gasAmount,
         query.gasPrice
@@ -838,7 +867,7 @@ class ServerUtils(implicit
   def compileScript(query: Compile.Script): Try[CompileScriptResult] = {
     Compiler
       .compileTxScriptFull(query.code, compilerOptions = query.getLangCompilerOptions())
-      .map(p => CompileScriptResult.from(p._1, p._2, p._3))
+      .map(CompileScriptResult.from)
       .left
       .map(error => failed(error.toString))
   }
@@ -847,7 +876,7 @@ class ServerUtils(implicit
   def compileContract(query: Compile.Contract): Try[CompileContractResult] = {
     Compiler
       .compileContractFull(query.code, compilerOptions = query.getLangCompilerOptions())
-      .map(p => CompileContractResult.from(p._1, p._2, p._3))
+      .map(CompileContractResult.from)
       .left
       .map(error => failed(error.toString))
   }
@@ -874,10 +903,10 @@ class ServerUtils(implicit
 
   def callContract(blockFlow: BlockFlow, params: CallContract): Try[CallContractResult] = {
     for {
-      chainIndex <- params.validate()
-      _          <- checkGroup(chainIndex.from)
+      groupIndex <- params.validate()
+      _          <- checkGroup(groupIndex)
       blockHash = params.worldStateBlockHash.getOrElse(
-        blockFlow.getBestDeps(chainIndex.from).uncleHash(chainIndex.from)
+        blockFlow.getBestDeps(groupIndex).uncleHash(groupIndex)
       )
       worldState <- wrapResult(
         blockFlow.getPersistedWorldState(blockHash).map(_.cached().staging())
@@ -888,6 +917,7 @@ class ServerUtils(implicit
       txId = params.txId.getOrElse(TransactionId.random)
       resultPair <- executeContractMethod(
         worldState,
+        groupIndex,
         contractId,
         txId,
         blockHash,
@@ -930,6 +960,7 @@ class ServerUtils(implicit
       method     <- wrapExeResult(testContract.code.getMethod(testContract.testMethodIndex))
       executionResultPair <- executeContractMethod(
         worldState,
+        groupIndex,
         contractId,
         testContract.txId,
         testContract.blockHash,
@@ -941,10 +972,12 @@ class ServerUtils(implicit
       events = fetchContractEvents(worldState)
       contractIds <- getCreatedAndDestroyedContractIds(events)
       postState   <- fetchContractsState(worldState, testContract, contractIds._1, contractIds._2)
+      eventsSplit <- extractDebugMessages(events)
     } yield {
       val executionOutputs = executionResultPair._1
       val executionResult  = executionResultPair._2
       val gasUsed          = maximalGasPerTx.subUnsafe(executionResult.gasBox)
+      logger.info("\n" + showDebugMessages(eventsSplit._2))
       TestContractResult(
         address = Address.contract(testContract.contractId),
         codeHash = postState._2,
@@ -955,8 +988,27 @@ class ServerUtils(implicit
         txOutputs = executionResult.generatedOutputs.mapWithIndex { case (output, index) =>
           Output.from(output, TransactionId.zero, index)
         },
-        events = events
+        events = eventsSplit._1,
+        debugMessages = eventsSplit._2
       )
+    }
+  }
+
+  def extractDebugMessage(event: ContractEventByTxId): Try[DebugMessage] = {
+    (event.fields.length, event.fields.headOption) match {
+      case (1, Some(message: ValByteVec)) =>
+        Right(DebugMessage(event.contractAddress, message.value.utf8String))
+      case _ =>
+        Left(failed("Invalid debug message"))
+    }
+  }
+
+  def extractDebugMessages(
+      events: AVector[ContractEventByTxId]
+  ): Try[(AVector[ContractEventByTxId], AVector[DebugMessage])] = {
+    val nonDebugEvents = events.filter(e => I256.from(e.eventIndex) != debugEventIndex.v)
+    events.filter(e => I256.from(e.eventIndex) == debugEventIndex.v).mapE(extractDebugMessage).map {
+      debugMessages => nonDebugEvents -> debugMessages
     }
   }
 
@@ -1006,24 +1058,18 @@ class ServerUtils(implicit
     }
   }
 
-  private def fetchContractEvents(
-      worldState: WorldState.Staging
-  ): AVector[ContractEventByTxId] = {
+  private def fetchContractEvents(worldState: WorldState.Staging): AVector[ContractEventByTxId] = {
     val allLogStates = worldState.logState.getNewLogs()
     allLogStates.flatMap(logStates =>
       logStates.states.flatMap(state =>
-        if (state.isRef) {
-          AVector.empty
-        } else {
-          AVector(
-            ContractEventByTxId(
-              logStates.blockHash,
-              Address.contract(ContractId.unsafe(logStates.eventKey)),
-              state.index.toInt,
-              state.fields.map(Val.from)
-            )
+        AVector(
+          ContractEventByTxId(
+            logStates.blockHash,
+            Address.contract(logStates.contractId),
+            state.index.toInt,
+            state.fields.map(Val.from)
           )
-        }
+        )
       )
     )
   }
@@ -1048,8 +1094,10 @@ class ServerUtils(implicit
     wrapResult(result)
   }
 
+  // scalastyle:off method.length parameter.number
   private def executeContractMethod(
       worldState: WorldState.Staging,
+      groupIndex: GroupIndex,
       contractId: ContractId,
       txId: TransactionId,
       blockHash: BlockHash,
@@ -1059,6 +1107,7 @@ class ServerUtils(implicit
       method: Method[StatefulContext]
   ): Try[(AVector[vm.Val], StatefulVM.TxScriptExecution)] = {
     val blockEnv = BlockEnv(
+      ChainIndex(groupIndex, groupIndex),
       networkConfig.networkId,
       TimeStamp.now(),
       consensusConfig.maxMiningTarget,
@@ -1070,7 +1119,8 @@ class ServerUtils(implicit
       signatures = Stack.popOnly(AVector.empty[Signature]),
       prevOutputs = inputAssets.map(_.toAssetOutput),
       fixedOutputs = AVector.empty[AssetOutput],
-      gasFeeUnsafe = testGasFee,
+      gasPrice = defaultGasPrice,
+      gasAmount = maximalGasPerTx,
       isEntryMethodPayable = true
     )
     val context = StatefulContext(blockEnv, txEnv, worldState, maximalGasPerTx)
@@ -1093,7 +1143,50 @@ class ServerUtils(implicit
         )
       )
     )
-    wrapExeResult(StatefulVM.runTxScriptWithOutputs(context, script))
+    for {
+      _      <- checkArgs(args, method)
+      result <- runWithDebugError(context, script)
+    } yield result
+  }
+  // scalastyle:on method.length parameter.number
+
+  def checkArgs(args: AVector[Val], method: Method[StatefulContext]): Try[Unit] = {
+    if (args.sumBy(_.flattenSize()) != method.argsLength) {
+      Left(
+        failed(
+          "The number of parameters is different from the number specified by the target method"
+        )
+      )
+    } else {
+      Right(())
+    }
+  }
+
+  @SuppressWarnings(Array("org.wartremover.warts.ToString"))
+  def runWithDebugError(
+      context: StatefulContext,
+      script: StatefulScript
+  ): Try[(AVector[vm.Val], StatefulVM.TxScriptExecution)] = {
+    StatefulVM.runTxScriptWithOutputs(context, script) match {
+      case Right(result)         => Right(result)
+      case Left(Left(ioFailure)) => Left(failedInIO(ioFailure.error))
+      case Left(Right(exeFailure)) =>
+        val errorString = s"VM execution error: ${exeFailure.toString()}"
+        val events      = fetchContractEvents(context.worldState)
+        extractDebugMessages(events).flatMap { case (_, debugMessages) =>
+          val detail = showDebugMessages(debugMessages) ++ errorString
+          logger.info("\n" + detail)
+          Left(failed(detail))
+        }
+    }
+  }
+
+  def showDebugMessages(messages: AVector[DebugMessage]): String = {
+    if (messages.isEmpty) {
+      ""
+    } else {
+      messages.mkString("", "\n", "\n")
+    }
   }
 
   private def approveAsset(
@@ -1156,7 +1249,7 @@ class ServerUtils(implicit
       initialState: AVector[vm.Val],
       asset: AssetState
   ): Try[Unit] = {
-    val outputRef = contractId.firstOutputRef()
+    val outputRef = contractId.inaccurateFirstOutputRef()
     val output    = asset.toContractOutput(contractId)
     wrapResult(
       worldState.createContractUnsafe(
@@ -1207,7 +1300,7 @@ object ServerUtils {
       address: Address,
       initialState: Option[String],
       initialAttoAlphAmount: U256,
-      initialTokenAmounts: AVector[Token],
+      initialTokenAmounts: AVector[(TokenId, U256)],
       newTokenAmount: Option[U256]
   ): Try[StatefulScript] = {
     parseState(initialState).flatMap { state =>
@@ -1227,7 +1320,7 @@ object ServerUtils {
       address: Address,
       initialFields: AVector[vm.Val],
       initialAttoAlphAmount: U256,
-      initialTokenAmounts: AVector[Token],
+      initialTokenAmounts: AVector[(TokenId, U256)],
       newTokenAmount: Option[U256]
   ): Try[StatefulScript] = {
     buildDeployContractScriptWithParsedState(
@@ -1245,7 +1338,7 @@ object ServerUtils {
       address: Address,
       initialFields: AVector[vm.Val],
       initialAttoAlphAmount: U256,
-      initialTokenAmounts: AVector[Token],
+      initialTokenAmounts: AVector[(TokenId, U256)],
       newTokenAmount: Option[U256]
   ): String = {
     val stateRaw = Hex.toHexString(serialize(initialFields))
@@ -1256,15 +1349,15 @@ object ServerUtils {
     }
 
     val create = if (initialTokenAmounts.isEmpty) {
-      val approveAssets = s"{@$address -> ${initialAttoAlphAmount.v}}"
+      val approveAssets = s"{@$address -> ALPH: ${initialAttoAlphAmount.v}}"
       toCreate(approveAssets)
     } else {
       val approveTokens = initialTokenAmounts
-        .map { token =>
-          s"#${token.id.toHexString}: ${token.amount.v}"
+        .map { case (tokenId, amount) =>
+          s"#${tokenId.toHexString}: ${amount.v}"
         }
         .mkString(", ")
-      val approveAssets = s"{@$address -> ${initialAttoAlphAmount.v}, $approveTokens}"
+      val approveAssets = s"{@$address -> ALPH: ${initialAttoAlphAmount.v}, $approveTokens}"
       toCreate(approveAssets)
     }
     s"""
@@ -1279,7 +1372,7 @@ object ServerUtils {
       address: Address,
       initialFields: AVector[vm.Val],
       initialAttoAlphAmount: U256,
-      initialTokenAmounts: AVector[Token],
+      initialTokenAmounts: AVector[(TokenId, U256)],
       newTokenAmount: Option[U256]
   ): Try[StatefulScript] = {
     val scriptRaw = buildDeployContractScriptRawWithParsedState(

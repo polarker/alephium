@@ -143,6 +143,7 @@ final case object DuplicatedInputs                              extends InvalidT
 final case object InvalidInputGroupIndex                        extends InvalidTxStatus
 final case object InvalidOutputGroupIndex                       extends InvalidTxStatus
 final case object TxDoubleSpending                              extends InvalidTxStatus
+final case object TooManyKeysInMultisig                         extends InvalidTxStatus
 final case object OutputDataSizeExceeded                        extends InvalidTxStatus
 final case object NonExistInput                                 extends InvalidTxStatus
 final case object TimeLockedTx                                  extends InvalidTxStatus
@@ -172,3 +173,4 @@ final case object InvalidContractInputs                         extends InvalidT
 final case object InvalidGeneratedOutputs                       extends InvalidTxStatus
 final case object InvalidRemainingBalancesForFailedScriptTx     extends InvalidTxStatus
 final case object InvalidScriptExecutionFlag                    extends InvalidTxStatus
+final case object UsingBreakingInstrs                           extends InvalidTxStatus

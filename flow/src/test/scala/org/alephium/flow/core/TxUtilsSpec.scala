@@ -21,6 +21,7 @@ import org.scalacheck.Gen
 import org.scalatest.Assertion
 
 import org.alephium.flow.FlowFixture
+import org.alephium.flow.core.FlowUtils.AssetOutputInfo
 import org.alephium.flow.gasestimation._
 import org.alephium.flow.mempool.MemPool
 import org.alephium.flow.setting.AlephiumConfigFixture
@@ -28,7 +29,7 @@ import org.alephium.flow.validation.TxValidation
 import org.alephium.protocol.{ALPH, Generators, Hash, PrivateKey}
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
-import org.alephium.protocol.vm.{GasBox, LockupScript, UnlockScript}
+import org.alephium.protocol.vm.{GasBox, LockupScript, TokenIssuance, UnlockScript}
 import org.alephium.util.{AlephiumSpec, AVector, TimeStamp, U256}
 
 // scalastyle:off file.size.limit
@@ -70,11 +71,10 @@ class TxUtilsSpec extends AlephiumSpec {
     def testUnsignedTx(unsignedTx: UnsignedTransaction, genesisPriKey: PrivateKey) = {
       val tx         = TransactionTemplate.from(unsignedTx, genesisPriKey)
       val chainIndex = tx.chainIndex
-      TxValidation.build.validateGrandPoolTxTemplate(tx, blockFlow) isE ()
-      blockFlow
-        .getMemPool(chainIndex)
-        .addNewTx(chainIndex, tx, TimeStamp.now()) is MemPool.AddedToSharedPool
       TxValidation.build.validateMempoolTxTemplate(tx, blockFlow) isE ()
+      blockFlow
+        .getGrandPool()
+        .add(chainIndex, tx, TimeStamp.now()) is MemPool.AddedToMemPool
     }
   }
 
@@ -177,7 +177,7 @@ class TxUtilsSpec extends AlephiumSpec {
     }
   }
 
-  it should "calculate preOutputs for txs in shared pool" in new FlowFixture with Generators {
+  it should "calculate preOutputs for txs in mempool" in new FlowFixture with Generators {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
     forAll(groupIndexGen, groupIndexGen) { (fromGroup, toGroup) =>
@@ -185,7 +185,7 @@ class TxUtilsSpec extends AlephiumSpec {
 
       val block = transfer(blockFlow, chainIndex)
       val tx    = block.nonCoinbase.head
-      blockFlow.getMemPool(chainIndex).addNewTx(chainIndex, tx.toTemplate, TimeStamp.now())
+      blockFlow.getGrandPool().add(chainIndex, tx.toTemplate, TimeStamp.now())
 
       {
         val groupView = blockFlow.getMutableGroupView(fromGroup).rightValue
@@ -202,7 +202,7 @@ class TxUtilsSpec extends AlephiumSpec {
           if (output.toGroup equals chainIndex.from) {
             groupView.getPreOutput(outputRef) isE Some(output)
           } else {
-            groupView.getPreOutput(outputRef) isE None
+            assertThrows[AssertionError](groupView.getPreOutput(outputRef))
           }
         }
       }
@@ -615,7 +615,7 @@ class TxUtilsSpec extends AlephiumSpec {
       unsignedTx.fixedOutputs.length is 1
       unsignedTx.gasAmount is GasEstimation.sweepAddress(inputNum, 1)
       val sweepTx = Transaction.from(unsignedTx, keyManager(output.lockupScript))
-      txValidation.validateTxOnlyForTest(sweepTx, blockflow) isE ()
+      txValidation.validateTxOnlyForTest(sweepTx, blockflow, None) isE ()
     }
 
     (1 to 10).foreach(test)
@@ -826,7 +826,7 @@ class TxUtilsSpec extends AlephiumSpec {
     val tx0 = Transaction.from(unsignedTx0, keyManager(output.lockupScript))
     tx0.unsigned.inputs.length is ALPH.MaxTxInputNum
     tx0.inputSignatures.length is 1
-    txValidation.validateTxOnlyForTest(tx0, blockFlow) isE ()
+    txValidation.validateTxOnlyForTest(tx0, blockFlow, None) isE ()
 
     blockFlow
       .transfer(
@@ -847,7 +847,10 @@ class TxUtilsSpec extends AlephiumSpec {
 
     info("With provided Utxos")
 
-    val availableUtxos = blockFlow.getUTXOsIncludePool(output.lockupScript, Int.MaxValue).rightValue
+    val availableUtxos = blockFlow
+      .getUTXOsIncludePool(output.lockupScript, Int.MaxValue)
+      .rightValue
+      .asUnsafe[AssetOutputInfo]
     val availableInputs = availableUtxos.map(_.ref)
     val outputInfo = AVector(
       TxOutputInfo(
@@ -933,7 +936,7 @@ class TxUtilsSpec extends AlephiumSpec {
 
     unsignedTxs.foreach { unsignedTx =>
       val sweepTx = Transaction.from(unsignedTx, keyManager(output.lockupScript))
-      txValidation.validateTxOnlyForTest(sweepTx, blockFlow) isE ()
+      txValidation.validateTxOnlyForTest(sweepTx, blockFlow, None) isE ()
     }
   }
 
@@ -961,7 +964,7 @@ class TxUtilsSpec extends AlephiumSpec {
 
     forAll(assetOutputsGen) { assetOutputs =>
       val (attoAlphBalance, attoAlphLockedBalance, tokenBalances, lockedTokenBalances) =
-        TxUtils.getBalance(assetOutputs)
+        TxUtils.getBalance(assetOutputs.as[TxOutput])
 
       attoAlphBalance is U256.unsafe(assetOutputs.sumBy(_.amount.v))
       attoAlphLockedBalance is U256.unsafe(assetOutputs.filter(_.lockTime > now).sumBy(_.amount.v))
@@ -971,6 +974,40 @@ class TxUtilsSpec extends AlephiumSpec {
       tokenBalances.sorted is expectedTokenBalances.sorted
       lockedTokenBalances.sorted is expectedLockedTokenBalances.sorted
     }
+  }
+
+  trait ContractFixture extends FlowFixture {
+    val code =
+      s"""
+         |Contract Foo() {
+         |  fn foo() -> () {
+         |    return
+         |  }
+         |}
+         |""".stripMargin
+    val (contractId, ref) =
+      createContract(code, AVector.empty, tokenIssuanceInfo = Some(TokenIssuance.Info(1)))
+    val address = LockupScript.p2c(contractId)
+  }
+
+  it should "get balance for contract address" in new ContractFixture {
+    val (attoAlphBalance, attoAlphLockedBalance, tokenBalances, tokenLockedBalances, utxosNum) =
+      blockFlow.getBalance(address, Int.MaxValue).rightValue
+    attoAlphBalance is ALPH.oneAlph
+    attoAlphLockedBalance is U256.Zero
+    tokenBalances is AVector(TokenId.from(contractId) -> U256.unsafe(1))
+    tokenLockedBalances.length is 0
+    utxosNum is 1
+  }
+
+  it should "get UTXOs for contract address" in new ContractFixture {
+    val utxos = blockFlow.getUTXOsIncludePool(address, Int.MaxValue).rightValue
+    val utxo  = utxos.head.asInstanceOf[FlowUtils.ContractOutputInfo]
+    utxos.length is 1
+    utxo.ref is ref
+    utxo.output.lockupScript is address
+    utxo.output.amount is ALPH.oneAlph
+    utxo.output.tokens is AVector(TokenId.from(contractId) -> U256.unsafe(1))
   }
 
   private def input(

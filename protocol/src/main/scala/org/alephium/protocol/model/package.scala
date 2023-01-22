@@ -34,18 +34,17 @@ package object model {
   val defaultGasPerInput: GasBox  = GasBox.unsafe(2500)
   val defaultGasPerOutput: GasBox = GasBox.unsafe(6000)
 
-  val defaultGas: GasBox           = minimalGas
-  val defaultGasPrice: GasPrice    = GasPrice(ALPH.nanoAlph(100))
-  val defaultGasFee: U256          = defaultGasPrice * defaultGas
-  val defaultGasFeePerInput: U256  = defaultGasPrice * defaultGasPerInput
-  val defaultGasFeePerOutput: U256 = defaultGasPrice * defaultGasPerOutput
+  val defaultGas: GasBox        = minimalGas
+  val defaultGasPrice: GasPrice = GasPrice(ALPH.nanoAlph(100))
+  val defaultGasFee: U256       = defaultGasPrice * defaultGas
 
   val maximalTxsInOneBlock: Int  = 2000
   val maximalGasPerBlock: GasBox = GasBox.unsafe(minimalGas.value * maximalTxsInOneBlock)
   val maximalGasPerTx: GasBox    = GasBox.unsafe(minimalGas.value * maximalTxsInOneBlock / 64)
 
-  val maximalScriptSize: Int = 12 * 1024 // 12KB
-  val maximalFieldSize: Int  = 3 * 1024  // 3KB
+  val maximalCodeSizePreLeman: Int = 12 * 1024 // 12KB
+  val maximalCodeSizeLeman: Int    = 4 * 1024  // 4KB
+  val maximalFieldSize: Int        = 3 * 1024  // 3KB
 
   val dustUtxoAmount: U256           = ALPH.nanoAlph(1000000)
   val deprecatedDustUtxoAmount: U256 = ALPH.nanoAlph(1000)

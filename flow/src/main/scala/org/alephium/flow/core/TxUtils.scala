@@ -80,7 +80,7 @@ trait TxUtils { Self: FlowUtils =>
 
   // return the total balance, the locked balance, and the number of all utxos
   def getBalance(
-      lockupScript: LockupScript.Asset,
+      lockupScript: LockupScript,
       utxosLimit: Int
   ): IOResult[(U256, U256, AVector[(TokenId, U256)], AVector[(TokenId, U256)], Int)] = {
     val groupIndex = lockupScript.groupIndex
@@ -89,21 +89,31 @@ trait TxUtils { Self: FlowUtils =>
     getUTXOsIncludePool(lockupScript, utxosLimit).map { utxos =>
       val utxosNum = utxos.length
 
-      val (attoAlphBalance, attoAlphBlockedBalance, tokenBalances, tokenLockedBalances) =
+      val (attoAlphBalance, attoAlphLockedBalance, tokenBalances, tokenLockedBalances) =
         TxUtils.getBalance(utxos.map(_.output))
-      (attoAlphBalance, attoAlphBlockedBalance, tokenBalances, tokenLockedBalances, utxosNum)
+      (attoAlphBalance, attoAlphLockedBalance, tokenBalances, tokenLockedBalances, utxosNum)
     }
   }
 
   def getUTXOsIncludePool(
-      lockupScript: LockupScript.Asset,
+      lockupScript: LockupScript,
       utxosLimit: Int
-  ): IOResult[AVector[AssetOutputInfo]] = {
+  ): IOResult[AVector[OutputInfo]] = {
     val groupIndex = lockupScript.groupIndex
     assume(brokerConfig.contains(groupIndex))
 
-    getImmutableGroupViewIncludePool(groupIndex)
-      .flatMap(_.getRelevantUtxos(lockupScript, utxosLimit))
+    lockupScript match {
+      case ls: LockupScript.Asset =>
+        getImmutableGroupViewIncludePool(groupIndex).flatMap(
+          _.getRelevantUtxos(ls, utxosLimit).map(_.as[OutputInfo])
+        )
+      case ls: LockupScript.P2C =>
+        getBestPersistedWorldState(groupIndex).flatMap(
+          _.getContractOutputInfo(ls.contractId).map { case (ref, output) =>
+            AVector(ContractOutputInfo(ref, output))
+          }
+        )
+    }
   }
 
   def transfer(
@@ -331,7 +341,10 @@ trait TxUtils { Self: FlowUtils =>
     chain.isTxConfirmed(txId)
   }
 
-  def getTxStatus(txId: TransactionId, chainIndex: ChainIndex): IOResult[Option[TxStatus]] =
+  def getTxConfirmedStatus(
+      txId: TransactionId,
+      chainIndex: ChainIndex
+  ): IOResult[Option[Confirmed]] =
     IOUtils.tryExecute {
       assume(brokerConfig.contains(chainIndex.from))
       val chain = getBlockChain(chainIndex)
@@ -433,14 +446,41 @@ trait TxUtils { Self: FlowUtils =>
       txId: TransactionId,
       chainIndexes: AVector[ChainIndex]
   ): Either[String, Option[TxStatus]] = {
+    searchByIndexes(txId, chainIndexes, getTransactionStatus)
+  }
+
+  def getTransactionStatus(
+      txId: TransactionId,
+      chainIndex: ChainIndex
+  ): Either[String, Option[TxStatus]] = {
+    if (brokerConfig.contains(chainIndex.from)) {
+      for {
+        status <- getTxConfirmedStatus(txId, chainIndex)
+          .map[Option[TxStatus]] {
+            case Some(status) => Some(status)
+            case None         => if (isInMemPool(txId, chainIndex)) Some(MemPooled) else None
+          }
+          .left
+          .map(_.toString)
+      } yield status
+    } else {
+      Right(None)
+    }
+  }
+
+  private def searchByIndexes[T](
+      txId: TransactionId,
+      chainIndexes: AVector[ChainIndex],
+      getFromLocal: (TransactionId, ChainIndex) => Either[String, Option[T]]
+  ): Either[String, Option[T]] = {
     @tailrec
     def rec(
         indexes: AVector[ChainIndex],
-        currentRes: Either[String, Option[TxStatus]]
-    ): Either[String, Option[TxStatus]] = {
+        currentRes: Either[String, Option[T]]
+    ): Either[String, Option[T]] = {
       indexes.headOption match {
         case Some(index) =>
-          val res = getTransactionStatus(txId, index)
+          val res = getFromLocal(txId, index)
           res match {
             case Right(None) => rec(indexes.tail, res)
             case Right(_)    => res
@@ -453,27 +493,27 @@ trait TxUtils { Self: FlowUtils =>
     rec(chainIndexes, Right(None))
   }
 
-  def getTransactionStatus(
+  def getTransaction(
       txId: TransactionId,
       chainIndex: ChainIndex
-  ): Either[String, Option[TxStatus]] = {
+  ): Either[String, Option[Transaction]] = {
     if (brokerConfig.contains(chainIndex.from)) {
-      for {
-        status <- getTxStatus(txId, chainIndex)
-          .map {
-            case Some(status) => Some(status)
-            case None         => if (isInMemPool(txId, chainIndex)) Some(MemPooled) else None
-          }
-          .left
-          .map(_.toString)
-      } yield status
+      val chain = Self.blockFlow.getBlockChain(chainIndex)
+      chain.getTransaction(txId).left.map(_.toString)
     } else {
       Right(None)
     }
   }
 
+  def searchTransaction(
+      txId: TransactionId,
+      chainIndexes: AVector[ChainIndex]
+  ): Either[String, Option[Transaction]] = {
+    searchByIndexes(txId, chainIndexes, getTransaction)
+  }
+
   def isInMemPool(txId: TransactionId, chainIndex: ChainIndex): Boolean = {
-    Self.blockFlow.getMemPool(chainIndex).contains(chainIndex, txId)
+    Self.blockFlow.getMemPool(chainIndex).contains(txId)
   }
 
   def checkTxChainIndex(chainIndex: ChainIndex, tx: TransactionId): Either[String, Unit] = {
@@ -627,7 +667,7 @@ object TxUtils {
   }
 
   def getBalance(
-      outputs: AVector[AssetOutput]
+      outputs: AVector[TxOutput]
   ): (U256, U256, AVector[(TokenId, U256)], AVector[(TokenId, U256)]) = {
     var attoAlphBalance: U256       = U256.Zero
     var attoAlphLockedBalance: U256 = U256.Zero
@@ -636,13 +676,17 @@ object TxUtils {
     val currentTs                   = TimeStamp.now()
 
     outputs.foreach { output =>
-      attoAlphBalance.add(output.amount).map(attoAlphBalance = _)
+      attoAlphBalance.add(output.amount).foreach(attoAlphBalance = _)
       output.tokens.foreach { case (tokenId, amount) =>
         tokenBalances.addToken(tokenId, amount)
       }
 
-      if (output.lockTime > currentTs) {
-        attoAlphLockedBalance.add(output.amount).map(attoAlphLockedBalance = _)
+      val isLocked = output match {
+        case o: AssetOutput    => o.lockTime > currentTs
+        case _: ContractOutput => false
+      }
+      if (isLocked) {
+        attoAlphLockedBalance.add(output.amount).foreach(attoAlphLockedBalance = _)
         output.tokens.foreach { case (tokenId, amount) =>
           tokenLockedBalances.addToken(tokenId, amount)
         }

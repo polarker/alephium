@@ -41,7 +41,7 @@ class ContractPoolSpec extends AlephiumSpec with NumericHelpers {
     ): (ContractId, StatefulContract, ContractOutputRef, ContractOutput) = {
       val contractId = ContractId.generate
       val output     = ContractOutput(ALPH.alph(n), LockupScript.p2c(contractId), AVector.empty)
-      val outputRef  = contractId.firstOutputRef()
+      val outputRef  = contractId.inaccurateFirstOutputRef()
       val method = Method[StatefulContext](
         isPublic = true,
         usePreapprovedAssets = false,
@@ -185,8 +185,10 @@ class ContractPoolSpec extends AlephiumSpec with NumericHelpers {
 
     pool.gasRemaining is initialGas
     pool.worldState.getOutputOpt(outputRef).rightValue.nonEmpty is true
+    pool.assetStatus.contains(contractId) is false
     pool.useContractAssets(contractId).isRight is true
     initialGas.use(GasSchedule.txInputBaseGas) isE pool.gasRemaining
-    pool.worldState.getOutputOpt(outputRef) isE None
+    pool.worldState.getOutputOpt(outputRef) isE a[Some[_]]
+    pool.assetStatus(contractId) is ContractPool.ContractAssetInUsing
   }
 }

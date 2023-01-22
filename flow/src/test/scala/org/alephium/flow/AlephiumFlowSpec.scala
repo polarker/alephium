@@ -33,8 +33,8 @@ import org.alephium.protocol.mining.PoW
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm._
-import org.alephium.protocol.vm.lang.Compiler
-import org.alephium.serde.serialize
+import org.alephium.ralph.Compiler
+import org.alephium.serde.{deserialize, serialize}
 import org.alephium.util._
 
 // scalastyle:off number.of.methods
@@ -93,7 +93,7 @@ trait FlowFixture
   }
 
   def emptyBlock(blockFlow: BlockFlow, chainIndex: ChainIndex): Block = {
-    mine(blockFlow, chainIndex)((_, _) => AVector.empty[Transaction])
+    mineWithTxs(blockFlow, chainIndex)((_, _) => AVector.empty[Transaction])
   }
 
   def simpleScript(
@@ -103,7 +103,7 @@ trait FlowFixture
       gas: Int = 100000
   ): Block = {
     assume(blockFlow.brokerConfig.contains(chainIndex.from) && chainIndex.isIntraGroup)
-    mine(blockFlow, chainIndex)(
+    mineWithTxs(blockFlow, chainIndex)(
       transferTxs(_, _, ALPH.alph(1), 1, Some(txScript), true, scriptGas = gas)
     )
   }
@@ -118,7 +118,7 @@ trait FlowFixture
     val zipped = invokers.mapWithIndex { case (invoker, index) =>
       invoker -> txScripts(index)
     }
-    mine(blockFlow, chainIndex)(transferTxsMulti(_, _, zipped, ALPH.alph(1) / 100))
+    mineWithTxs(blockFlow, chainIndex)(transferTxsMulti(_, _, zipped, ALPH.alph(1) / 100))
   }
 
   def transfer(
@@ -130,27 +130,26 @@ trait FlowFixture
       lockTimeOpt: Option[TimeStamp] = None
   ): Block = {
     assume(blockFlow.brokerConfig.contains(chainIndex.from))
-    mine(blockFlow, chainIndex)(
+    mineWithTxs(blockFlow, chainIndex)(
       transferTxs(_, _, amount, numReceivers, None, gasFeeInTheAmount, lockTimeOpt)
     )
   }
 
   def transfer(blockFlow: BlockFlow, from: PrivateKey, to: PublicKey, amount: U256): Block = {
-    transfer(blockFlow, from, LockupScript.p2pkh(to), amount)
+    transfer(blockFlow, from, LockupScript.p2pkh(to), AVector.empty[(TokenId, U256)], amount)
   }
 
   def transfer(
       blockFlow: BlockFlow,
       from: PrivateKey,
       to: LockupScript.Asset,
+      tokens: AVector[(TokenId, U256)],
       amount: U256
   ): Block = {
     val unsigned = blockFlow
       .transfer(
         from.publicKey,
-        to,
-        None,
-        amount,
+        AVector(TxOutputInfo(to, amount, tokens, None)),
         None,
         defaultGasPrice,
         defaultUtxoLimit
@@ -159,7 +158,7 @@ trait FlowFixture
       .rightValue
     val tx         = Transaction.from(unsigned, from)
     val chainIndex = tx.chainIndex
-    mine(blockFlow, chainIndex)((_, _) => AVector(tx))
+    mineWithTxs(blockFlow, chainIndex)((_, _) => AVector(tx))
   }
 
   def transferTxs(
@@ -207,7 +206,7 @@ trait FlowFixture
     val tx            = Transaction.from(newUnsignedTx, privateKey)
 
     val txValidation = TxValidation.build
-    txValidation.validateGrandPoolTxTemplate(tx.toTemplate, blockFlow) isE ()
+    txValidation.validateMempoolTxTemplate(tx.toTemplate, blockFlow) isE ()
 
     AVector(tx)
   }
@@ -289,7 +288,7 @@ trait FlowFixture
       initialGas: Int = 200000,
       validation: Boolean = true
   ): Block = {
-    mine(blockFlow, chainIndex)(payableCallTxs(_, _, script, initialGas, validation))
+    mineWithTxs(blockFlow, chainIndex)(payableCallTxs(_, _, script, initialGas, validation))
   }
 
   def payableCallTxTemplate(
@@ -341,7 +340,7 @@ trait FlowFixture
   def mineFromMemPool(blockFlow: BlockFlow, chainIndex: ChainIndex): Block = {
     val miner         = getGenesisLockupScript(chainIndex.to)
     val blockTemplate = blockFlow.prepareBlockFlowUnsafe(chainIndex, miner)
-    val block         = mine(blockFlow, chainIndex)((_, _) => blockTemplate.transactions.init)
+    val block = mineWithTxs(blockFlow, chainIndex)((_, _) => blockTemplate.transactions.init)
 
     block.chainIndex is chainIndex
 
@@ -353,7 +352,7 @@ trait FlowFixture
       chainIndex: ChainIndex,
       txs: AVector[Transaction]
   ): Block = {
-    val block = mine(blockFlow, chainIndex)((_, _) => txs)
+    val block = mineWithTxs(blockFlow, chainIndex)((_, _) => txs)
     block.chainIndex is chainIndex
     block
   }
@@ -367,7 +366,7 @@ trait FlowFixture
     iter(mineFromMemPool(blockFlow, chainIndex))
   }
 
-  def mine(blockFlow: BlockFlow, chainIndex: ChainIndex)(
+  def mineWithTxs(blockFlow: BlockFlow, chainIndex: ChainIndex)(
       prepareTxs: (BlockFlow, ChainIndex) => AVector[Transaction]
   ): Block = {
     val deps             = blockFlow.calBestDepsUnsafe(chainIndex.from)
@@ -377,7 +376,7 @@ trait FlowFixture
     val parentTs         = blockFlow.getBlockHeaderUnsafe(deps.parentHash(chainIndex)).timestamp
     val blockTs          = FlowUtils.nextTimeStamp(parentTs)
 
-    val target     = blockFlow.getNextHashTarget(chainIndex, deps).rightValue
+    val target     = blockFlow.getNextHashTarget(chainIndex, deps, blockTs).rightValue
     val coinbaseTx = Transaction.coinbase(chainIndex, txs, lockupScript, target, blockTs)
     mine0(blockFlow, chainIndex, deps, txs :+ coinbaseTx, blockTs, target)
   }
@@ -556,8 +555,7 @@ trait FlowFixture
     tips ++ bestDeps
   }
 
-  def getBalance(blockFlow: BlockFlow, address: PublicKey): U256 = {
-    val lockupScript = LockupScript.p2pkh(address)
+  def getAlphBalance(blockFlow: BlockFlow, lockupScript: LockupScript.Asset): U256 = {
     brokerConfig.contains(lockupScript.groupIndex) is true
     val query = blockFlow.getUsableUtxos(lockupScript, defaultUtxoLimit)
     U256.unsafe(query.rightValue.sumBy(_.output.amount.v: BigInt).underlying())
@@ -629,8 +627,13 @@ trait FlowFixture
     val initialGas  = tx0.unsigned.gasAmount
     val worldState  = blockFlow.getBestPersistedWorldState(chainIndex.from).rightValue
     val prevOutputs = worldState.getPreOutputs(tx0).rightValue
-    val blockEnv =
-      BlockEnv(networkConfig.networkId, TimeStamp.now(), consensusConfig.maxMiningTarget, None)
+    val blockEnv = BlockEnv(
+      chainIndex,
+      networkConfig.networkId,
+      TimeStamp.now(),
+      consensusConfig.maxMiningTarget,
+      None
+    )
     val txValidation = TxValidation.build
     val gasLeft      = txValidation.checkGasAndWitnesses(tx0, prevOutputs, blockEnv).rightValue
     val gasUsed      = initialGas.use(gasLeft).rightValue
@@ -656,13 +659,13 @@ trait FlowFixture
     val stateRaw = Hex.toHexString(serialize(initialState))
     val creation = tokenIssuanceInfo match {
       case Some(TokenIssuance.Info(amount, None)) =>
-        s"createContractWithToken!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v})"
+        s"createContractWithToken!{@$address -> ALPH: ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v})"
       case Some(TokenIssuance.Info(amount, Some(transferTo))) => {
         val toAddress = Address.from(transferTo).toBase58
-        s"createContractWithToken!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v}, @${toAddress})"
+        s"createContractWithToken!{@$address -> ALPH: ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw, ${amount.v}, @${toAddress})"
       }
       case None =>
-        s"createContract!{@$address -> ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw)"
+        s"createContract!{@$address -> ALPH: ${attoAlphAmount.v}}(#$codeRaw, #$stateRaw)"
     }
     val scriptRaw =
       s"""
@@ -694,6 +697,63 @@ trait FlowFixture
       33000,
       validation = false
     )
+  }
+
+  def createContract(
+      input: String,
+      initialState: AVector[Val],
+      tokenIssuanceInfo: Option[TokenIssuance.Info] = None,
+      initialAttoAlphAmount: U256 = minimalAlphInContract,
+      chainIndex: ChainIndex = ChainIndex.unsafe(0, 0)
+  ): (ContractId, ContractOutputRef) = {
+    val genesisLockup = getGenesisLockupScript(chainIndex)
+    val contract      = Compiler.compileContract(input).rightValue
+    val txScript =
+      contractCreation(
+        contract,
+        initialState,
+        genesisLockup,
+        initialAttoAlphAmount,
+        tokenIssuanceInfo
+      )
+    val block = payableCall(blockFlow, chainIndex, txScript)
+
+    val contractOutputRef =
+      TxOutputRef.unsafe(block.transactions.head, 0).asInstanceOf[ContractOutputRef]
+    val contractId = ContractId.from(block.transactions.head.id, 0, chainIndex.from)
+    val estimated  = contractId.inaccurateFirstOutputRef()
+    estimated.hint is contractOutputRef.hint
+    estimated.key.value.bytes.init is contractOutputRef.key.value.bytes.init
+
+    deserialize[StatefulContract.HalfDecoded](serialize(contract.toHalfDecoded())).rightValue
+      .toContract() isE contract
+    addAndCheck(blockFlow, block)
+    (contractId, contractOutputRef)
+  }
+
+  def prepareRandomSequentialTxs(n: Int): AVector[Transaction] = {
+    val tmpBlockFlow                  = isolatedBlockFlow()
+    val startGroup                    = brokerConfig.randomGroupIndex()
+    val (startPriKey, startPubKey, _) = genesisKeys(startGroup.value)
+    var keys                          = AVector((startPriKey, startPubKey, ALPH.alph(1024)))
+    def createTx(): Transaction = {
+      val (fromPriKey, _, lastAmount) = keys.last
+      val (toPriKey, toPubKey)        = brokerConfig.randomGroupIndex().generateKey
+      val amount                      = lastAmount.divUnsafe(2)
+      val block                       = transfer(tmpBlockFlow, fromPriKey, toPubKey, amount)
+      val chainIndex                  = block.chainIndex
+      addAndCheck(tmpBlockFlow, block)
+      if (!chainIndex.isIntraGroup) {
+        // To confirm the transaction so its cross-chain output can be used
+        addAndCheck(
+          tmpBlockFlow,
+          emptyBlock(tmpBlockFlow, ChainIndex(chainIndex.from, chainIndex.from))
+        )
+      }
+      keys = keys :+ (toPriKey, toPubKey, amount)
+      block.nonCoinbase.head
+    }
+    AVector.fill(n)(createTx())
   }
 }
 
