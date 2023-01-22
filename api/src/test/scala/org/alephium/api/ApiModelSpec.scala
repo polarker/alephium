@@ -29,7 +29,8 @@ import org.alephium.json.Json._
 import org.alephium.protocol._
 import org.alephium.protocol.model.{AssetOutput => _, ContractOutput => _, _}
 import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, StatefulContract}
-import org.alephium.protocol.vm.lang.TypeSignatureFixture
+import org.alephium.ralph.TypeSignatureFixture
+import org.alephium.serde.serialize
 import org.alephium.util._
 import org.alephium.util.Hex.HexStringSyntax
 
@@ -120,16 +121,16 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
     parseFail[Amount.Hint](""""1 alph"""")
   }
 
-  it should "encode/decode empty FetchResponse" in {
-    val response = FetchResponse(AVector.empty)
+  it should "encode/decode empty BlocksPerTimeStampRange" in {
+    val response = BlocksPerTimeStampRange(AVector.empty)
     val jsonRaw =
       """{"blocks":[]}"""
     checkData(response, jsonRaw)
   }
 
-  it should "encode/decode FetchResponse" in {
+  it should "encode/decode BlocksPerTimeStampRange" in {
     val entries  = AVector.tabulate(2)(entryDummy)
-    val response = FetchResponse(AVector(entries))
+    val response = BlocksPerTimeStampRange(AVector(entries))
     val jsonRaw =
       s"""{"blocks":[[${blockEntryJson(entries.head)},${blockEntryJson(entries.last)}]]}"""
     checkData(response, jsonRaw)
@@ -565,8 +566,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
   }
 
   it should "encode/decode TxStatus" in {
-    checkData(MemPooled: TxStatus, s"""{"type":"MemPooled"}""")
-    checkData(TxNotFound: TxStatus, s"""{"type":"TxNotFound"}""")
+    checkData(MemPooled(): TxStatus, s"""{"type":"MemPooled"}""")
+    checkData(TxNotFound(): TxStatus, s"""{"type":"TxNotFound"}""")
   }
 
   it should "encode/decode MisbehaviorAction" in {
@@ -898,86 +899,104 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
     checkData(state, jsonRaw)
   }
 
+  it should "compute diff of bytecode and debug bytecode" in new TypeSignatureFixture {
+    CompileProjectResult.diffPatch("", "").value is ""
+    CompileProjectResult.diffPatch("Hello", "Hello").value is ""
+
+    val bytecode = Hex.toHexString(serialize(compiledContract.code))
+    bytecode is "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602"
+    val debugBytecode = Hex.toHexString(serialize(compiledContract.debugCode))
+    debugBytecode is "0701402e01010707061105a000a001a003a004617e01027878b413c40de0b6b3a7640000a916011602160316041605160602"
+    val diff = CompileProjectResult.diffPatch(bytecode, debugBytecode)
+    diff.value is "=7-1+e=11-1+1=20+7e01027878=50"
+    val patchedCode = CompileProjectResult.applyPatchUnsafe(bytecode, diff)
+    patchedCode is debugBytecode
+  }
+
   it should "encode/decode CompilerResult" in new TypeSignatureFixture {
-    val result0 = CompileContractResult.from(contract, contractAst, contractWarnings)
+    val result0 = CompileContractResult.from(compiledContract)
     val jsonRaw0 =
-      """
-        |{
-        |  "name": "Foo",
-        |  "bytecode": "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602",
-        |  "codeHash": "eff62a4b2d4d4936a84e360c916a398d80d5000497ccd4afbd80bfe254d62096",
-        |  "fields": {
-        |    "names": ["aa","bb","cc","dd","ee","ff"],
-        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
-        |    "isMutable": [false, true, false, true, false, false]
-        |  },
-        |  "functions": [
-        |    {
-        |      "name": "bar",
-        |      "usePreapprovedAssets": true,
-        |      "useAssetsInContract": true,
-        |      "isPublic": true,
-        |      "paramNames": ["a","b","c","d","e","f"],
-        |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
-        |      "paramIsMutable": [false, true, false, true, false, false],
-        |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
-        |    }
-        |  ],
-        |  "events": [
-        |    {
-        |      "name": "Bar",
-        |      "fieldNames":["a","b","d","e"],
-        |      "fieldTypes": ["Bool", "U256", "ByteVec", "Address"]
-        |    }
-        |  ],
-        |  "warnings": [
-        |    "Found unused variables in Foo: bar.a",
-        |    "Found unused fields in Foo: cc, ff"
-        |  ]
-        |}
-        |""".stripMargin
+      s"""
+         |{
+         |  "version": "${ReleaseVersion.current}",
+         |  "name": "Foo",
+         |  "bytecode": "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602",
+         |  "bytecodeDebugPatch": "=7-1+e=11-1+1=20+7e01027878=50",
+         |  "codeHash": "eff62a4b2d4d4936a84e360c916a398d80d5000497ccd4afbd80bfe254d62096",
+         |  "codeHashDebug":"f3070fa7f7893529d5dfdd647aa7a0facb637f2339097dea543c3a6c7716b670",
+         |  "fields": {
+         |    "names": ["aa","bb","cc","dd","ee","ff"],
+         |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+         |    "isMutable": [false, true, false, true, false, false]
+         |  },
+         |  "functions": [
+         |    {
+         |      "name": "bar",
+         |      "usePreapprovedAssets": true,
+         |      "useAssetsInContract": true,
+         |      "isPublic": true,
+         |      "paramNames": ["a","b","c","d","e","f"],
+         |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+         |      "paramIsMutable": [false, true, false, true, false, false],
+         |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+         |    }
+         |  ],
+         |  "events": [
+         |    {
+         |      "name": "Bar",
+         |      "fieldNames":["a","b","d","e"],
+         |      "fieldTypes": ["Bool", "U256", "ByteVec", "Address"]
+         |    }
+         |  ],
+         |  "warnings": [
+         |    "Found unused variables in Foo: bar.a",
+         |    "Found unused fields in Foo: cc, ff"
+         |  ]
+         |}
+         |""".stripMargin
     write(result0).filter(!_.isWhitespace) is jsonRaw0.filter(!_.isWhitespace)
 
-    val result1 = CompileScriptResult.from(script, scriptAst, scriptWarnings)
+    val result1 = CompileScriptResult.from(compiledScript)
     val jsonRaw1 =
-      """
-        |{
-        |  "name": "Foo",
-        |  "bytecodeTemplate": "020103000000010201000707060716011602160316041605160602",
-        |  "fields": {
-        |    "names": ["aa","bb","cc","dd","ee"],
-        |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"],
-        |    "isMutable": [false, false, false, false, false]
-        |  },
-        |  "functions": [
-        |    {
-        |      "name": "main",
-        |      "usePreapprovedAssets": true,
-        |      "useAssetsInContract": false,
-        |      "isPublic": true,
-        |      "paramNames": [],
-        |      "paramTypes": [],
-        |      "paramIsMutable": [],
-        |      "returnTypes": []
-        |    },
-        |    {
-        |      "name": "bar",
-        |      "usePreapprovedAssets": false,
-        |      "useAssetsInContract": false,
-        |      "isPublic": true,
-        |      "paramNames": ["a","b","c","d","e","f"],
-        |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
-        |      "paramIsMutable": [false, true, false, true, false, false],
-        |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
-        |    }
-        |  ],
-        |  "warnings": [
-        |    "Found unused variables in Foo: bar.a",
-        |    "Found unused fields in Foo: aa, bb, cc, dd, ee",
-        |    "Function Foo.bar is readonly, please use @using(readonly = true) for the function"
-        |  ]
-        |}
-        |""".stripMargin
+      s"""
+         |{
+         |  "version": "${ReleaseVersion.current}",
+         |  "name": "Foo",
+         |  "bytecodeTemplate": "020103000000010201000707060716011602160316041605160602",
+         |  "bytecodeDebugPatch": "=27+8=1+e01027878=26",
+         |  "fields": {
+         |    "names": ["aa","bb","cc","dd","ee"],
+         |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"],
+         |    "isMutable": [false, false, false, false, false]
+         |  },
+         |  "functions": [
+         |    {
+         |      "name": "main",
+         |      "usePreapprovedAssets": true,
+         |      "useAssetsInContract": false,
+         |      "isPublic": true,
+         |      "paramNames": [],
+         |      "paramTypes": [],
+         |      "paramIsMutable": [],
+         |      "returnTypes": []
+         |    },
+         |    {
+         |      "name": "bar",
+         |      "usePreapprovedAssets": false,
+         |      "useAssetsInContract": false,
+         |      "isPublic": true,
+         |      "paramNames": ["a","b","c","d","e","f"],
+         |      "paramTypes": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
+         |      "paramIsMutable": [false, true, false, true, false, false],
+         |      "returnTypes": ["U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"]
+         |    }
+         |  ],
+         |  "warnings": [
+         |    "Found unused variables in Foo: bar.a",
+         |    "Found unused fields in Foo: aa, bb, cc, dd, ee"
+         |  ]
+         |}
+         |""".stripMargin
     write(result1).filter(!_.isWhitespace) is jsonRaw1.filter(!_.isWhitespace)
 
     val result2 = CompileProjectResult(AVector(result0), AVector(result1))
@@ -1101,5 +1120,91 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
                      |}""".stripMargin
 
     checkData(tx, jsonRaw)
+  }
+
+  it should "encode/decode UTXO" in {
+    val tokenId = TokenId.generate
+    val amount  = Amount(123)
+
+    {
+      val utxo = UTXO(OutputRef(1, Hash.zero), amount)
+      val jsonRaw =
+        s"""
+           |{
+           |  "ref": {"hint":1,"key":"0000000000000000000000000000000000000000000000000000000000000000"},
+           |  "amount":"123"
+           |}""".stripMargin
+      checkData(utxo, jsonRaw)
+    }
+
+    {
+      val utxo = UTXO.from(
+        OutputRef(1, Hash.zero),
+        amount,
+        AVector(Token(tokenId, amount.value)),
+        TimeStamp.zero,
+        Hex.unsafe("FFFF")
+      )
+      val jsonRaw =
+        s"""
+           |{
+           |  "ref": {"hint":1,"key":"0000000000000000000000000000000000000000000000000000000000000000"},
+           |  "amount":"123",
+           |  "tokens":[{"id":"${tokenId.toHexString}","amount":"123"}],
+           |  "lockTime":0,
+           |  "additionalData":"ffff"
+           |}""".stripMargin
+      checkData(utxo, jsonRaw)
+    }
+  }
+
+  it should "get alph and token amounts" in {
+    BuildTxCommon
+      .getAlphAndTokenAmounts(None, None) isE (None, AVector.empty[(TokenId, U256)])
+    BuildTxCommon.getAlphAndTokenAmounts(Some(Amount(U256.One)), None) isE
+      (Some(U256.One), AVector.empty[(TokenId, U256)])
+
+    val tokenId = TokenId.generate
+    BuildTxCommon
+      .getAlphAndTokenAmounts(None, Some(AVector(Token(tokenId, U256.One)))) isE
+      (None, AVector(tokenId -> U256.One))
+    BuildTxCommon.getAlphAndTokenAmounts(
+      Some(Amount(U256.One)),
+      Some(AVector(Token(tokenId, U256.One)))
+    ) isE (Some(U256.One), AVector(tokenId -> U256.One))
+    BuildTxCommon.getAlphAndTokenAmounts(
+      Some(Amount(U256.One)),
+      Some(
+        AVector(
+          Token(tokenId, U256.One),
+          Token(TokenId.alph, U256.One),
+          Token(TokenId.alph, U256.One)
+        )
+      )
+    ) isE (Some(U256.unsafe(3)), AVector(tokenId -> U256.One))
+    BuildTxCommon.getAlphAndTokenAmounts(
+      Some(Amount(U256.One)),
+      Some(
+        AVector(
+          Token(tokenId, U256.One),
+          Token(TokenId.alph, U256.One),
+          Token(TokenId.alph, U256.One),
+          Token(tokenId, U256.One)
+        )
+      )
+    ) isE (Some(U256.unsafe(3)), AVector(tokenId -> U256.Two))
+
+    BuildTxCommon
+      .getAlphAndTokenAmounts(
+        Some(Amount(U256.MaxValue)),
+        Some(AVector(Token(TokenId.alph, U256.One)))
+      )
+      .leftValue is "ALPH amount overflow"
+    BuildTxCommon
+      .getAlphAndTokenAmounts(
+        None,
+        Some(AVector(Token(tokenId, U256.MaxValue), Token(tokenId, U256.One)))
+      )
+      .leftValue is s"Token $tokenId amount overflow"
   }
 }

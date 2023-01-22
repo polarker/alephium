@@ -24,15 +24,15 @@ import akka.util.ByteString
 
 import org.alephium.api.{model => api}
 import org.alephium.api.ApiError
-import org.alephium.api.model.{TransactionTemplate => _, _}
+import org.alephium.api.model.{Transaction => _, TransactionTemplate => _, _}
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.core.{AMMContract, BlockFlow}
 import org.alephium.flow.gasestimation._
 import org.alephium.protocol._
-import org.alephium.protocol.config.GroupConfig
+import org.alephium.protocol.config.{BrokerConfig, GroupConfig}
 import org.alephium.protocol.model.{AssetOutput => _, ContractOutput => _, _}
 import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, UnlockScript}
-import org.alephium.protocol.vm.lang.Compiler
+import org.alephium.ralph.Compiler
 import org.alephium.serde.serialize
 import org.alephium.util._
 
@@ -61,6 +61,29 @@ class ServerUtilsSpec extends AlephiumSpec {
     def emptyKey(index: Int): Hash = TxOutputRef.key(TransactionId.zero, index).value
   }
 
+  trait GetTxFixture {
+    def brokerConfig: BrokerConfig
+    def serverUtils: ServerUtils
+
+    def checkTx(blockFlow: BlockFlow, tx: Transaction, chainIndex: ChainIndex) = {
+      val result = api.Transaction.fromProtocol(tx)
+      serverUtils.getTransaction(
+        blockFlow,
+        tx.id,
+        Some(chainIndex.from),
+        Some(chainIndex.to)
+      ) isE result
+      serverUtils.getTransaction(blockFlow, tx.id, Some(chainIndex.from), None) isE result
+      serverUtils.getTransaction(blockFlow, tx.id, None, Some(chainIndex.to)) isE result
+      serverUtils.getTransaction(blockFlow, tx.id, None, None) isE result
+      val invalidChainIndex = brokerConfig.chainIndexes.filter(_.from != chainIndex.from).head
+      serverUtils
+        .getTransaction(blockFlow, tx.id, Some(invalidChainIndex.from), None)
+        .leftValue
+        .detail is s"Transaction ${tx.id.toHexString} not found"
+    }
+  }
+
   trait FlowFixtureWithApi extends FlowFixture with ApiConfigFixture
 
   it should "send message with tx" in new Fixture {
@@ -78,7 +101,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     unsignedTransaction.fixedOutputs.head.additionalData is message
   }
 
-  it should "check tx status for intra group txs" in new Fixture {
+  it should "check tx status for intra group txs" in new Fixture with GetTxFixture {
 
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
@@ -124,6 +147,8 @@ class ServerUtilsSpec extends AlephiumSpec {
       checkDestinationBalance(destination1)
       checkDestinationBalance(destination2)
 
+      checkTx(blockFlow, block0.nonCoinbase.head, chainIndex)
+
       val block1 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block1)
       serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE
@@ -134,7 +159,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     }
   }
 
-  it should "check tx status for inter group txs" in new FlowFixtureWithApi {
+  it should "check tx status for inter group txs" in new FlowFixtureWithApi with GetTxFixture {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
     implicit val serverUtils = new ServerUtils
@@ -171,16 +196,18 @@ class ServerUtilsSpec extends AlephiumSpec {
         genesisBalance - destination1.attoAlphAmount.value - destination2.attoAlphAmount.value
 
       checkAddressBalance(fromAddress, senderBalanceWithGas - txTemplate.gasFeeUnsafe)
-      checkAddressBalance(destination1.address, U256.unsafe(0), 0)
-      checkAddressBalance(destination2.address, U256.unsafe(0), 0)
+      checkAddressBalance(destination1.address, ALPH.oneAlph, 1)
+      checkAddressBalance(destination2.address, ALPH.oneAlph, 1)
 
       val block0 = mineFromMemPool(blockFlow, chainIndex)
       addAndCheck(blockFlow, block0)
       serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE
         Confirmed(block0.hash, 0, 1, 0, 0)
       checkAddressBalance(fromAddress, senderBalanceWithGas - txTemplate.gasFeeUnsafe)
-      checkAddressBalance(destination1.address, U256.unsafe(0), 0)
-      checkAddressBalance(destination2.address, U256.unsafe(0), 0)
+      checkAddressBalance(destination1.address, ALPH.oneAlph, 1)
+      checkAddressBalance(destination2.address, ALPH.oneAlph, 1)
+
+      checkTx(blockFlow, block0.nonCoinbase.head, chainIndex)
 
       val block1 = emptyBlock(blockFlow, ChainIndex(chainIndex.from, chainIndex.from))
       addAndCheck(blockFlow, block1)
@@ -200,7 +227,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     }
   }
 
-  it should "check sweep address tx status for intra group txs" in new Fixture {
+  it should "check sweep address tx status for intra group txs" in new Fixture with GetTxFixture {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
     implicit val serverUtils = new ServerUtils
@@ -238,6 +265,8 @@ class ServerUtilsSpec extends AlephiumSpec {
         Confirmed(block0.hash, 0, 1, 1, 1)
       checkAddressBalance(fromAddress, genesisBalance - block0.transactions.head.gasFeeUnsafe, 3)
 
+      checkTx(blockFlow, block0.nonCoinbase.head, chainIndex)
+
       info("Sweep coins from the 3 UTXOs of this public key to another address")
       val senderBalanceBeforeSweep = genesisBalance - block0.transactions.head.gasFeeUnsafe
       val sweepAddressDestination  = generateAddress(chainIndex)
@@ -273,7 +302,8 @@ class ServerUtilsSpec extends AlephiumSpec {
     }
   }
 
-  it should "check sweep all tx status for inter group txs" in new FlowFixtureWithApi {
+  it should "check sweep all tx status for inter group txs" in new FlowFixtureWithApi
+    with GetTxFixture {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
     implicit val serverUtils = new ServerUtils
@@ -319,7 +349,9 @@ class ServerUtilsSpec extends AlephiumSpec {
       serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE
         Confirmed(block0.hash, 0, 1, 0, 0)
       checkAddressBalance(fromAddress, senderBalanceWithGas - block0.transactions.head.gasFeeUnsafe)
-      checkAddressBalance(toAddress, receiverInitialBalance)
+      checkAddressBalance(toAddress, receiverInitialBalance.addUnsafe(ALPH.alph(10)), 11)
+
+      checkTx(blockFlow, block0.nonCoinbase.head, chainIndex)
 
       val block1 = emptyBlock(blockFlow, ChainIndex(chainIndex.from, chainIndex.from))
       addAndCheck(blockFlow, block1)
@@ -796,10 +828,10 @@ class ServerUtilsSpec extends AlephiumSpec {
     val serverUtils = new ServerUtils
     serverUtils.getInitialAttoAlphAmount(None) isE minimalAlphInContract
     serverUtils.getInitialAttoAlphAmount(
-      Some(Amount(minimalAlphInContract))
+      Some(minimalAlphInContract)
     ) isE minimalAlphInContract
     serverUtils
-      .getInitialAttoAlphAmount(Some(Amount(minimalAlphInContract - 1)))
+      .getInitialAttoAlphAmount(Some(minimalAlphInContract - 1))
       .leftValue
       .detail is "Expect 1 ALPH deposit to deploy a new contract"
   }
@@ -830,9 +862,8 @@ class ServerUtilsSpec extends AlephiumSpec {
 
     implicit val serverUtils = new ServerUtils()
 
-    val emptyMempool = serverUtils.listUnconfirmedTransactions(blockFlow)
-
-    emptyMempool.rightValue is AVector.empty[UnconfirmedTransactions]
+    val emptyMempool = serverUtils.listUnconfirmedTransactions(blockFlow).rightValue
+    emptyMempool is AVector.empty[UnconfirmedTransactions]
 
     val chainIndex                         = chainIndexGen.sample.get
     val fromGroup                          = chainIndex.from
@@ -882,13 +913,14 @@ class ServerUtilsSpec extends AlephiumSpec {
       val script =
         contractCreation(contract, fields, lockupScript, minimalAlphInContract)
       val block      = executeScript(script)
-      val contractId = ContractId.from(block.transactions.head.id, 0)
+      val contractId = ContractId.from(block.transactions.head.id, 0, chainIndex.from)
       (block, contractId)
     }
 
     val barCode =
       s"""
          |Contract Bar(mut value: U256) {
+         |  @using(updateFields = true)
          |  pub fn addOne() -> () {
          |    value = value + 1
          |  }
@@ -900,9 +932,9 @@ class ServerUtilsSpec extends AlephiumSpec {
     val fooCode =
       s"""
          |Contract Foo(mut value: U256) {
-         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  @using(preapprovedAssets = true, assetsInContract = true, updateFields = true)
          |  pub fn addOne() -> U256 {
-         |    transferAlphToSelf!(@$callerAddress, ${ALPH.oneNanoAlph})
+         |    transferTokenToSelf!(@$callerAddress, ALPH, ${ALPH.oneNanoAlph})
          |    value = value + 1
          |    let bar = Bar(#${barId.toHexString})
          |    bar.addOne()
@@ -921,7 +953,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |@using(preapprovedAssets = true)
          |TxScript Main {
          |  let foo = Foo(#${fooId.toHexString})
-         |  foo.addOne{@$callerAddress -> 1 alph}()
+         |  foo.addOne{@$callerAddress -> ALPH: 1 alph}()
          |}
          |
          |$fooCode
@@ -988,6 +1020,7 @@ class ServerUtilsSpec extends AlephiumSpec {
   }
 
   "the test contract endpoint" should "handle create and destroy contracts properly" in new Fixture {
+    val groupIndex   = brokerConfig.chainIndexes.sample().from
     val (_, pubKey)  = SignatureSchema.generatePriPub()
     val assetAddress = Address.Asset(LockupScript.p2pkh(pubKey))
     val foo =
@@ -1010,7 +1043,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |Contract Bar() {
          |  @using(assetsInContract = true)
          |  pub fn bar() -> () {
-         |    createSubContract!{selfAddress!() -> 1 alph}(#$createContractPath, #$fooByteCode, #$encodedState)
+         |    createSubContract!{selfAddress!() -> ALPH: 1 alph}(#$createContractPath, #$fooByteCode, #$encodedState)
          |    Foo(subContractId!(#$destroyContractPath)).destroy()
          |  }
          |}
@@ -1018,9 +1051,10 @@ class ServerUtilsSpec extends AlephiumSpec {
          |$foo
          |""".stripMargin
 
-    val barContract            = Compiler.compileContract(bar).rightValue
-    val barContractId          = ContractId.random
-    val destroyedFooContractId = barContractId.subContractId(Hex.unsafe(destroyContractPath))
+    val barContract   = Compiler.compileContract(bar).rightValue
+    val barContractId = ContractId.random
+    val destroyedFooContractId =
+      barContractId.subContractId(Hex.unsafe(destroyContractPath), groupIndex)
     val existingContract = ContractState(
       Address.contract(destroyedFooContractId),
       fooContract,
@@ -1030,19 +1064,24 @@ class ServerUtilsSpec extends AlephiumSpec {
       AssetState(ALPH.oneAlph)
     )
     val testContractParams = TestContract(
+      group = Some(groupIndex.value),
       address = Some(Address.contract(barContractId)),
       bytecode = barContract,
       initialAsset = Some(AssetState(ALPH.alph(10))),
       existingContracts = Some(AVector(existingContract)),
       inputAssets = Some(AVector(TestInputAsset(assetAddress, AssetState(ALPH.oneAlph))))
-    )
+    ).toComplete().rightValue
 
-    val testFlow             = BlockFlow.emptyUnsafe(config)
-    val serverUtils          = new ServerUtils()
-    val createdFooContractId = barContractId.subContractId(Hex.unsafe(createContractPath))
+    val testFlow    = BlockFlow.emptyUnsafe(config)
+    val serverUtils = new ServerUtils()
+    val createdFooContractId =
+      barContractId.subContractId(
+        Hex.unsafe(createContractPath),
+        ChainIndex.unsafe(testContractParams.group, testContractParams.group).from
+      )
 
     val result =
-      serverUtils.runTestContract(testFlow, testContractParams.toComplete().rightValue).rightValue
+      serverUtils.runTestContract(testFlow, testContractParams).rightValue
     result.contracts.length is 2
     result.contracts(0).address is Address.contract(createdFooContractId)
     result.contracts(1).address is Address.contract(barContractId)
@@ -1165,7 +1204,121 @@ class ServerUtilsSpec extends AlephiumSpec {
         testContractParams.toComplete().rightValue
       )
       .leftValue
-      .detail is "PayToContractAddressNotInCallerTrace"
+      .detail is "VM execution error: PayToContractAddressNotInCallerTrace"
+  }
+
+  it should "show debug message when contract execution failed" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  fn foo() -> () {
+         |    emit Debug(`Hello, Alephium!`)
+         |    assert!(false, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).rightValue
+
+    val serverUtils  = new ServerUtils()
+    val testContract = TestContract(bytecode = code).toComplete().rightValue
+    val testError    = serverUtils.runTestContract(blockFlow, testContract).leftValue.detail
+    testError is
+      s"DEBUG - ${Address.contract(testContract.contractId).toBase58} - Hello, Alephium!\n" ++
+      "VM execution error: AssertionFailedWithErrorCode(tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq,0)"
+  }
+
+  it should "test blockHash function for Ralph" in new TestContractFixture {
+    val blockHash = BlockHash.random
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  fn foo() -> (ByteVec) {
+         |    assert!(blockHash!() == #${blockHash.toHexString}, 0)
+         |    return blockHash!()
+         |  }
+         |}
+         |""".stripMargin
+
+    val code = Compiler.compileContract(contract).rightValue
+
+    val testContract0 = TestContract(bytecode = code).toComplete().rightValue
+    val testResult0   = serverUtils.runTestContract(blockFlow, testContract0).leftValue
+    testResult0.detail is s"VM execution error: AssertionFailedWithErrorCode(tgx7VNFoP9DJiFMFgXXtafQZkUvyEdDHT9ryamHJYrjq,0)"
+
+    val testContract1 =
+      TestContract(bytecode = code, blockHash = Some(blockHash)).toComplete().rightValue
+    val testResult1 = serverUtils.runTestContract(blockFlow, testContract1).rightValue
+    testResult1.returns.head is api.ValByteVec(blockHash.bytes)
+  }
+
+  it should "extract debug message from contract event" in new Fixture {
+    val serverUtils     = new ServerUtils()
+    val contractAddress = Address.contract(ContractId.random)
+    def buildEvent(fields: Val*): ContractEventByTxId = {
+      ContractEventByTxId(BlockHash.random, contractAddress, 0, AVector.from(fields))
+    }
+
+    serverUtils
+      .extractDebugMessage(buildEvent())
+      .leftValue
+      .detail is "Invalid debug message"
+
+    serverUtils
+      .extractDebugMessage(buildEvent(ValBool(true)))
+      .leftValue
+      .detail is "Invalid debug message"
+
+    serverUtils
+      .extractDebugMessage(buildEvent(ValByteVec(ByteString.fromString("Hello, Alephium!")))) isE
+      DebugMessage(contractAddress, "Hello, Alephium!")
+
+    serverUtils
+      .extractDebugMessage(
+        buildEvent(ValByteVec(ByteString.fromString("Hello, Alephium!")), ValBool(true))
+      )
+      .leftValue
+      .detail is "Invalid debug message"
+  }
+
+  it should "test debug function for Ralph" in new Fixture {
+    val contract: String =
+      s"""
+         |Contract Foo(name: ByteVec) {
+         |  pub fn foo() -> () {
+         |    emit Debug(`Hello, $${name}!`)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).rightValue
+
+    val testContract = TestContract(
+      bytecode = code,
+      initialFields = Some(AVector(ValByteVec(ByteString.fromString("Alephium"))))
+    ).toComplete().rightValue
+    val serverUtils = new ServerUtils()
+    val testResult  = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.events.isEmpty is true
+    testResult.debugMessages is AVector(
+      DebugMessage(Address.contract(testContract.contractId), "Hello, Alephium!")
+    )
+  }
+
+  it should "test contract asset only function" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  @using(assetsInContract = true)
+         |  pub fn foo() -> () {
+         |    assert!(tokenRemaining!(selfAddress!(), ALPH) == 1 alph, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val code         = Compiler.compileContract(contract).rightValue
+    val testContract = TestContract(bytecode = code).toComplete().rightValue
+    val serverUtils  = new ServerUtils()
+    val testResult   = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.txInputs.isEmpty is true
+    testResult.txOutputs.isEmpty is true
   }
 
   trait TestContractFixture extends Fixture {
@@ -1513,6 +1666,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     val contract =
       s"""
          |Contract ArrayTest(mut array: [U256; 2]) {
+         |  @using(updateFields = true)
          |  ${isPublic} fn swap(input: [U256; 2]) -> ([U256; 2]) {
          |    array[0] = input[1]
          |    array[1] = input[0]
@@ -1595,15 +1749,14 @@ class ServerUtilsSpec extends AlephiumSpec {
     }
     result.warnings is AVector(
       "Found unused variables in Foo: foo.a",
-      "Found unused fields in Foo: x",
-      "Function Foo.foo is readonly, please use @using(readonly = true) for the function"
+      "Found unused fields in Foo: x"
     )
 
     info("Turn off warnings")
     val compilerOptions = CompilerOptions(
       ignoreUnusedVariablesWarnings = Some(true),
       ignoreUnusedFieldsWarnings = Some(true),
-      ignoreReadonlyCheckWarnings = Some(true)
+      ignoreUpdateFieldsCheckWarnings = Some(true)
     )
     val newResult =
       serverUtils.compileContract(query.copy(compilerOptions = Some(compilerOptions))).rightValue
@@ -1633,12 +1786,12 @@ class ServerUtilsSpec extends AlephiumSpec {
     result.contracts.length is 1
     contracts.length is 1
     val contractCode = result.contracts(0).bytecode
-    contractCode is Hex.toHexString(serialize(contracts(0)._1))
+    contractCode is Hex.toHexString(serialize(contracts(0).code))
 
     result.scripts.length is 1
     scripts.length is 1
     val scriptCode = result.scripts(0).bytecodeTemplate
-    scriptCode is scripts(0)._1.toTemplateString()
+    scriptCode is scripts(0).code.toTemplateString()
   }
 
   it should "compile script" in new Fixture {
@@ -1728,7 +1881,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       val expected =
         s"""
            |TxScript Main {
-           |  createContractWithToken!{@$fromAddress -> 10, #${token1.toHexString}: 10, #${token2.toHexString}: 20}(#$codeRaw, #$stateRaw, 50)
+           |  createContractWithToken!{@$fromAddress -> ALPH: 10, #${token1.toHexString}: 10, #${token2.toHexString}: 20}(#$codeRaw, #$stateRaw, 50)
            |}
            |""".stripMargin
       Compiler.compileTxScript(expected).isRight is true
@@ -1738,7 +1891,7 @@ class ServerUtilsSpec extends AlephiumSpec {
           fromAddress,
           initialFields,
           U256.unsafe(10),
-          AVector(Token(token1, U256.unsafe(10)), Token(token2, U256.unsafe(20))),
+          AVector((token1, U256.unsafe(10)), (token2, U256.unsafe(20))),
           Some(U256.unsafe(50))
         ) is expected
     }
@@ -1752,7 +1905,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       val expected =
         s"""
            |TxScript Main {
-           |  createContractWithToken!{@$fromAddress -> 10}(#$codeRaw, #$stateRaw, 50)
+           |  createContractWithToken!{@$fromAddress -> ALPH: 10}(#$codeRaw, #$stateRaw, 50)
            |}
            |""".stripMargin
       Compiler.compileTxScript(expected).isRight is true
@@ -1766,6 +1919,74 @@ class ServerUtilsSpec extends AlephiumSpec {
           Some(U256.unsafe(50))
         ) is expected
     }
+  }
+
+  it should "fail when the number of parameters is not as specified by the test method" in new Fixture {
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {
+         |    return
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).toOption.get
+
+    val testContract =
+      TestContract(bytecode = code, args = Some(AVector[Val](Val.True))).toComplete().rightValue
+    val serverUtils = new ServerUtils()
+    serverUtils
+      .runTestContract(blockFlow, testContract)
+      .leftValue
+      .detail is "The number of parameters is different from the number specified by the target method"
+  }
+
+  it should "test utxo splits for generated outputs" in new Fixture {
+    val tokenId = TokenId.random
+    val contract =
+      s"""
+         |Contract Foo() {
+         |  @using(assetsInContract = true)
+         |  pub fn foo() -> () {
+         |    transferTokenFromSelf!(callerAddress!(), #${tokenId.toHexString}, 1)
+         |  }
+         |}
+         |""".stripMargin
+    val code = Compiler.compileContract(contract).toOption.get
+
+    val caller = Address.p2pkh(PublicKey.generate)
+    val inputAssets = TestInputAsset(
+      caller,
+      AssetState(
+        ALPH.alph(3),
+        Some(AVector.fill(2 * maxTokenPerUtxo)(Token(TokenId.random, 1)))
+      )
+    )
+    val testContract = TestContract(
+      blockHash = Some(BlockHash.random),
+      txId = Some(TransactionId.random),
+      bytecode = code,
+      initialFields = Some(AVector.empty[Val]),
+      initialAsset = Some(AssetState(ALPH.oneAlph, Some(AVector(Token(tokenId, 10))))),
+      args = Some(AVector.empty[Val]),
+      inputAssets = Some(AVector(inputAssets))
+    ).toComplete().rightValue
+
+    val serverUtils  = new ServerUtils()
+    val tokensSorted = (inputAssets.asset.tokens.get :+ Token(tokenId, 1)).sortBy(_.id)
+    val testResult   = serverUtils.runTestContract(blockFlow, testContract).rightValue
+    testResult.txOutputs.length is 4
+    testResult.txOutputs(0).address is caller
+    testResult.txOutputs(0).tokens.length is maxTokenPerUtxo
+    testResult.txOutputs(0).tokens is tokensSorted.slice(0, maxTokenPerUtxo)
+    testResult.txOutputs(1).address is caller
+    testResult.txOutputs(1).tokens.length is maxTokenPerUtxo
+    testResult.txOutputs(1).tokens is tokensSorted
+      .slice(maxTokenPerUtxo, 2 * maxTokenPerUtxo)
+    testResult.txOutputs(2).address is caller
+    testResult.txOutputs(2).tokens.length is 1
+    testResult.txOutputs(2).tokens is tokensSorted.slice(2 * maxTokenPerUtxo, tokensSorted.length)
+    testResult.txOutputs(3).address is Address.contract(testContract.contractId)
   }
 
   private def generateDestination(
@@ -1801,10 +2022,10 @@ class ServerUtilsSpec extends AlephiumSpec {
         .createTxTemplate(SubmitTransaction(unsignedTx, signature))
         .rightValue
 
-    serverUtils.getTransactionStatus(blockFlow, txId, chainIndex) isE TxNotFound
+    serverUtils.getTransactionStatus(blockFlow, txId, chainIndex) isE TxNotFound()
 
-    blockFlow.getMemPool(chainIndex).addToTxPool(chainIndex, AVector(txTemplate), TimeStamp.now())
-    serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE MemPooled
+    blockFlow.getGrandPool().add(chainIndex, AVector(txTemplate), TimeStamp.now())
+    serverUtils.getTransactionStatus(blockFlow, txTemplate.id, chainIndex) isE MemPooled()
 
     txTemplate
   }
@@ -1813,7 +2034,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       serverUtils: ServerUtils,
       blockFlow: BlockFlow
   ) = {
-    serverUtils.getBalance(blockFlow, GetBalance(address)) isE Balance.from(
+    serverUtils.getBalance(blockFlow, address) isE Balance.from(
       Amount(amount),
       Amount.Zero,
       None,

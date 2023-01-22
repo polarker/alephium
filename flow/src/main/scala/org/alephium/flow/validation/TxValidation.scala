@@ -150,18 +150,6 @@ trait TxValidation {
     for {
       chainIndex <- getChainIndex(tx)
       blockEnv   <- from(flow.getDryrunBlockEnv(chainIndex))
-      groupView  <- from(flow.getMutableGroupView(chainIndex.from))
-      _          <- validateTxTemplate(tx, chainIndex, groupView, blockEnv)
-    } yield ()
-  }
-
-  def validateGrandPoolTxTemplate(
-      tx: TransactionTemplate,
-      flow: BlockFlow
-  ): TxValidationResult[Unit] = {
-    for {
-      chainIndex <- getChainIndex(tx)
-      blockEnv   <- from(flow.getDryrunBlockEnv(chainIndex))
       groupView  <- from(flow.getMutableGroupViewIncludePool(chainIndex.from))
       _          <- validateTxTemplate(tx, chainIndex, groupView, blockEnv)
     } yield ()
@@ -169,7 +157,8 @@ trait TxValidation {
 
   def validateTxOnlyForTest(
       tx: Transaction,
-      flow: BlockFlow
+      flow: BlockFlow,
+      hardForkOpt: Option[HardFork]
   ): TxValidationResult[Unit] = {
     for {
       chainIndex <- getChainIndex(tx)
@@ -180,14 +169,14 @@ trait TxValidation {
         tx,
         chainIndex,
         groupView,
-        blockEnv,
+        hardForkOpt.map(hardFork => blockEnv.copy(hardFork = hardFork)).getOrElse(blockEnv),
         None,
         checkDoubleSpending = true
       )
     } yield ()
   }
 
-  private def validateTx(
+  private[validation] def validateTx(
       tx: Transaction,
       chainIndex: ChainIndex,
       groupView: BlockFlowGroupView[WorldState.Cached],
@@ -255,7 +244,6 @@ trait TxValidation {
       _ <- checkOutputStats(tx, hardFork)
       _ <- checkChainIndex(tx, chainIndex)
       _ <- checkUniqueInputs(tx, checkDoubleSpending)
-      _ <- checkOutputDataSize(tx)
     } yield ()
   }
   protected[validation] def checkStateful(
@@ -305,7 +293,6 @@ trait TxValidation {
   protected[validation] def getChainIndex(tx: TransactionAbstract): TxValidationResult[ChainIndex]
   protected[validation] def checkChainIndex(tx: Transaction, expected: ChainIndex): TxValidationResult[Unit]
   protected[validation] def checkUniqueInputs(tx: Transaction, checkDoubleSpending: Boolean): TxValidationResult[Unit]
-  protected[validation] def checkOutputDataSize(tx: Transaction): TxValidationResult[Unit]
 
   protected[validation] def checkLockTime(preOutputs: AVector[TxOutput], headerTs: TimeStamp): TxValidationResult[Unit]
   protected[validation] def checkAlphBalance(tx: Transaction, preOutputs: AVector[TxOutput], coinbaseNetReward: Option[U256]): TxValidationResult[Unit]
@@ -460,23 +447,69 @@ object TxValidation {
         tx: Transaction,
         hardFork: HardFork
     ): TxValidationResult[Unit] = {
-      val ok = tx.unsigned.fixedOutputs.forall(checkOutputAmount(_, hardFork)) &&
-        tx.generatedOutputs.forall(checkOutputAmount(_, hardFork))
-      if (ok) validTx(()) else invalidTx(InvalidOutputStats)
+      for {
+        _ <- tx.unsigned.fixedOutputs.foreachE(checkEachOutputStat(_, hardFork))
+        _ <- tx.generatedOutputs.foreachE(checkEachOutputStat(_, hardFork))
+      } yield ()
+    }
+
+    protected[validation] def checkEachOutputStat(
+        output: TxOutput,
+        hardFork: HardFork
+    ): TxValidationResult[Unit] = {
+      for {
+        _ <- checkOutputAmount(output, hardFork)
+        _ <- checkP2MPKStat(output, hardFork)
+        _ <- checkOutputDataState(output)
+      } yield ()
     }
 
     @inline private def checkOutputAmount(
         output: TxOutput,
         hardFork: HardFork
-    ): Boolean = {
+    ): TxValidationResult[Unit] = {
       val (dustAmount, numTokenBound) = if (hardFork.isLemanEnabled()) {
         (dustUtxoAmount, maxTokenPerUtxo)
       } else {
         (deprecatedDustUtxoAmount, deprecatedMaxTokenPerUtxo)
       }
-      output.amount >= dustAmount &&
-      output.tokens.length <= numTokenBound &&
-      output.tokens.forall(_._2.nonZero)
+      val validated = output.amount >= dustAmount &&
+        output.tokens.length <= numTokenBound &&
+        output.tokens.forall(_._2.nonZero)
+      if (validated) Right(()) else invalidTx(InvalidOutputStats)
+    }
+
+    @inline private def checkP2MPKStat(
+        output: TxOutput,
+        hardFork: HardFork
+    ): TxValidationResult[Unit] = {
+      if (hardFork.isLemanEnabled()) {
+        output.lockupScript match {
+          case LockupScript.P2MPKH(pkHashes, _) =>
+            if (pkHashes.length > ALPH.MaxKeysInP2MPK) {
+              invalidTx(TooManyKeysInMultisig)
+            } else {
+              Right(())
+            }
+          case _ => Right(())
+        }
+      } else {
+        Right(())
+      }
+    }
+
+    @inline private def checkOutputDataState(
+        output: TxOutput
+    ): TxValidationResult[Unit] = {
+      output match {
+        case output: AssetOutput =>
+          if (output.additionalData.length > ALPH.MaxOutputDataSize) {
+            invalidTx(OutputDataSizeExceeded)
+          } else {
+            Right(())
+          }
+        case _ => Right(())
+      }
     }
 
     protected[validation] def checkAlphOutputAmount(tx: Transaction): TxValidationResult[U256] = {
@@ -551,20 +584,6 @@ object TxValidation {
         }
       } else {
         validTx(())
-      }
-    }
-
-    protected[validation] def checkOutputDataSize(tx: Transaction): TxValidationResult[Unit] = {
-      EitherF.foreachTry(0 until tx.outputsLength) { outputIndex =>
-        tx.getOutput(outputIndex) match {
-          case output: AssetOutput =>
-            if (output.additionalData.length > ALPH.MaxOutputDataSize) {
-              invalidTx(OutputDataSizeExceeded)
-            } else {
-              Right(())
-            }
-          case _ => Right(())
-        }
       }
     }
 
@@ -666,6 +685,19 @@ object TxValidation {
       gasRemaining.sub(totalBasicGas).toRight(Right(OutOfGas))
     }
 
+    @inline private[validation] def sameUnlockScriptAsPrevious(
+        unlockScript: UnlockScript,
+        previousUnlockScript: UnlockScript,
+        hardFork: HardFork
+    ): Boolean = {
+      if (hardFork.isLemanEnabled()) {
+        // Make `SameAsPrevious` optional to keep backward compatibility
+        unlockScript == UnlockScript.SameAsPrevious || unlockScript == previousUnlockScript
+      } else {
+        unlockScript == previousUnlockScript
+      }
+    }
+
     protected[validation] def checkWitnesses(
         tx: Transaction,
         preOutputs: AVector[TxOutput],
@@ -679,7 +711,15 @@ object TxValidation {
       for {
         remaining <- EitherF.foldTry(inputs.indices, gasRemaining) { case (gasRemaining, idx) =>
           val unlockScript = inputs(idx).unlockScript
-          if (idx > 0 && unlockScript == inputs(idx - 1).unlockScript) {
+          if (
+            idx > 0 &&
+            preOutputs(idx).lockupScript == preOutputs(idx - 1).lockupScript &&
+            sameUnlockScriptAsPrevious(
+              unlockScript,
+              inputs(idx - 1).unlockScript,
+              blockEnv.getHardFork()
+            )
+          ) {
             validTx(gasRemaining)
           } else {
             checkLockupScript(
@@ -800,7 +840,7 @@ object TxValidation {
       } else {
         fromExeResult(
           for {
-            remaining0 <- VM.checkCodeSize(gasRemaining, script.bytes)
+            remaining0 <- VM.checkCodeSize(gasRemaining, script.bytes, blockEnv.getHardFork())
             remaining1 <- remaining0.use(GasHash.gas(script.bytes.length))
             exeResult  <- StatelessVM.runAssetScript(blockEnv, txEnv, remaining1, script, params)
           } yield exeResult.gasRemaining,
@@ -838,6 +878,9 @@ object TxValidation {
                   stagingWorldState.commit()
                   checkScriptExeFlag(tx, true, remaining)
                 }
+              case Left(Right(_: BreakingInstr)) =>
+                // This case should already be filtered by mempool and block assembly, double check here
+                invalidTx(UsingBreakingInstrs)
               case Left(Right(_)) =>
                 checkScriptExeFlag(tx, false, GasBox.zero)
               case Left(Left(ioFalure)) => Left(Left(ioFalure.error))
@@ -874,7 +917,7 @@ object TxValidation {
         blockEnv: BlockEnv
     ): ExeResult[StatefulVM.TxScriptExecution] = {
       for {
-        remaining <- VM.checkCodeSize(gasRemaining, script.bytes)
+        remaining <- VM.checkCodeSize(gasRemaining, script.bytes, blockEnv.getHardFork())
         result <-
           StatefulVM.runTxScript(
             worldState,
