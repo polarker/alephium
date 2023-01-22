@@ -72,7 +72,7 @@ object Node {
     implicit private val discoveryConfig      = config.discovery
     implicit private val miningSetting        = config.mining
     implicit private val memPoolSetting       = config.mempool
-    implicit private val logConfig            = config.node.logConfig
+    implicit private val logConfig            = config.node.eventLogConfig
 
     val blockFlow: BlockFlow = buildBlockFlowUnsafe(storages)
 
@@ -136,11 +136,26 @@ object Node {
     val nodeStateStorage = storages.nodeStateStorage
     val isInitialized    = Utils.unsafe(nodeStateStorage.isInitialized())
     if (isInitialized) {
-      BlockFlow.fromStorageUnsafe(config, storages)
+      val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
+      checkGenesisBlocks(blockFlow)
+      blockFlow
     } else {
       val blockflow = BlockFlow.fromGenesisUnsafe(config, storages)
       Utils.unsafe(nodeStateStorage.setInitialized())
       blockflow
     }
   }
+
+  def checkGenesisBlocks(blockFlow: BlockFlow)(implicit config: AlephiumConfig): Unit = {
+    config.broker.chainIndexes.foreach { chainIndex =>
+      val configGenesisBlock = config.genesisBlocks(chainIndex.from.value)(chainIndex.to.value)
+      val hashes             = Utils.unsafe(blockFlow.getHashes(chainIndex, 0))
+      if (hashes.length != 1 || hashes.head != configGenesisBlock.hash) {
+        throw new Exception(invalidGenesisBlockMsg)
+      }
+    }
+  }
+
+  val invalidGenesisBlockMsg =
+    "Invalid genesis blocks, please wipe out the db history of your current network and resync"
 }

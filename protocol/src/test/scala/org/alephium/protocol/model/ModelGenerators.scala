@@ -29,7 +29,6 @@ import org.alephium.protocol._
 import org.alephium.protocol.config._
 import org.alephium.protocol.model.ModelGenerators._
 import org.alephium.protocol.vm.{LockupScript, StatefulContract, UnlockScript, Val}
-import org.alephium.protocol.vm.lang.Compiler
 import org.alephium.util._
 
 trait LockupScriptGenerators extends Generators {
@@ -42,17 +41,17 @@ trait LockupScriptGenerators extends Generators {
     bytes  <- Gen.listOfN(length, arbByte.arbitrary)
   } yield ByteString(bytes)
 
-  def p2pkhLockupGen(groupIndex: GroupIndex): Gen[LockupScript.Asset] =
+  def p2pkhLockupGen(groupIndex: GroupIndex): Gen[LockupScript.P2PKH] =
     for {
       publicKey <- publicKeyGen(groupIndex)
     } yield LockupScript.p2pkh(publicKey)
 
   def p2mpkhLockupGen(groupIndex: GroupIndex): Gen[LockupScript.Asset] =
     for {
-      publicKey0 <- publicKeyGen(groupIndex)
-      moreKeys   <- Gen.nonEmptyListOf(publicKeyGen(groupIndex)).map(AVector.from)
-      threshold  <- Gen.choose(1, moreKeys.length + 1)
-    } yield LockupScript.p2mpkh(publicKey0 +: moreKeys, threshold).get
+      numKeys   <- Gen.chooseNum(1, ALPH.MaxKeysInP2MPK)
+      keys      <- Gen.listOfN(numKeys, publicKeyGen(groupIndex)).map(AVector.from)
+      threshold <- Gen.choose(1, keys.length)
+    } yield LockupScript.p2mpkh(keys, threshold).get
 
   def p2mpkhLockupGen(n: Int, m: Int, groupIndex: GroupIndex): Gen[LockupScript.Asset] = {
     assume(m <= n)
@@ -287,16 +286,30 @@ trait TxGenerators
   }
 
   lazy val counterContract: StatefulContract = {
-    val input =
-      s"""
-         |Contract Foo(mut x: U256) {
-         |  fn add() -> () {
-         |    x = x + 1
-         |    return
-         |  }
-         |}
-         |""".stripMargin
-    Compiler.compileContract(input).toOption.get
+//    val input =
+//      s"""
+//         |Contract Foo(mut x: U256) {
+//         |  fn add() -> () {
+//         |    x = x + 1
+//         |    return
+//         |  }
+//         |}
+//         |""".stripMargin
+    // Compiled from above script
+    StatefulContract(
+      1,
+      AVector(
+        vm.Method(
+          isPublic = false,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          argsLength = 0,
+          localsLength = 0,
+          returnLength = 0,
+          instrs = AVector(vm.LoadField(0), vm.U256Const1, vm.U256Add, vm.StoreField(0), vm.Return)
+        )
+      )
+    )
   }
 
   lazy val assetOutputGen: Gen[AssetOutput] = for {
@@ -411,6 +424,45 @@ trait TxGenerators
       val tx = Transaction.from(unsignedTx, signatures)
       tx -> assetInfos
     }
+
+  def transactionGenWithCompressedUnlockScripts(
+      unlockScriptsNumGen: Gen[Int] = Gen.choose(1, 4),
+      inputsNumGen: Gen[Int] = Gen.choose(1, 4),
+      tokensNumGen: Gen[Int] = Gen.const(0),
+      chainIndexGen: Gen[ChainIndex] = chainIndexGen,
+      scriptGen: IndexScriptPairGen = p2pkScriptGen,
+      lockupGen: IndexLockupScriptGen = assetLockupGen,
+      lockTimeGen: Gen[TimeStamp] = Gen.const(TimeStamp.zero)
+  ): Gen[(Transaction, AVector[AssetInputInfo])] = {
+    for {
+      chainIndex       <- chainIndexGen
+      unlockScriptsNum <- unlockScriptsNumGen
+      scriptPairs      <- Gen.listOfN(unlockScriptsNum, scriptGen(chainIndex.from))
+      assetInfoss <- Gen.sequence[Seq[AVector[AssetInputInfo]], AVector[AssetInputInfo]](
+        (0 until unlockScriptsNum).map { index =>
+          assetsToSpendGen(
+            inputsNumGen,
+            tokensNumGen,
+            Gen.const(scriptPairs(index)),
+            lockTimeGen
+          )
+        }
+      )
+      assetInfos = AVector.from(
+        assetInfoss.flatMap(infos =>
+          infos.head +: infos.tail.map(info =>
+            info.copy(txInput = info.txInput.copy(unlockScript = UnlockScript.SameAsPrevious))
+          )
+        )
+      )
+      unsignedTx <- unsignedTxGen(chainIndex)(Gen.const(assetInfos), lockupGen)
+    } yield {
+      val signatures =
+        AVector.from(scriptPairs.map(pair => SignatureSchema.sign(unsignedTx.id, pair.privateKey)))
+      val tx = Transaction.from(unsignedTx, signatures)
+      tx -> assetInfos
+    }
+  }
 
   def transactionGen(
       numInputsGen: Gen[Int] = Gen.choose(1, 10),

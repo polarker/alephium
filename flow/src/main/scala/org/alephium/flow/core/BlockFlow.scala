@@ -131,7 +131,7 @@ object BlockFlow extends StrictLogging {
       config.network,
       config.consensus,
       config.mempool,
-      config.node.logConfig
+      config.node.eventLogConfig
     )
   }
 
@@ -141,7 +141,7 @@ object BlockFlow extends StrictLogging {
       config.network,
       config.consensus,
       config.mempool,
-      config.node.logConfig
+      config.node.eventLogConfig
     )
   }
 
@@ -168,7 +168,7 @@ object BlockFlow extends StrictLogging {
       config.network,
       config.consensus,
       config.mempool,
-      config.node.logConfig
+      config.node.eventLogConfig
     )
   }
 
@@ -255,7 +255,9 @@ object BlockFlow extends StrictLogging {
       for {
         weight <- calWeight(block)
         _      <- getBlockChain(index).add(block, weight, worldStateOpt)
-      } yield ()
+      } yield {
+        cacheDiffAndTimeSpan(block.header)
+      }
     }
 
     def addAndUpdateView(block: Block, worldStateOpt: Option[WorldState.Cached]): IOResult[Unit] = {
@@ -272,7 +274,9 @@ object BlockFlow extends StrictLogging {
       for {
         weight <- calWeight(header)
         _      <- getHeaderChain(index).add(header, weight)
-      } yield ()
+      } yield {
+        cacheDiffAndTimeSpan(header)
+      }
     }
 
     def addAndUpdateView(header: BlockHeader): IOResult[Unit] = {
@@ -306,11 +310,15 @@ object BlockFlow extends StrictLogging {
       val diffs         = getFlowTipsDiffUnsafe(currentFlowTips, intraFlowTips)
 
       val intraWeight = getWeightUnsafe(intraDep)
+      calWeightUnsafe(intraWeight, diffs)
+    }
+
+    private def calWeightUnsafe(initialWeight: Weight, diffs: AVector[BlockHash]): Weight = {
       val diffsWeight = diffs.fold(Weight.zero) { case (acc, diff) =>
         acc + getBlockHeaderUnsafe(diff).weight
       }
 
-      intraWeight + diffsWeight
+      initialWeight + diffsWeight
     }
 
     def getBestTipUnsafe(): BlockHash = {
@@ -322,8 +330,8 @@ object BlockFlow extends StrictLogging {
     }
 
     def tryExtendUnsafe(
-        tipsCur: FlowTips,
-        weightCur: Weight,
+        sourceTips: FlowTips,
+        sourceWeight: Weight,
         group: GroupIndex,
         groupTip: BlockHash,
         toTry: AVector[BlockHash]
@@ -331,10 +339,11 @@ object BlockFlow extends StrictLogging {
       toTry
         .filter(isExtendingUnsafe(_, groupTip))
         .sorted(blockHashOrdering.reverse) // useful for draw situation
-        .fold[(FlowTips, Weight)](tipsCur -> weightCur) { case ((maxTips, maxWeight), tip) =>
-          tryMergeUnsafe(tipsCur, tip, group) match {
+        .fold[(FlowTips, Weight)](sourceTips -> sourceWeight) { case ((maxTips, maxWeight), tip) =>
+          tryMergeUnsafe(sourceTips, tip, group) match {
             case Some(merged) =>
-              val weight = calWeightUnsafe(merged, group)
+              val diffs  = getFlowTipsDiffUnsafe(merged, sourceTips)
+              val weight = calWeightUnsafe(sourceWeight, diffs)
               if (weight > maxWeight) (merged, weight) else (maxTips, maxWeight)
             case None => (maxTips, maxWeight)
           }
@@ -349,7 +358,7 @@ object BlockFlow extends StrictLogging {
       val bestTip    = getBestIntraGroupTip()
       val bestIndex  = ChainIndex.from(bestTip)
       val flowTips0  = getFlowTipsUnsafe(bestTip, group)
-      val weight0    = calWeightUnsafe(flowTips0, group)
+      val weight0    = getWeightUnsafe(bestTip)
       val groupOrder = BlockFlow.randomGroupOrders(bestTip)
 
       val (flowTips1, weight1) =
@@ -371,16 +380,13 @@ object BlockFlow extends StrictLogging {
       flowTips2.toBlockDeps
     }
 
-    def updateBestDepsUnsafe(): AVector[(TransactionTemplate, TimeStamp)] =
-      brokerConfig.groupRange.foldLeft(
-        AVector.empty[(TransactionTemplate, TimeStamp)]
-      ) { case (acc, mainGroup) =>
+    def updateBestDepsUnsafe(): Unit =
+      brokerConfig.groupRange.foreach { mainGroup =>
         val mainGroupIndex = GroupIndex.unsafe(mainGroup)
         val oldDeps        = getBestDeps(mainGroupIndex)
         val newDeps        = calBestDepsUnsafe(mainGroupIndex)
-        val result         = acc ++ updateGrandPoolUnsafe(mainGroupIndex, newDeps, oldDeps)
+        updateGrandPoolUnsafe(mainGroupIndex, newDeps, oldDeps)
         updateBestDeps(mainGroup, newDeps) // this update must go after pool updates
-        result
       }
 
     def updateBestDepsAfterLoadingUnsafe(): Unit =
@@ -389,7 +395,7 @@ object BlockFlow extends StrictLogging {
         updateBestDeps(mainGroup, deps)
       }
 
-    def updateBestDeps(): IOResult[AVector[(TransactionTemplate, TimeStamp)]] = {
+    def updateBestDeps(): IOResult[Unit] = {
       IOUtils.tryExecute(updateBestDepsUnsafe())
     }
   }

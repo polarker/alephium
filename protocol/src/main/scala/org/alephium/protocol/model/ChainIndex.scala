@@ -16,11 +16,17 @@
 
 package org.alephium.protocol.model
 
+import scala.util.Random
+
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model.BlockHash
 import org.alephium.util.Bytes
 
 class ChainIndex(val from: GroupIndex, val to: GroupIndex) {
+  def flattenIndex(implicit groupConfig: GroupConfig): Int = {
+    from.value * groupConfig.groups + to.value
+  }
+
   def relateTo(brokerInfo: BrokerGroupInfo): Boolean = {
     brokerInfo.contains(from) || brokerInfo.contains(to)
   }
@@ -30,8 +36,6 @@ class ChainIndex(val from: GroupIndex, val to: GroupIndex) {
   }
 
   def isIntraGroup: Boolean = from == to
-
-  def toOneDim(implicit config: GroupConfig): Int = from.value * config.groups + to.value
 
   override def equals(obj: Any): Boolean =
     obj match {
@@ -96,5 +100,20 @@ object ChainIndex {
     val chainNum = groups * groups
     val index    = bigIndex % chainNum
     new ChainIndex(new GroupIndex(index / groups), new GroupIndex(index % groups))
+  }
+
+  def random(implicit groupConfig: GroupConfig): ChainIndex = {
+    ChainIndex.unsafe(Random.nextInt(groupConfig.chainNum))
+  }
+
+  def randomIntraGroup(implicit groupConfig: GroupConfig): ChainIndex = {
+    val groupIndex = GroupIndex.random
+    ChainIndex(groupIndex, groupIndex)
+  }
+
+  def checkFromGroup(index: Int, targetGroup: GroupIndex)(implicit
+      groupConfig: GroupConfig
+  ): Boolean = {
+    (index / groupConfig.groups) == targetGroup.value
   }
 }

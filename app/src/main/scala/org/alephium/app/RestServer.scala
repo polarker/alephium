@@ -76,8 +76,10 @@ class RestServer(
       discoveryActionLogic,
       getHistoryHashRateLogic,
       getCurrentHashRateLogic,
-      getBlockflowLogic,
+      getBlocksLogic,
+      getBlocksAndEventsLogic,
       getBlockLogic,
+      getBlockAndEventsLogic,
       isBlockInMainChainLogic,
       getBalanceLogic,
       getUTXOsLogic,
@@ -96,6 +98,7 @@ class RestServer(
       getTransactionStatusLogic,
       getTransactionStatusLocalLogic,
       decodeUnsignedTransactionLogic,
+      getTransactionLogic,
       minerActionLogic,
       mineOneBlockLogic,
       minerListAddressesLogic,
@@ -114,6 +117,7 @@ class RestServer(
       getContractEventsLogic,
       getContractEventsCurrentCountLogic,
       getEventsByTxIdLogic,
+      getEventsByBlockHashLogic,
       metricsLogic
     ).map(route(_)) ++ swaggerUiRoute
 
