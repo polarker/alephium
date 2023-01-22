@@ -43,7 +43,7 @@ import org.alephium.flow.network.broker.MisbehaviorManager.Peers
 import org.alephium.flow.setting.{ConsensusSetting, NetworkSetting}
 import org.alephium.http.EndpointSender
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig}
-import org.alephium.protocol.model._
+import org.alephium.protocol.model.{Transaction => _, _}
 import org.alephium.protocol.vm.{LockupScript, LogConfig}
 import org.alephium.serde._
 import org.alephium.util._
@@ -67,7 +67,7 @@ trait EndpointsLogic extends Endpoints {
   implicit lazy val groupConfig: GroupConfig         = brokerConfig
   implicit lazy val networkConfig: NetworkSetting    = node.config.network
   implicit lazy val consenseConfig: ConsensusSetting = node.config.consensus
-  implicit lazy val logConfig: LogConfig             = node.config.node.logConfig
+  implicit lazy val logConfig: LogConfig             = node.config.node.eventLogConfig
   implicit lazy val askTimeout: Timeout              = Timeout(apiConfig.askTimeout.asScala)
 
   private lazy val serverUtils: ServerUtils = new ServerUtils
@@ -157,12 +157,20 @@ trait EndpointsLogic extends Endpoints {
     Future.successful(result)
   }
 
-  val getBlockflowLogic = serverLogic(getBlockflow) { timeInterval =>
-    Future.successful(serverUtils.getBlockflow(blockFlow, timeInterval))
+  val getBlocksLogic = serverLogic(getBlocks) { timeInterval =>
+    Future.successful(serverUtils.getBlocks(blockFlow, timeInterval))
+  }
+
+  val getBlocksAndEventsLogic = serverLogic(getBlocksAndEvents) { timeInterval =>
+    Future.successful(serverUtils.getBlocksAndEvents(blockFlow, timeInterval))
   }
 
   val getBlockLogic = serverLogic(getBlock) { hash =>
-    Future.successful(serverUtils.getBlock(blockFlow, GetBlock(hash)))
+    Future.successful(serverUtils.getBlock(blockFlow, hash))
+  }
+
+  val getBlockAndEventsLogic = serverLogic(getBlockAndEvents) { hash =>
+    Future.successful(serverUtils.getBlockAndEvents(blockFlow, hash))
   }
 
   val isBlockInMainChainLogic = serverLogic(isBlockInMainChain) { hash =>
@@ -174,7 +182,7 @@ trait EndpointsLogic extends Endpoints {
   }
 
   val getBalanceLogic = serverLogic(getBalance) { address =>
-    Future.successful(serverUtils.getBalance(blockFlow, GetBalance(address)))
+    Future.successful(serverUtils.getBalance(blockFlow, address))
   }
 
   val getUTXOsLogic = serverLogic(getUTXOs) { address =>
@@ -190,7 +198,7 @@ trait EndpointsLogic extends Endpoints {
           Left(ApiError.NotFound(s"Group not found. Please check another broker"))
             .withRight[Group]
         )
-      brokerConfig.allGroups.take(brokerConfig.brokerNum).fold(failure) {
+      brokerConfig.cliqueGroups.take(brokerConfig.brokerNum).fold(failure) {
         case (prevResult, currentGroup: GroupIndex) =>
           prevResult flatMap {
             case Right(_) =>
@@ -436,7 +444,7 @@ trait EndpointsLogic extends Endpoints {
         )
       case (None, None) =>
         serverUtils.searchLocalTransactionStatus(blockFlow, txId, brokerConfig.chainIndexes) match {
-          case Right(TxNotFound) =>
+          case Right(TxNotFound()) =>
             searchTransactionStatusInOtherNodes(txId)
           case other => Future.successful(other)
         }
@@ -446,9 +454,9 @@ trait EndpointsLogic extends Endpoints {
 
   @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   private def searchTransactionStatusInOtherNodes(txId: TransactionId): FutureTry[TxStatus] = {
-    val otherGroupFrom = groupConfig.allGroups.filterNot(brokerConfig.contains)
+    val otherGroupFrom = groupConfig.cliqueGroups.filterNot(brokerConfig.contains)
     if (otherGroupFrom.isEmpty) {
-      Future.successful(Right(TxNotFound))
+      Future.successful(Right(TxNotFound()))
     } else {
       @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
       def rec(
@@ -457,13 +465,13 @@ trait EndpointsLogic extends Endpoints {
       ): FutureTry[TxStatus] = {
         requestFromGroupIndex(
           from,
-          Future.successful(Right(TxNotFound)),
+          Future.successful(Right(TxNotFound())),
           getTransactionStatus,
           (txId, Some(from), None)
         ).flatMap {
-          case Right(TxNotFound) =>
+          case Right(TxNotFound()) =>
             if (remaining.isEmpty) {
-              Future.successful(Right(TxNotFound))
+              Future.successful(Right(TxNotFound()))
             } else {
               rec(remaining.head, remaining.tail)
             }
@@ -486,6 +494,15 @@ trait EndpointsLogic extends Endpoints {
       }
     )
   }
+
+  val getTransactionLogic = serverLogicRedirect(getTransaction)(
+    { case (txId, fromGroup, toGroup) =>
+      Future.successful(serverUtils.getTransaction(blockFlow, txId, fromGroup, toGroup))
+    },
+    { case (_, fromGroup, _) =>
+      getGroupIndex(fromGroup)
+    }
+  )
 
   val minerActionLogic = serverLogic(minerAction) { action =>
     withSyncedClique {
@@ -608,7 +625,7 @@ trait EndpointsLogic extends Endpoints {
           serverUtils.getEventsByContractId(
             blockFlow,
             counterRange.start,
-            counterRange.endOpt,
+            counterRange.limitOpt.getOrElse(CounterRange.MaxCounterRange),
             contractAddress.lockupScript.contractId
           )
         }
@@ -632,6 +649,19 @@ trait EndpointsLogic extends Endpoints {
     { case (txId, _) =>
       Future.successful {
         serverUtils.getEventsByTxId(blockFlow, txId)
+      }
+    },
+    {
+      case (_, groupIndexOpt) => {
+        getGroupIndex(groupIndexOpt)
+      }
+    }
+  )
+
+  val getEventsByBlockHashLogic = serverLogicRedirect(getEventsByBlockHash)(
+    { case (blockHash, _) =>
+      Future.successful {
+        serverUtils.getEventsByBlockHash(blockFlow, blockHash)
       }
     },
     {
