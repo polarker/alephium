@@ -23,7 +23,7 @@ import org.alephium.io.{IOResult, RocksDBSource, StorageFixture}
 import org.alephium.protocol.Hash
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.event.LogStorage
-import org.alephium.util.{AlephiumSpec, AVector, I256}
+import org.alephium.util.{AlephiumSpec, AVector}
 
 class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with StorageFixture {
   def generateAsset: Gen[(TxOutputRef, TxOutput)] = {
@@ -43,12 +43,13 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
   }
 
   // scalastyle:off method.length
-  def test[T, R1, R2, R3](initialWorldState: WorldState[T, R1, R2, R3]) = {
-    val (assetOutputRef, assetOutput)                                = generateAsset.sample.get
-    val (contractId, code, state, contractOutputRef, contractOutput) = generateContract().sample.get
-    val (contractId1, _, _, contractOutputRef1, contractOutput1)     = generateContract().sample.get
+  def test[T, R1, R2, R3](initialWorldState: WorldState[T, R1, R2, R3], isLemanFork: Boolean) = {
+    val (assetOutputRef, assetOutput) = generateAsset.sample.get
+    val (contractId, code, _, mutFields, contractOutputRef, contractOutput) =
+      generateContract().sample.get
+    val (contractId1, _, _, _, contractOutputRef1, contractOutput1) = generateContract().sample.get
 
-    val contractObj = code.toObjectUnsafe(contractId, state)
+    val contractObj = code.toObjectUnsafeTestOnly(contractId, AVector.empty, mutFields)
     var worldState  = initialWorldState
 
     def update(f: => IOResult[T]) = f.rightValue match {
@@ -68,15 +69,17 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
     update(worldState.addAsset(assetOutputRef, assetOutput))
     worldState.getOutput(assetOutputRef) isE assetOutput
 
-    update(
+    update {
       worldState.createContractUnsafe(
         contractId,
         code,
-        state,
+        AVector.empty,
+        mutFields,
         contractOutputRef,
-        contractOutput
+        contractOutput,
+        isLemanFork
       )
-    )
+    }
     worldState.getContractObj(contractId) isE contractObj
     worldState.contractExists(contractId) isE true
     worldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
@@ -86,87 +89,156 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
     worldState.getOutput(assetOutputRef).isLeft is true
 
     val newState = AVector[Val](Val.Bool(false))
-    assume(newState != state)
+    assume(newState != mutFields)
     update(
       worldState.createContractUnsafe(
         contractId1,
         code,
+        AVector.empty,
         newState,
         contractOutputRef1,
-        contractOutput1
+        contractOutput1,
+        isLemanFork
       )
     )
     worldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 2)
-    worldState.getContractObj(contractId1) isE code.toObjectUnsafe(contractId1, newState)
+    worldState
+      .getContractObj(contractId1) isE code.toObjectUnsafeTestOnly(
+      contractId1,
+      AVector.empty,
+      newState
+    )
 
-    update(worldState.removeContract(contractId))
+    update(worldState.removeAsset(contractOutputRef))
+    update(worldState.removeContractForVM(contractId))
     worldState.getContractObj(contractId).isLeft is true
     worldState.contractExists(contractId) isE false
     worldState.getOutput(contractOutputRef).isLeft is true
     worldState.getContractState(contractId).isLeft is true
     worldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
-    worldState.removeContract(contractId).isLeft is true
+    worldState.removeContractForVM(contractId).isLeft is true
 
-    update(worldState.removeContract(contractId1))
+    update(worldState.removeAsset(contractOutputRef1))
+    update(worldState.removeContractForVM(contractId1))
     worldState.getContractObj(contractId1).isLeft is true
     worldState.contractExists(contractId1) isE false
     worldState.getOutput(contractOutputRef1).isLeft is true
     worldState.getContractState(contractId).isLeft is true
     worldState.getContractCode(code.hash).isLeft is true
-    worldState.removeContract(contractId1).isLeft is true
+    worldState.removeContractForVM(contractId1).isLeft is true
   }
 
-  it should "test mutable world state" in {
+  trait Fixture {
     val storage = newDBStorage()
-    test(
-      WorldState.emptyCached(
-        newDB(storage, RocksDBSource.ColumnFamily.All),
-        newLogStorage(storage)
-      )
+    val persisted = WorldState.emptyPersisted(
+      newDB(storage, RocksDBSource.ColumnFamily.All),
+      newDB(storage, RocksDBSource.ColumnFamily.All),
+      newLogStorage(storage)
     )
+    val cached = persisted.cached()
   }
 
-  it should "test immutable world state" in {
-    val storage = newDBStorage()
-    test(
-      WorldState.emptyPersisted(
-        newDB(storage, RocksDBSource.ColumnFamily.All),
-        newLogStorage(storage)
-      )
-    )
+  it should "test mutable world state for Genesis fork" in new Fixture {
+    test(cached, isLemanFork = false)
   }
 
-  it should "maintain the order of the cached logs" in {
-    val logInputGen = for {
-      blockHash <- blockHashGen
-    } yield (blockHash, TransactionId.random, ContractId.random)
+  it should "test mutable world state for Leman fork" in new Fixture {
+    test(cached, isLemanFork = true)
+  }
 
-    val storage = newDBStorage()
-    val worldState = WorldState
-      .emptyCached(
-        newDB(storage, RocksDBSource.ColumnFamily.All),
-        newLogStorage(storage)
-      )
-      .staging()
+  it should "test immutable world state for Genesis fork" in new Fixture {
+    test(persisted, isLemanFork = false)
+  }
 
-    val logInputs = Gen.listOfN(10, logInputGen).sample.value
-    val fields =
-      AVector[Val](Val.I256(I256.from(0)), Val.I256(I256.from(1))) // the first field is event code
-    val logStates = logInputs.map { case (blockHash, txId, contractId) =>
-      worldState.logState.putLog(
-        blockHash,
-        txId,
+  it should "test immutable world state for Leman fork" in new Fixture {
+    test(persisted, isLemanFork = true)
+  }
+
+  it should "not migrate contracts created before Leman fork" in new Fixture {
+    val (contractId, code, _, mutFields, contractOutputRef, contractOutput) =
+      generateContract().sample.get
+    cached.createContractLegacyUnsafe(
+      contractId,
+      code,
+      mutFields,
+      contractOutputRef,
+      contractOutput
+    ) isE ()
+    val newWorldState = cached.persist().rightValue
+    newWorldState.getContractObj(contractId).isRight is true
+
+    newWorldState
+      .cached()
+      .migrateContractLemanUnsafe(
         contractId,
-        fields,
-        false,
-        false
-      )
+        code.toContract().rightValue,
+        AVector.empty,
+        AVector.empty
+      ) isE false
+  }
 
-      LogStates(blockHash, contractId, AVector(LogState(txId, 0, fields.tail)))
-    }
+  trait MigrationFixture extends Fixture {
+    val (contractId, code, _, mutFields, contractOutputRef, contractOutput) =
+      generateContract().sample.get
+    cached.createContractLemanUnsafe(
+      contractId,
+      code,
+      AVector.empty,
+      mutFields,
+      contractOutputRef,
+      contractOutput
+    ) isE ()
+    val oldWorldState = cached.persist().rightValue
+    val oldContractState =
+      oldWorldState.getContractState(contractId).rightValue.asInstanceOf[ContractNewState]
+  }
 
-    val newLogs = worldState.logState.getNewLogs()
-    newLogs is AVector.from(logStates)
+  it should "migrate contracts created after Leman fork" in new MigrationFixture {
+    val newCode   = code.copy(fieldLength = 2)
+    val newCached = oldWorldState.cached()
+    newCached.migrateContractLemanUnsafe(
+      contractId,
+      newCode.toContract().rightValue,
+      AVector(Val.True, Val.False),
+      AVector.empty
+    ) isE true
+
+    val migratedWorldState = newCached.persist().rightValue
+    migratedWorldState.codeState.exists(code.hash) isE false
+    migratedWorldState.codeState.exists(newCode.hash) isE true
+    migratedWorldState.getContractCode(newCode.hash) isE WorldState.CodeRecord(newCode, 1)
+    // The old immutable state is still kept as history, which can be pruned in the future
+    migratedWorldState.contractImmutableState.get(oldContractState.mutable.immutableStateHash) isE
+      oldContractState.immutable
+
+    val migratedContractState =
+      migratedWorldState.getContractState(contractId).rightValue.asInstanceOf[ContractNewState]
+    migratedWorldState.contractImmutableState.get(
+      migratedContractState.mutable.immutableStateHash
+    ) isE migratedContractState.immutable
+    migratedContractState.initialStateHash is oldContractState.initialStateHash
+    migratedContractState.mutFields is AVector.empty[Val]
+    migratedContractState.immFields is AVector[Val](Val.True, Val.False)
+  }
+
+  it should "migrate without any state change" in new MigrationFixture {
+    oldWorldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
+
+    val newCached = oldWorldState.cached()
+    newCached.migrateContractLemanUnsafe(
+      contractId,
+      code.toContract().rightValue,
+      AVector.empty,
+      mutFields
+    ) isE true
+
+    val migratedWorldState = newCached.persist().rightValue
+    migratedWorldState.codeState.exists(code.hash) isE true
+    migratedWorldState.getContractCode(code.hash) isE WorldState.CodeRecord(code, 1)
+
+    val migratedContractState =
+      migratedWorldState.getContractState(contractId).rightValue.asInstanceOf[ContractNewState]
+    migratedContractState is oldContractState
   }
 
   it should "test the event key of contract creation and destruction" in {
@@ -175,16 +247,27 @@ class WorldStateSpec extends AlephiumSpec with NoIndexModelGenerators with Stora
   }
 
   trait StagingFixture {
-    val storage = newDBStorage()
+    val isLemanFork: Boolean = scala.util.Random.nextBoolean()
+    val storage              = newDBStorage()
     val worldState = WorldState.emptyCached(
+      newDB(storage, RocksDBSource.ColumnFamily.All),
       newDB(storage, RocksDBSource.ColumnFamily.All),
       newLogStorage(storage)
     )
     val staging = worldState.staging()
 
-    val (contractId, code, state, contractOutputRef, contractOutput) = generateContract().sample.get
-    val contractObj = code.toObjectUnsafe(contractId, state)
-    staging.createContractUnsafe(contractId, code, state, contractOutputRef, contractOutput) isE ()
+    val (contractId, code, _, mutFields, contractOutputRef, contractOutput) =
+      generateContract().sample.get
+    val contractObj = code.toObjectUnsafeTestOnly(contractId, AVector.empty, mutFields)
+    staging.createContractUnsafe(
+      contractId,
+      code,
+      AVector.empty,
+      mutFields,
+      contractOutputRef,
+      contractOutput,
+      isLemanFork
+    ) isE ()
     staging.getContractObj(contractId) isE contractObj
     worldState.getContractObj(contractId).isLeft is true
   }
