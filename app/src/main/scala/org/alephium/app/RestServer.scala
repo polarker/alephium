@@ -88,7 +88,7 @@ class RestServer(
       getHashesAtHeightLogic,
       getChainInfoLogic,
       getBlockHeaderEntryLogic,
-      listUnconfirmedTransactionsLogic,
+      listMempoolTransactionsLogic,
       buildTransactionLogic,
       buildSweepAddressTransactionsLogic,
       submitTransactionLogic,
@@ -140,7 +140,8 @@ class RestServer(
     .route()
     .handler(
       CorsHandler
-        .create(".*.")
+        .create()
+        .addRelativeOrigin(".*.")
         .allowedMethod(HttpMethod.GET)
         .allowedMethod(HttpMethod.POST)
         .allowedMethod(HttpMethod.PUT)
