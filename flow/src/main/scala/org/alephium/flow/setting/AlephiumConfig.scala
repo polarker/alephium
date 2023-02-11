@@ -58,9 +58,19 @@ final case class ConsensusSetting(
   val minMiningDiff: Difficulty = maxMiningTarget.getDifficulty()
   val minBlockWeight: Weight    = Weight.from(maxMiningTarget)
 
-  val expectedTimeSpan: Duration       = blockTargetTime
-  val powAveragingWindow: Int          = 17
-  val expectedWindowTimeSpan: Duration = expectedTimeSpan.timesUnsafe(powAveragingWindow.toLong)
+  val expectedTimeSpan: Duration        = blockTargetTime
+  val powAveragingWindow: Int           = 17
+  val expectedWindowTimeSpan: Duration  = expectedTimeSpan.timesUnsafe(powAveragingWindow.toLong)
+  val crossShardHeightGapThreshold: Int = powAveragingWindow
+
+  def penalizeDiffForHeightGapLeman(diff: Difficulty, gap: Int): Difficulty = {
+    val delta = gap - crossShardHeightGapThreshold
+    if (delta > 0) {
+      diff.times(100 + 5 * delta).divide(100)
+    } else {
+      diff
+    }
+  }
 
   val diffAdjustDownMax: Int = 16
   val diffAdjustUpMax: Int   = 8
@@ -338,8 +348,8 @@ object AlephiumConfig {
         val discoveryRefined = if (network.networkId == NetworkId.AlephiumTestNet) {
           discovery.copy(bootstrap =
             ArraySeq(
-              new InetSocketAddress("testnet-v16-bootstrap0.alephium.org", 9973),
-              new InetSocketAddress("testnet-v16-bootstrap1.alephium.org", 9973)
+              new InetSocketAddress("v17-bootstrap0.testnet.alephium.org", 9973),
+              new InetSocketAddress("v17-bootstrap1.testnet.alephium.org", 9973)
             )
           )
         } else {
