@@ -83,43 +83,44 @@ class BroadcastTxTest extends AlephiumActorSpec {
   }
 
   it should "broadcast sequential txs between inter clique node" in new CliqueFixture {
+    val numCliques = 3
+
     val clique1           = bootClique(nbOfNodes = 1)
     val masterPortClique1 = clique1.masterTcpPort
 
     clique1.start()
-    val selfClique1 = clique1.selfClique()
 
-    val clique2 =
+    val cliques = AVector.fill(numCliques - 1) {
       bootClique(
         nbOfNodes = 1,
         bootstrap = Some(new InetSocketAddress("127.0.0.1", masterPortClique1))
       )
-    clique2.start()
-    val masterPortClique2 = clique2.masterTcpPort
+    }
+    cliques.foreach(_.start())
 
-    clique2.servers.foreach { server =>
+    cliques.foreach(_.servers.foreach { server =>
       eventually(request[SelfClique](getSelfClique, server.config.network.restPort).synced is true)
       eventually {
         val interCliquePeers =
           request[Seq[InterCliquePeerInfo]](
             getInterCliquePeerInfo,
             restPort(server.config.network.bindAddress.getPort)
-          ).head
-        interCliquePeers.cliqueId is selfClique1.cliqueId
-        interCliquePeers.isSynced is true
+          )
+        interCliquePeers.length is (numCliques - 1)
+        interCliquePeers.foreach(_.isSynced is true)
 
         val discoveredNeighbors =
           request[Seq[BrokerInfo]](
             getDiscoveredNeighbors,
             restPort(server.config.network.bindAddress.getPort)
           )
-        discoveredNeighbors.length is 2
+        discoveredNeighbors.length is 3
       }
-    }
+    })
 
     var amount = ALPH.alph(4096)
-    val transactions = AVector.tabulate(12) { k =>
-      amount = amount.divUnsafe(2)
+    val transactions = AVector.tabulate(100) { k =>
+      amount = amount.subUnsafe(ALPH.oneAlph)
       val tx = (k % 4) match {
         case 0 =>
           transfer(
@@ -132,12 +133,20 @@ class BroadcastTxTest extends AlephiumActorSpec {
         case 1 =>
           transfer(
             transferPubKey,
-            address,
+            transferAddress,
             amount,
             transferPriKey,
             restPort(masterPortClique1)
           )
         case 2 =>
+          transfer(
+            transferPubKey,
+            address,
+            amount,
+            transferPriKey,
+            restPort(masterPortClique1)
+          )
+        case 3 =>
           transfer(
             publicKey,
             address,
@@ -145,31 +154,27 @@ class BroadcastTxTest extends AlephiumActorSpec {
             privateKey,
             restPort(masterPortClique1)
           )
-        case 3 =>
-          transfer(
-            transferPubKey,
-            transferAddress,
-            amount,
-            transferPriKey,
-            restPort(masterPortClique1)
-          )
       }
       tx
     }
     transactions.foreach(checkTx(_, restPort(masterPortClique1), MemPooled()))
-    transactions.foreach(checkTx(_, restPort(masterPortClique2), MemPooled()))
+    transactions.foreach(tx =>
+      cliques.foreach(clique => checkTx(tx, clique.masterRestPort, MemPooled()))
+    )
     transactions.foreach(tx => txNotInBlocks(tx.txId, restPort(masterPortClique1)))
-    transactions.foreach(tx => txNotInBlocks(tx.txId, restPort(masterPortClique2)))
+    transactions.foreach(tx =>
+      cliques.foreach(clique => txNotInBlocks(tx.txId, clique.masterRestPort))
+    )
 
-    clique2.startFakeMining()
+    cliques.head.startFakeMining()
 
     transactions.foreach { tx =>
       confirmTx(tx, restPort(masterPortClique1))
       getTransaction(tx.txId, restPort(masterPortClique1))
     }
 
-    clique2.stopFakeMining()
+    cliques.head.stopFakeMining()
     clique1.stop()
-    clique2.stop()
+    cliques.foreach(_.stop())
   }
 }
