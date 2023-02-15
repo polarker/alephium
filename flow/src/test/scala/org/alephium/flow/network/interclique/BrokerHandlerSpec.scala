@@ -72,24 +72,11 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     }
     brokerHandlerActor.selfSynced is true
     brokerHandlerActor.remoteSynced is false
-    cliqueManager.expectNoMessage()
+    cliqueManager.expectMsg(CliqueManager.Synced(brokerHandlerActor.remoteBrokerInfo))
 
     EventFilter.info(start = "Self synced", occurrences = 0).intercept {
       brokerHandler ! BaseBrokerHandler.Received(InvResponse(RequestId.random(), AVector.empty))
     }
-  }
-
-  it should "set synced" in new Fixture {
-    brokerHandlerActor.selfSynced is false
-    brokerHandlerActor.remoteSynced is false
-
-    brokerHandler ! FlowHandler.SyncInventories(Some(RequestId.random()), AVector(AVector.empty))
-    brokerHandler ! BaseBrokerHandler.Received(InvResponse(RequestId.random(), AVector.empty))
-    eventually {
-      brokerHandlerActor.selfSynced is true
-      brokerHandlerActor.remoteSynced is true
-    }
-    cliqueManager.expectMsg(CliqueManager.Synced(brokerHandlerActor.remoteBrokerInfo))
   }
 
   it should "mark block seen when receive valid NewBlock/NewBlockHash" in new Fixture {
@@ -106,9 +93,6 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val block = emptyBlock(blockFlow, chainIndex)
 
     brokerHandler ! BaseBrokerHandler.Received(NewBlockHash(block.hash))
-    blockFlowSynchronizer.expectMsg(
-      BlockFlowSynchronizer.HandShaked(brokerHandlerActor.remoteBrokerInfo)
-    )
     eventually(brokerHandlerActor.seenBlocks.contains(block.hash) is true)
     blockFlowSynchronizer.expectMsg(BlockFlowSynchronizer.BlockAnnouncement(block.hash))
     brokerHandler ! BaseBrokerHandler.Received(NewBlockHash(block.hash))
@@ -257,7 +241,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val txs = AVector.fill(10)(transactionGen(chainIndexGen = chainIndexGen).sample.get.toTemplate)
     brokerHandler ! BaseBrokerHandler.Received(TxsResponse(RequestId.random(), txs))
     allHandlerProbes.txHandler.expectMsg(
-      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false)
+      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false, isLocalTx = false)
     )
     txs.foreach { tx =>
       brokerHandlerActor.seenTxs.contains(tx.id) is false
@@ -342,7 +326,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val response = TxsResponse(RequestId.random(), txs)
     brokerHandler ! BaseBrokerHandler.Received(response)
     allHandlerProbes.txHandler.expectMsg(
-      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false)
+      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false, isLocalTx = false)
     )
 
     val invalidTx =

@@ -44,16 +44,18 @@ case object NoTxInput                                          extends ExeFailur
 case object TxInputAddressesAreNotIdentical                    extends ExeFailure
 case object AccessTxInputAddressInContract                     extends ExeFailure
 case object LockTimeOverflow                                   extends ExeFailure
+case object InvalidLockTime                                    extends ExeFailure
 case object AbsoluteLockTimeVerificationFailed                 extends ExeFailure
 case object RelativeLockTimeVerificationFailed                 extends ExeFailure
 case object RelativeLockTimeExpectPersistedUtxo                extends ExeFailure
 final case class ArithmeticError(message: String)              extends ExeFailure
 case object InvalidVarIndex                                    extends ExeFailure
 case object InvalidVarType                                     extends ExeFailure
-case object InvalidFieldIndex                                  extends ExeFailure
+case object InvalidMutFieldIndex                               extends ExeFailure
+case object InvalidImmFieldIndex                               extends ExeFailure
 case object InvalidFieldLength                                 extends ExeFailure
 case object TooManyFields                                      extends ExeFailure
-case object InvalidFieldType                                   extends ExeFailure
+case object InvalidMutFieldType                                extends ExeFailure
 case object EmptyMethods                                       extends ExeFailure
 final case class InvalidType(v: Val)                           extends ExeFailure
 case object InvalidMethod                                      extends ExeFailure
@@ -90,6 +92,7 @@ case object BalanceErrorWhenSwitchingBackFrame                 extends ExeFailur
 case object LowerThanContractMinimalBalance                    extends ExeFailure
 case object UnableToPayGasFee                                  extends ExeFailure
 case object InvalidOutputBalances                              extends ExeFailure
+case object InvalidTokenNumForContractOutput                   extends ExeFailure
 case object InvalidTokenId                                     extends ExeFailure
 case object InvalidContractId                                  extends ExeFailure
 case object ExpectAContract                                    extends ExeFailure
@@ -110,6 +113,7 @@ case object InvalidSizeForZeros                                extends ExeFailur
 final case class SerdeErrorByteVecToAddress(error: SerdeError) extends ExeFailure
 case object FailedInRecoverEthAddress                          extends ExeFailure
 case object UnexpectedRecursiveCallInMigration                 extends ExeFailure
+case object UnableToMigratePreLemanContract                    extends ExeFailure
 case object InvalidAssetAddress                                extends ExeFailure
 final case class ContractAlreadyExists(contractId: ContractId) extends ExeFailure
 case object NoBlockHashAvailable                               extends ExeFailure
