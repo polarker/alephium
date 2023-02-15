@@ -118,44 +118,16 @@ class BroadcastTxTest extends AlephiumActorSpec {
       }
     })
 
-    var amount = ALPH.alph(4096)
-    val transactions = AVector.tabulate(100) { k =>
-      amount = amount.subUnsafe(ALPH.oneAlph)
-      val tx = (k % 4) match {
-        case 0 =>
-          transfer(
-            publicKey,
-            transferAddress,
-            amount,
-            privateKey,
-            restPort(masterPortClique1)
-          )
-        case 1 =>
-          transfer(
-            transferPubKey,
-            transferAddress,
-            amount,
-            transferPriKey,
-            restPort(masterPortClique1)
-          )
-        case 2 =>
-          transfer(
-            transferPubKey,
-            address,
-            amount,
-            transferPriKey,
-            restPort(masterPortClique1)
-          )
-        case 3 =>
-          transfer(
-            publicKey,
-            address,
-            amount,
-            privateKey,
-            restPort(masterPortClique1)
-          )
-      }
-      tx
+    val transactions = AVector.fill(100) {
+      val (toAddress, _, _) = generateAccount
+
+      transfer(
+        publicKey,
+        toAddress,
+        ALPH.oneAlph,
+        privateKey,
+        restPort(masterPortClique1)
+      )
     }
     transactions.foreach(checkTx(_, restPort(masterPortClique1), MemPooled()))
     transactions.foreach(tx =>
