@@ -16,6 +16,8 @@
 
 package org.alephium.flow.mempool
 
+import scala.util.Random
+
 import org.alephium.flow.AlephiumFlowSpec
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.GasPrice
@@ -196,7 +198,7 @@ class MemPoolSpec
     pool.size is 3
     pool.add(index2, tx3, currentTs) is MemPool.DoubleSpending
     pool.size is 3
-    pool.clean(blockFlow, TimeStamp.now().plusMinutesUnsafe(1))
+    pool.clean(blockFlow, TimeStamp.now().plusMinutesUnsafe(1)) is 2
     pool.size is 1
     pool.contains(tx2) is true
   }
@@ -205,5 +207,36 @@ class MemPoolSpec
     tx0.unsigned.inputs.foreach(input => pool.isSpent(input.outputRef) is true)
     pool.clear()
     tx0.unsigned.inputs.foreach(input => pool.isSpent(input.outputRef) is false)
+  }
+
+  it should "collect transactions based on gas price" in {
+    val pool = MemPool.empty(mainGroup)
+    pool.size is 0
+
+    val index = ChainIndex.unsafe(0)
+    val txs = Seq.tabulate(10) { k =>
+      val tx = transactionGen().sample.get
+      tx.copy(unsigned = tx.unsigned.copy(gasPrice = GasPrice(nonCoinbaseMinGasPrice.value + k)))
+        .toTemplate
+    }
+    val timeStamp = TimeStamp.now()
+    Random.shuffle(txs).foreach(tx => pool.add(index, tx, timeStamp))
+
+    pool.collectForBlock(index, Int.MaxValue) is AVector.from(
+      txs.sortBy(_.unsigned.gasPrice.value).reverse
+    )
+  }
+
+  it should "handle cross-group transactions" in {
+    val mainGroup = GroupIndex.unsafe(0)
+    val pool      = MemPool.empty(mainGroup)
+    val index     = ChainIndex.unsafe(1, 0)
+    val tx        = transactionGen().retryUntil(_.chainIndex == index).sample.get.toTemplate
+    pool.addXGroupTx(index, tx, TimeStamp.now())
+    pool.size is 1
+    pool.collectForBlock(ChainIndex(mainGroup, mainGroup), Int.MaxValue).isEmpty is true
+
+    pool.clean(blockFlow, TimeStamp.now().plusHoursUnsafe(1)) is 1
+    pool.size is 0
   }
 }

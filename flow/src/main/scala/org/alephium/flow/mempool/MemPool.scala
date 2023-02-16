@@ -42,9 +42,8 @@ class MemPool private (
     timestamps: ValueSortedMap[TransactionId, TimeStamp],
     val sharedTxIndexes: TxIndexes,
     val capacity: Int
-)(implicit
-    groupConfig: GroupConfig
-) extends RWLock {
+)(implicit val groupConfig: GroupConfig)
+    extends RWLock {
   def size: Int = readOnly(timestamps.size)
 
   private def _isFull(): Boolean = size >= capacity
@@ -56,6 +55,8 @@ class MemPool private (
   }
 
   def contains(txId: TransactionId): Boolean = readOnly(_contains(txId))
+
+  def get(txId: TransactionId): Option[TransactionTemplate] = readOnly(flow.get(txId).map(_.tx))
 
   private def _contains(txId: TransactionId): Boolean = {
     timestamps.contains(txId)
@@ -121,9 +122,9 @@ class MemPool private (
       if (_contains(tx.id)) {
         MemPool.AlreadyExisted
       } else if (_isFull()) {
-        val lowestWeightTxId = flow.allTxs.min
+        val lowestWeightTxId = flow.allTxs.max // tx order is reversed
         val lowestWeightTx   = flow.unsafe(lowestWeightTxId).tx
-        if (MemPool.txOrdering.gt(tx, lowestWeightTx)) {
+        if (MemPool.txOrdering.lt(tx, lowestWeightTx)) {
           _removeUnusedTx(lowestWeightTxId)
           _add(index, tx, timeStamp)
         } else {
@@ -248,7 +249,7 @@ class MemPool private (
     transactionsTotalLabeled.foreach(_.set(0.0))
   }
 
-  private def _takeOldTxs(
+  private[mempool] def _takeOldTxs(
       timeStampThreshold: TimeStamp
   ): AVector[TransactionTemplate] = {
     var buffer = AVector.empty[TransactionTemplate]
@@ -262,14 +263,17 @@ class MemPool private (
     buffer
   }
 
+  // TODO: Optimize this
   def clean(
       blockFlow: BlockFlow,
       timeStampThreshold: TimeStamp
-  ): Unit = writeOnly {
-    val oldTxs = _takeOldTxs(timeStampThreshold)
+  ): Int = writeOnly {
+    val oldTxs  = _takeOldTxs(timeStampThreshold)
+    var removed = 0
     blockFlow.recheckInputs(group, oldTxs).foreach { invalidTxs =>
-      removeUnusedTxs(invalidTxs)
+      removed += removeUnusedTxs(invalidTxs)
     }
+    removed
   }
 
   private val transactionsTotalLabeled = {
@@ -332,7 +336,9 @@ object MemPool {
   case object AlreadyExisted extends AddTxFailed
 
   val txOrdering: Ordering[TransactionTemplate] =
-    Ordering.by[TransactionTemplate, (U256, Hash)](tx => (tx.unsigned.gasPrice.value, tx.id.value))
+    Ordering
+      .by[TransactionTemplate, (U256, Hash)](tx => (tx.unsigned.gasPrice.value, tx.id.value))
+      .reverse // reverse the order so that higher gas tx can be at the front of an ordered collection
 
   implicit val nodeOrdering: Ordering[FlowNode] = {
     Ordering.by[FlowNode, TransactionTemplate](_.tx)(txOrdering)

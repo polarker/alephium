@@ -27,6 +27,12 @@ trait PendingTxStorage extends KeyValueStorage[PersistedTxId, TransactionTemplat
   def iterateE(f: (PersistedTxId, TransactionTemplate) => IOResult[Unit]): IOResult[Unit]
   def iterate(f: (PersistedTxId, TransactionTemplate) => Unit): IOResult[Unit]
   def replace(oldId: PersistedTxId, newId: PersistedTxId, tx: TransactionTemplate): IOResult[Unit]
+
+  def size(): Int = {
+    var result = 0
+    iterate((_, _) => result += 1)
+    result
+  }
 }
 
 object PendingTxRocksDBStorage extends RocksDBKeyValueCompanion[PendingTxRocksDBStorage] {
@@ -59,7 +65,7 @@ class PendingTxRocksDBStorage(
   ): IOResult[Unit] = {
     assume(oldId.txId == newId.txId)
     IOUtils.tryExecute {
-      deleteUnsafe(oldId)
+      removeUnsafe(oldId)
       putUnsafe(newId, tx)
     }
   }

@@ -16,8 +16,6 @@
 
 package org.alephium.protocol.vm
 
-import scala.util.Random
-
 import akka.util.ByteString
 import org.scalacheck.Gen
 
@@ -48,6 +46,7 @@ class ContextSpec
         .createContract(
           contractId,
           StatefulContract.forSMT,
+          AVector.empty,
           balances,
           AVector.empty,
           None
@@ -74,7 +73,7 @@ class ContextSpec
 
   it should "generate asset output" in new Fixture {
     val assetOutput = assetOutputGen(GroupIndex.unsafe(0))(_tokensGen =
-      tokensGen(1, Gen.choose(1, maxTokenPerUtxo))
+      tokensGen(1, Gen.choose(1, maxTokenPerAssetUtxo))
     ).sample.get
     context.generateOutput(assetOutput) isE ()
     initialGas.use(GasSchedule.txOutputBaseGas) isE context.gasRemaining
@@ -116,7 +115,7 @@ class ContextSpec
     val obj        = context.loadContractObj(contractId).rightValue
     val newCode: StatefulContract =
       StatefulContract(0, AVector(Method.forSMT, Method.forSMT))
-    context.migrateContract(contractId, obj, newCode, None) isE ()
+    context.migrateContract(contractId, obj, newCode, None, None) isE ()
     context.contractPool.contains(contractId) is false
     context.contractBlockList.contains(contractId) is true
 
@@ -133,8 +132,14 @@ class ContextSpec
     val obj        = context.loadContractObj(contractId).rightValue
     val newCode: StatefulContract =
       StatefulContract(1, AVector(Method.forSMT, Method.forSMT))
-    context.migrateContract(contractId, obj, newCode, None).leftValue isE InvalidFieldLength
-    context.migrateContract(contractId, obj, newCode, Some(AVector(Val.True))) isE ()
+    context.migrateContract(contractId, obj, newCode, None, None).leftValue isE InvalidFieldLength
+    context.migrateContract(
+      contractId,
+      obj,
+      newCode,
+      Some(AVector.empty),
+      Some(AVector(Val.True))
+    ) isE ()
     context.contractPool.contains(contractId) is false
     context.contractBlockList.contains(contractId) is true
 
@@ -192,7 +197,7 @@ class ContextSpec
       context.contractInputs.clear()
       context.contractInputs += outputRef -> output
       context.markAssetInUsing(contractId)
-      context.worldState.createContractUnsafe(
+      context.worldState.createContractLegacyUnsafe(
         contractId,
         StatefulContract.forSMT,
         AVector.empty,
@@ -284,7 +289,7 @@ class ContextSpec
   }
 
   it should "generate single output when token number <= maxTokenPerUTXO for Mainnet hardfork" in new MainnetAssetOutputFixture {
-    (0 to maxTokenPerUtxo).foreach { num =>
+    (0 to maxTokenPerAssetUtxo).foreach { num =>
       val output = prepareOutput(ALPH.oneAlph, num)
       context.generatedOutputs.clear()
       context.generateOutput(output) isE ()
@@ -293,7 +298,7 @@ class ContextSpec
   }
 
   it should "generate single output when token number > maxTokenPerUTXO for Mainnet hardfork" in new MainnetAssetOutputFixture {
-    (maxTokenPerUtxo + 1 to 5 * maxTokenPerUtxo).foreach { num =>
+    (maxTokenPerAssetUtxo + 1 to 5 * maxTokenPerAssetUtxo).foreach { num =>
       val output = prepareOutput(ALPH.oneAlph, num)
       context.generatedOutputs.clear()
       context.generateOutput(output) isE ()
@@ -302,36 +307,11 @@ class ContextSpec
   }
 
   it should "generate single output when token number <= maxTokenPerUTXO for Leman hardfork" in new LemanAssetOutputFixture {
-    (0 to maxTokenPerUtxo).foreach { num =>
+    (0 to maxTokenPerAssetUtxo).foreach { num =>
       val output = prepareOutput(ALPH.oneAlph, num)
       context.generatedOutputs.clear()
       context.generateOutput(output) isE ()
       context.generatedOutputs.toSeq is Seq(output)
-    }
-  }
-
-  it should "generate multiple outputs when token number > maxTokenPerUTXO for Leman hardfork" in new LemanAssetOutputFixture {
-    def test(output: AssetOutput, expectedAlph: Seq[U256], expectedTokenNum: Seq[Int]) = {
-      expectedAlph.length is expectedTokenNum.length
-      expectedTokenNum.sum is output.tokens.length
-      context.generatedOutputs.clear()
-      context.generateOutput(output) isE ()
-      expectedAlph.indices.foreach { k =>
-        context.generatedOutputs(k).amount is expectedAlph(k)
-        context.generatedOutputs(k).tokens.length is expectedTokenNum(k)
-        context.generatedOutputs(k).tokens is output.tokens.slice(
-          expectedTokenNum.take(k).sum,
-          expectedTokenNum.take(k + 1).sum
-        )
-      }
-    }
-
-    val k      = Random.nextInt(5) + 1
-    val output = prepareOutput(ALPH.alph(k.toLong), k * maxTokenPerUtxo)
-    test(output, Seq.fill(k)(ALPH.oneAlph), Seq.fill(k)(maxTokenPerUtxo))
-    (1 until maxTokenPerUtxo).foreach { r =>
-      val output = prepareOutput(ALPH.alph(k.toLong + 1), k * maxTokenPerUtxo + r)
-      test(output, Seq.fill(k + 1)(ALPH.oneAlph), Seq.fill(k)(maxTokenPerUtxo) :+ r)
     }
   }
 }
