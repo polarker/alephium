@@ -16,6 +16,8 @@
 
 package org.alephium.protocol.vm
 
+import java.nio.charset.StandardCharsets
+
 import scala.annotation.switch
 
 import akka.util.ByteString
@@ -45,6 +47,8 @@ sealed trait Instr[-Ctx <: StatelessContext] extends GasSchedule {
 
   // this function needs to charge gas manually
   def runWith[C <: Ctx](frame: Frame[C]): ExeResult[Unit]
+
+  def mockup(): Instr[Ctx] = this
 }
 
 sealed trait LemanInstr[-Ctx <: StatelessContext] extends Instr[Ctx] {
@@ -155,10 +159,12 @@ object Instr {
     Log6, Log7, Log8, Log9,
     ContractIdToAddress,
     LoadLocalByIndex, StoreLocalByIndex, Dup, AssertWithErrorCode, Swap,
-    BlockHash, DEBUG, TxGasPrice, TxGasAmount, TxGasFee
+    BlockHash, DEBUG, TxGasPrice, TxGasAmount, TxGasFee,
+    I256Exp, U256Exp, U256ModExp, VerifyBIP340Schnorr, GetSegregatedSignature, MulModN, AddModN,
+    U256ToString, I256ToString, BoolToString
   )
   val statefulInstrs0: AVector[InstrCompanion[StatefulContext]] = AVector(
-    LoadField, StoreField, CallExternal,
+    LoadMutField, StoreMutField, CallExternal,
     ApproveAlph, ApproveToken, AlphRemaining, TokenRemaining, IsPaying,
     TransferAlph, TransferAlphFromSelf, TransferAlphToSelf, TransferToken, TransferTokenFromSelf, TransferTokenToSelf,
     CreateContract, CreateContractWithToken, CopyCreateContract, DestroySelf, SelfContractId, SelfAddress,
@@ -166,9 +172,10 @@ object Instr {
     /* Below are instructions for Leman hard fork */
     MigrateSimple, MigrateWithFields, CopyCreateContractWithToken, BurnToken, LockApprovedAssets,
     CreateSubContract, CreateSubContractWithToken, CopyCreateSubContract, CopyCreateSubContractWithToken,
-    LoadFieldByIndex, StoreFieldByIndex, ContractExists, CreateContractAndTransferToken, CopyCreateContractAndTransferToken,
+    LoadMutFieldByIndex, StoreMutFieldByIndex, ContractExists, CreateContractAndTransferToken, CopyCreateContractAndTransferToken,
     CreateSubContractAndTransferToken, CopyCreateSubContractAndTransferToken,
-    NullContractAddress, SubContractId, SubContractIdOf, ALPHTokenId
+    NullContractAddress, SubContractId, SubContractIdOf, ALPHTokenId,
+    LoadImmField, LoadImmFieldByIndex
   )
   // format: on
 
@@ -199,6 +206,8 @@ object Instr {
 
   val allLogInstrs: AVector[LogInstr] =
     AVector(Log1, Log2, Log3, Log4, Log5, Log6, Log7, Log8, Log9)
+
+  val mockupCode: Byte = 0xff.toByte
 }
 
 sealed trait StatefulInstr  extends Instr[StatefulContext] with GasSchedule                     {}
@@ -410,46 +419,82 @@ case object StoreLocalByIndex
   }
 }
 
-sealed trait FieldInstr extends StatefulInstrSimpleGas with GasSimple {}
+sealed trait FieldInstr extends Instr[StatefulContext] with GasSimple {}
 @ByteCode
-final case class LoadField(index: Byte) extends FieldInstr with GasVeryLow {
+final case class LoadImmField(index: Byte)
+    extends LemanInstrWithSimpleGas[StatefulContext]
+    with FieldInstr
+    with GasVeryLow {
   def serialize(): ByteString = ByteString(code, index)
-  def _runWith[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
+  def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     for {
-      v <- frame.getField(Bytes.toPosInt(index))
+      v <- frame.getImmField(Bytes.toPosInt(index))
       _ <- frame.pushOpStack(v)
     } yield ()
   }
 }
-object LoadField extends StatefulInstrCompanion1[Byte]
+object LoadImmField extends StatefulInstrCompanion1[Byte]
 @ByteCode
-final case class StoreField(index: Byte) extends FieldInstr with GasVeryLow {
+final case class LoadMutField(index: Byte)
+    extends FieldInstr
+    with StatefulInstrSimpleGas
+    with GasVeryLow {
+  def serialize(): ByteString = ByteString(code, index)
+  def _runWith[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      v <- frame.getMutField(Bytes.toPosInt(index))
+      _ <- frame.pushOpStack(v)
+    } yield ()
+  }
+}
+object LoadMutField extends StatefulInstrCompanion1[Byte]
+@ByteCode
+final case class StoreMutField(index: Byte)
+    extends FieldInstr
+    with StatefulInstrSimpleGas
+    with GasVeryLow {
   def serialize(): ByteString = ByteString(code, index)
   def _runWith[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     for {
       v <- frame.popOpStack()
-      _ <- frame.setField(Bytes.toPosInt(index), v)
+      _ <- frame.setMutField(Bytes.toPosInt(index), v)
     } yield ()
   }
 }
-object StoreField extends StatefulInstrCompanion1[Byte]
+object StoreMutField extends StatefulInstrCompanion1[Byte]
 
-case object LoadFieldByIndex extends VarIndexInstr[StatefulContext] with StatefulInstrCompanion0 {
+case object LoadImmFieldByIndex
+    extends VarIndexInstr[StatefulContext]
+    with StatefulInstrCompanion0 {
   def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     for {
-      index <- popIndex(frame, InvalidFieldIndex)
-      v     <- frame.getField(index)
+      index <- popIndex(frame, InvalidMutFieldIndex)
+      v     <- frame.getImmField(index)
       _     <- frame.pushOpStack(v)
     } yield ()
   }
 }
 
-case object StoreFieldByIndex extends VarIndexInstr[StatefulContext] with StatefulInstrCompanion0 {
+case object LoadMutFieldByIndex
+    extends VarIndexInstr[StatefulContext]
+    with StatefulInstrCompanion0 {
   def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     for {
-      index <- popIndex(frame, InvalidFieldIndex)
+      index <- popIndex(frame, InvalidMutFieldIndex)
+      v     <- frame.getMutField(index)
+      _     <- frame.pushOpStack(v)
+    } yield ()
+  }
+}
+
+case object StoreMutFieldByIndex
+    extends VarIndexInstr[StatefulContext]
+    with StatefulInstrCompanion0 {
+  def runWithLeman[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      index <- popIndex(frame, InvalidMutFieldIndex)
       v     <- frame.popOpStack()
-      _     <- frame.setField(index, v)
+      _     <- frame.setMutField(index, v)
     } yield ()
   }
 }
@@ -499,8 +544,11 @@ trait AddressStackOps extends StackOps[Val.Address] {
   @inline def popOpStack(frame: Frame[_]): ExeResult[Val.Address] = frame.popOpStackAddress()
 }
 
+sealed trait BinaryInstr[T <: Val] extends StatelessInstr
+
 sealed trait BinaryArithmeticInstr[T <: Val]
-    extends ArithmeticInstr
+    extends BinaryInstr[T]
+    with ArithmeticInstr
     with StackOps[T]
     with GasSimple {
   protected def op(x: T, y: T): ExeResult[Val]
@@ -674,6 +722,80 @@ object U256Ge extends BinaryArithmeticInstr[Val.U256] with U256StackOps with Gas
     BinaryArithmeticInstr.u256Comp(_.>=(_))(x, y)
 }
 
+sealed trait ExpInstr[T <: Val]
+    extends BinaryInstr[T]
+    with StatelessInstrCompanion0
+    with LemanInstr[StatelessContext]
+    with GasExp {
+  def op[C <: StatelessContext](frame: Frame[C], exp: util.U256): ExeResult[T]
+
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      exp    <- frame.popOpStackU256()
+      result <- op(frame, exp.v)
+      _      <- frame.ctx.chargeGasWithSize(this, exp.v.byteLength())
+      _      <- frame.pushOpStack(result)
+    } yield ()
+  }
+}
+object I256Exp extends ExpInstr[Val.I256] {
+  def op[C <: StatelessContext](frame: Frame[C], exp: util.U256): ExeResult[Val.I256] =
+    frame
+      .popOpStackI256()
+      .flatMap(base =>
+        base.v
+          .pow(exp)
+          .map(v => Val.I256(v))
+          .toRight(Right(ArithmeticError(s"Exp overflow: $base ** $exp")))
+      )
+}
+
+object U256Exp extends ExpInstr[Val.U256] {
+  def op[C <: StatelessContext](frame: Frame[C], exp: util.U256): ExeResult[Val.U256] =
+    frame
+      .popOpStackU256()
+      .flatMap(base =>
+        base.v
+          .pow(exp)
+          .map(v => Val.U256(v))
+          .toRight(Right(ArithmeticError(s"Exp overflow: $base ** $exp")))
+      )
+}
+object U256ModExp extends ExpInstr[Val.U256] {
+  def op[C <: StatelessContext](frame: Frame[C], exp: util.U256): ExeResult[Val.U256] =
+    frame.popOpStackU256().map(base => Val.U256(base.v.modPow(exp)))
+}
+
+sealed trait ModNInstr
+    extends StatelessInstrCompanion0
+    with LemanInstr[StatelessContext]
+    with GasSimple {
+  def op(x: Val.U256, y: Val.U256, n: Val.U256): ExeResult[Val.U256]
+
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      n      <- frame.popOpStackU256()
+      y      <- frame.popOpStackU256()
+      x      <- frame.popOpStackU256()
+      result <- op(x, y, n)
+      _      <- frame.ctx.chargeGas(this)
+      _      <- frame.pushOpStack(result)
+    } yield ()
+  }
+}
+
+object MulModN extends ModNInstr with GasMulModN {
+  def op(x: Val.U256, y: Val.U256, n: Val.U256): ExeResult[Val.U256] = {
+    x.v.mulModN(y.v, n.v).map(Val.U256.apply).toRight(Right(ArithmeticError(s"($x * $y) % $n")))
+  }
+}
+
+object AddModN extends ModNInstr with GasAddModN {
+  def op(x: Val.U256, y: Val.U256, n: Val.U256): ExeResult[Val.U256] = {
+    x.v.addModN(y.v, n.v).map(Val.U256.apply).toRight(Right(ArithmeticError(s"($x + $y) % $n")))
+  }
+}
+
 sealed trait LogicInstr
     extends StatelessInstrSimpleGas
     with StatelessInstrCompanion0
@@ -732,6 +854,44 @@ case object U256To4Byte  extends U256ToBytesInstr(4)
 case object U256To8Byte  extends U256ToBytesInstr(8)
 case object U256To16Byte extends U256ToBytesInstr(16)
 case object U256To32Byte extends U256ToBytesInstr(32)
+
+sealed trait ToStringInstr
+    extends StatelessInstr
+    with LemanInstr[StatelessContext]
+    with GasToByte
+    with StatelessInstrCompanion0 {
+  def toString[C <: StatelessContext](frame: Frame[C]): ExeResult[String]
+
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      string <- toString(frame)
+      bytes = ByteString.fromArrayUnsafe(string.getBytes(StandardCharsets.US_ASCII))
+      _ <- frame.pushOpStack(Val.ByteVec(bytes))
+      _ <- frame.ctx.chargeGasWithSize(this, bytes.length)
+    } yield ()
+  }
+}
+
+object U256ToString extends ToStringInstr {
+  def toString[C <: StatelessContext](frame: Frame[C]): ExeResult[String] = {
+    frame.popOpStackU256().map(_.v.v.toString())
+  }
+}
+
+object I256ToString extends ToStringInstr {
+  def toString[C <: StatelessContext](frame: Frame[C]): ExeResult[String] = {
+    frame.popOpStackI256().map(_.v.v.toString())
+  }
+}
+
+object BoolToString extends ToStringInstr {
+  private val trueString  = "true"
+  private val falseString = "false"
+
+  def toString[C <: StatelessContext](frame: Frame[C]): ExeResult[String] = {
+    frame.popOpStackBool().map(bool => if (bool.v) trueString else falseString)
+  }
+}
 
 sealed abstract class U256FromBytesInstr(val size: Int)
     extends StatelessInstr
@@ -1160,6 +1320,26 @@ case object VerifyTxSignature
       }
     } yield ()
   }
+
+  override def mockup(): Instr[StatelessContext] = {
+    assume(this.gas() == VerifyTxSignatureMockup.gas())
+    VerifyTxSignatureMockup
+  }
+}
+
+case object VerifyTxSignatureMockup
+    extends SignatureInstr
+    with StatelessInstrCompanion0
+    with GasSignature {
+  def _runWith[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    val signatures = frame.ctx.signatures
+    for {
+      _ <- frame.popOpStackByteVec() // rawPublicKey
+      _ <- signatures.pop()          // signature
+    } yield ()
+  }
+
+  override lazy val code: Byte = Instr.mockupCode
 }
 
 sealed trait GenericVerifySignature[PubKey, Sig]
@@ -1181,6 +1361,29 @@ sealed trait GenericVerifySignature[PubKey, Sig]
       _ <- if (verify(rawData.bytes, signature, publicKey)) okay else failed(InvalidSignature)
     } yield ()
   }
+
+  override def mockup(): Instr[StatelessContext] = {
+    assume(this.gas() == VerifySignatureMockup.gas())
+    VerifySignatureMockup
+  }
+}
+
+sealed trait GenericVerifySignatureMockup[PubKey, Sig]
+    extends SignatureInstr
+    with StatelessInstrCompanion0
+    with GasSignature {
+  def _runWith[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    for {
+      _ <- frame.popOpStackByteVec() // rawSignature
+      _ <- frame.popOpStackByteVec() // rawPublicKey
+      _ <- frame.popOpStackByteVec() // rawData
+    } yield ()
+  }
+}
+
+case object VerifySignatureMockup
+    extends GenericVerifySignatureMockup[crypto.SecP256K1PublicKey, crypto.SecP256K1Signature] {
+  override lazy val code: Byte = Instr.mockupCode
 }
 
 case object VerifySecP256K1
@@ -1209,6 +1412,42 @@ case object VerifyED25519
       pubKey: crypto.ED25519PublicKey
   ): Boolean =
     crypto.ED25519.verify(data, signature, pubKey)
+}
+
+case object VerifyBIP340Schnorr
+    extends GenericVerifySignature[crypto.BIP340SchnorrPublicKey, crypto.BIP340SchnorrSignature]
+    with LemanInstrWithSimpleGas[StatelessContext] {
+  def buildPubKey(value: Val.ByteVec): Option[crypto.BIP340SchnorrPublicKey] =
+    crypto.BIP340SchnorrPublicKey.from(value.bytes)
+  def buildSignature(value: Val.ByteVec): Option[crypto.BIP340SchnorrSignature] =
+    crypto.BIP340SchnorrSignature.from(value.bytes)
+  def verify(
+      data: ByteString,
+      signature: crypto.BIP340SchnorrSignature,
+      pubKey: crypto.BIP340SchnorrPublicKey
+  ): Boolean =
+    crypto.BIP340Schnorr.verify(data, signature, pubKey)
+
+  override def _runWith[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] =
+    super[GenericVerifySignature]._runWith(frame)
+
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] =
+    _runWith(frame)
+
+  override def runWith[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] =
+    super[LemanInstrWithSimpleGas].runWith(frame)
+}
+
+case object GetSegregatedSignature
+    extends SignatureInstr
+    with LemanInstrWithSimpleGas[StatelessContext]
+    with StatelessInstrCompanion0
+    with GasVeryLow {
+  def runWithLeman[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    frame.ctx.signatures.pop().flatMap { signature =>
+      frame.pushOpStack(Val.ByteVec(signature.bytes))
+    }
+  }
 }
 
 case object EthEcRecover
@@ -1257,6 +1496,7 @@ sealed trait LockApprovedAssetsInstr extends LemanAssetInstr with StatefulInstrC
     for {
       timestampU256 <- frame.popOpStackU256()
       timestamp     <- timestampU256.v.toLong.map(TimeStamp.unsafe).toRight(Right(LockTimeOverflow))
+      _ <- if (timestamp > frame.ctx.blockEnv.timeStamp) okay else failed(InvalidLockTime)
     } yield timestamp
   }
 }
@@ -1268,7 +1508,8 @@ object LockApprovedAssets extends LockApprovedAssetsInstr {
       lockupScript <- frame.popAssetAddress()
       balanceState <- frame.getBalanceState()
       approved     <- balanceState.useAllApproved(lockupScript).toRight(Right(NoAssetsApproved))
-      _            <- frame.ctx.generateOutput(approved.toLockedTxOutput(lockupScript, lockTime))
+      outputs      <- approved.toLockedTxOutput(lockupScript, lockTime)
+      _            <- outputs.foreachE(frame.ctx.generateOutput)
     } yield ()
   }
 }
@@ -1576,15 +1817,27 @@ sealed trait CreateContractAbstract extends ContractInstr {
   ): ExeResult[Unit] = {
     for {
       tokenIssuanceInfo <- getTokenIssuanceInfo(frame, tokenIssuance)
-      fields            <- frame.popFields()
-      _                 <- frame.ctx.chargeFieldSize(fields.toIterable)
-      contractCode      <- prepareContractCode(frame)
+      mutFields         <- frame.popFields()
+      immFields <-
+        if (frame.ctx.getHardFork().isLemanEnabled()) {
+          frame.popFields()
+        } else {
+          Right(CreateContractAbstract.emptyImmFields)
+        }
+      _            <- frame.ctx.chargeFieldSize(immFields.toIterable ++ mutFields.toIterable)
+      contractCode <- prepareContractCode(frame)
       newContractId <- CreateContractAbstract.getContractId(
         frame,
         subContract,
         frame.ctx.blockEnv.chainIndex.from
       )
-      _ <- frame.createContract(newContractId, contractCode, fields, tokenIssuanceInfo)
+      _ <- frame.createContract(
+        newContractId,
+        contractCode,
+        immFields,
+        mutFields,
+        tokenIssuanceInfo
+      )
       _ <-
         if (frame.ctx.getHardFork().isLemanEnabled()) {
           frame.pushOpStack(Val.ByteVec(newContractId.bytes))
@@ -1596,6 +1849,8 @@ sealed trait CreateContractAbstract extends ContractInstr {
 }
 
 object CreateContractAbstract {
+  val emptyImmFields: AVector[Val] = AVector.empty
+
   def getContractId[C <: StatefulContext](
       frame: Frame[C],
       subContract: Boolean,
@@ -1764,7 +2019,8 @@ sealed trait MigrateBase
     with GasMigrate {
   def migrate[C <: StatefulContext](
       frame: Frame[C],
-      newFieldsOpt: Option[AVector[Val]]
+      newImmFieldsOpt: Option[AVector[Val]],
+      newMutFieldsOpt: Option[AVector[Val]]
   ): ExeResult[Unit] = {
     for {
       contractCodeRaw <- frame.popOpStackByteVec()
@@ -1772,7 +2028,7 @@ sealed trait MigrateBase
       contractCode <- decode[StatefulContract](contractCodeRaw.bytes).left.map(e =>
         Right(SerdeErrorCreateContract(e))
       )
-      _ <- frame.migrateContract(contractCode, newFieldsOpt)
+      _ <- frame.migrateContract(contractCode, newImmFieldsOpt, newMutFieldsOpt)
     } yield ()
   }
 }
@@ -1781,7 +2037,7 @@ object MigrateSimple extends MigrateBase {
   def runWithLeman[C <: StatefulContext](
       frame: Frame[C]
   ): ExeResult[Unit] = {
-    migrate(frame, None)
+    migrate(frame, None, None)
   }
 }
 
@@ -1789,7 +2045,11 @@ object MigrateWithFields extends MigrateBase {
   def runWithLeman[C <: StatefulContext](
       frame: Frame[C]
   ): ExeResult[Unit] = {
-    frame.popFields().flatMap(newFields => migrate(frame, Some(newFields)))
+    for {
+      newMutFields <- frame.popFields()
+      newImmFields <- frame.popFields()
+      _            <- migrate(frame, Some(newImmFields), Some(newMutFields))
+    } yield ()
   }
 }
 
@@ -2097,7 +2357,7 @@ sealed trait LogInstr extends StatelessInstr with StatelessInstrCompanion0 with 
     for {
       _      <- frame.ctx.chargeGasWithSize(this, n)
       fields <- frame.opStack.pop(n)
-      _      <- frame.ctx.writeLog(frame.obj.contractIdOpt, fields)
+      _      <- frame.ctx.writeLog(frame.obj.contractIdOpt, fields, systemEvent = false)
     } yield ()
   }
 }
@@ -2173,7 +2433,8 @@ final case class DEBUG(stringParts: AVector[Val.ByteVec])
         interpolationParts <- frame.opStack.pop(stringParts.length - 1)
         _ <- frame.ctx.writeLog(
           Some(frame.obj.contractIdOpt.getOrElse(ContractId.zero)),
-          AVector(debugEventIndex, combineUnsafe(interpolationParts))
+          AVector(debugEventIndex, combineUnsafe(interpolationParts)),
+          systemEvent = false
         )
       } yield ()
     }

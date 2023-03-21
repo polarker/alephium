@@ -14,12 +14,33 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.api.model
+package org.alephium.util
 
-import org.alephium.util.AVector
+object OptionF {
+  // scalastyle:off return
+  def fold[E, R](elems: IterableOnce[E], zero: R)(
+      op: (R, E) => Option[R]
+  ): Option[R] = {
+    var result   = zero
+    val iterator = elems.iterator
+    while (iterator.hasNext) {
+      op(result, iterator.next()) match {
+        case None    => return None
+        case Some(r) => result = r
+      }
+    }
+    Some(result)
+  }
 
-final case class UnconfirmedTransactions(
-    fromGroup: Int,
-    toGroup: Int,
-    unconfirmedTransactions: AVector[TransactionTemplate]
-)
+  def getAny[E, R](elems: IterableOnce[E])(f: E => Option[R]): Option[R] = {
+    val iterator = elems.iterator
+    while (iterator.hasNext) {
+      f(iterator.next()) match {
+        case Some(r) => return Some(r)
+        case None    => ()
+      }
+    }
+    return None
+  }
+  // scalastyle:on return
+}

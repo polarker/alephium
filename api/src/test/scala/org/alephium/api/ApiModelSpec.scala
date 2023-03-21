@@ -355,7 +355,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
 
     {
       val transfer =
-        BuildTransaction(fromPublicKey, AVector(Destination(toAddress, Amount(1))))
+        BuildTransaction(fromPublicKey.bytes, None, AVector(Destination(toAddress, Amount(1))))
       val jsonRaw = s"""
                        |{
                        |  "fromPublicKey": "${fromPublicKey.toHexString}",
@@ -372,7 +372,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
 
     {
       val transfer = BuildTransaction(
-        fromPublicKey,
+        fromPublicKey.bytes,
+        None,
         AVector(Destination(toAddress, Amount(1), None, Some(TimeStamp.unsafe(1234)))),
         None,
         Some(GasBox.unsafe(1)),
@@ -399,7 +400,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       val tokenId1 = TokenId.hash("tokenId1")
 
       val transfer = BuildTransaction(
-        fromPublicKey,
+        fromPublicKey.bytes,
+        None,
         AVector(
           Destination(
             toAddress,
@@ -439,7 +441,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       val tokenId1 = TokenId.hash("tokenId1")
 
       val transfer = BuildTransaction(
-        fromPublicKey,
+        fromPublicKey.bytes,
+        Some(BuildTxCommon.Default),
         AVector(
           Destination(
             toAddress,
@@ -455,6 +458,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       val jsonRaw = s"""
                        |{
                        |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "fromPublicKeyType": "default",
                        |  "destinations": [
                        |    {
                        |      "address": "${toAddress.toBase58}",
@@ -480,7 +484,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       val utxoKey1 = Hash.hash("utxo1")
 
       val transfer = BuildTransaction(
-        fromPublicKey,
+        fromPublicKey.bytes,
+        Some(BuildTxCommon.BIP340Schnorr),
         AVector(
           Destination(
             toAddress,
@@ -496,6 +501,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       val jsonRaw = s"""
                        |{
                        |  "fromPublicKey": "${fromPublicKey.toHexString}",
+                       |  "fromPublicKeyType": "bip340-schnorr",
                        |  "destinations": [
                        |    {
                        |      "address": "${toAddress.toBase58}",
@@ -720,7 +726,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
   it should "encode/decode BuildContract" in {
     val publicKey = PublicKey.generate
     val buildDeployContractTx = BuildDeployContractTx(
-      fromPublicKey = publicKey,
+      fromPublicKey = publicKey.bytes,
       bytecode = ByteString(0, 0),
       issueTokenAmount = Some(Amount(1)),
       gasAmount = Some(GasBox.unsafe(1)),
@@ -769,7 +775,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
   it should "encode/decode BuildScriptTx" in {
     val publicKey = PublicKey.generate
     val buildExecuteScriptTx = BuildExecuteScriptTx(
-      fromPublicKey = publicKey,
+      fromPublicKey = publicKey.bytes,
       bytecode = ByteString(0, 0),
       gasAmount = Some(GasBox.unsafe(1)),
       gasPrice = Some(GasPrice(1))
@@ -853,7 +859,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       StatefulContract.forSMT.toContract().rightValue,
       codeHash = Hash.zero,
       initialStateHash = Some(Hash.zero),
-      AVector(u256, i256, bool, byteVec, address1),
+      immFields = AVector(u256, i256, bool),
+      mutFields = AVector(byteVec, address1),
       AssetState.from(ALPH.alph(1), AVector(Token(TokenId.zero, ALPH.alph(2))))
     )
     val jsonRaw =
@@ -863,7 +870,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
          |  "bytecode": "00010700000000000118",
          |  "codeHash": "0000000000000000000000000000000000000000000000000000000000000000",
          |  "initialStateHash": "0000000000000000000000000000000000000000000000000000000000000000",
-         |  "fields": [
+         |  "immFields": [
          |    {
          |      "type": "U256",
          |      "value": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
@@ -875,7 +882,9 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
          |    {
          |      "type": "Bool",
          |      "value": true
-         |    },
+         |    }
+         |  ],
+         |  "mutFields": [
          |    {
          |      "type": "ByteVec",
          |      "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -904,11 +913,11 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
     CompileProjectResult.diffPatch("Hello", "Hello").value is ""
 
     val bytecode = Hex.toHexString(serialize(compiledContract.code))
-    bytecode is "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602"
+    bytecode is "0701403701010707061805ce00a000a001ce0261b413c40de0b6b3a7640000a90c17010ca100140017031400a10116011602160316041605160602"
     val debugBytecode = Hex.toHexString(serialize(compiledContract.debugCode))
-    debugBytecode is "0701402e01010707061105a000a001a003a004617e01027878b413c40de0b6b3a7640000a916011602160316041605160602"
+    debugBytecode is "0701403c01010707061905ce00a000a001ce02617e01027878b413c40de0b6b3a7640000a90c17010ca100140017031400a10116011602160316041605160602"
     val diff = CompileProjectResult.diffPatch(bytecode, debugBytecode)
-    diff.value is "=7-1+e=11-1+1=20+7e01027878=50"
+    diff.value is "=7-1+c=11-1+9=20+7e01027878=78"
     val patchedCode = CompileProjectResult.applyPatchUnsafe(bytecode, diff)
     patchedCode is debugBytecode
   }
@@ -920,10 +929,10 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
          |{
          |  "version": "${ReleaseVersion.current}",
          |  "name": "Foo",
-         |  "bytecode": "0701402901010707061005a000a001a003a00461b413c40de0b6b3a7640000a916011602160316041605160602",
-         |  "bytecodeDebugPatch": "=7-1+e=11-1+1=20+7e01027878=50",
-         |  "codeHash": "eff62a4b2d4d4936a84e360c916a398d80d5000497ccd4afbd80bfe254d62096",
-         |  "codeHashDebug":"f3070fa7f7893529d5dfdd647aa7a0facb637f2339097dea543c3a6c7716b670",
+         |  "bytecode": "0701403701010707061805ce00a000a001ce0261b413c40de0b6b3a7640000a90c17010ca100140017031400a10116011602160316041605160602",
+         |  "bytecodeDebugPatch": "=7-1+c=11-1+9=20+7e01027878=78",
+         |  "codeHash": "6ee50d3b19b5dcc42ca293ce86ba9b962c597e28eb931ccb2f92468db682b126",
+         |  "codeHashDebug":"a57454cfd739e83190ec0494fafddb1fada6d24c1540a885f4f9b3fea742db85",
          |  "fields": {
          |    "names": ["aa","bb","cc","dd","ee","ff"],
          |    "types": ["Bool", "U256", "I256", "ByteVec", "Address", "[[Bool;1];2]"],
@@ -962,8 +971,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
          |{
          |  "version": "${ReleaseVersion.current}",
          |  "name": "Foo",
-         |  "bytecodeTemplate": "020103000000010201000707060716011602160316041605160602",
-         |  "bytecodeDebugPatch": "=27+8=1+e01027878=26",
+         |  "bytecodeTemplate": "020103000000010201000707060b0c17011400170316011602160316041605160602",
+         |  "bytecodeDebugPatch": "=27-1+c7e01027878=40",
          |  "fields": {
          |    "names": ["aa","bb","cc","dd","ee"],
          |    "types": ["Bool", "U256", "I256", "ByteVec", "Address"],
@@ -1086,8 +1095,8 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
          |  "version": ${unsignedTransaction.version},
          |  "networkId": ${unsignedTransaction.networkId.id},
          |  "scriptOpt": ${write(unsignedTransaction.scriptOpt.map(Script.fromProtocol))},
-         |  "gasAmount": ${defaultGas.value},
-         |  "gasPrice": "${defaultGasPrice.value}",
+         |  "gasAmount": ${minimalGas.value},
+         |  "gasPrice": "${nonCoinbaseMinGasPrice.value}",
          |  "inputs": ${write(unsignedTx.inputs)},
          |  "fixedOutputs": ${write(unsignedTx.fixedOutputs)}
          |}""".stripMargin

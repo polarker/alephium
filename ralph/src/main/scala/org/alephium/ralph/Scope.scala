@@ -32,10 +32,12 @@ trait Scope { self: Compiler.State[_] =>
   val scopes                        = mutable.Map.empty[Ast.FuncId, ScopeState]
   var currentScope: Ast.FuncId      = Ast.FuncId.empty
   var currentScopeState: ScopeState = ScopeState.default()
-  val currentScopeUsedVars          = mutable.Set.empty[String]
+  var immFieldsIndex: Int           = 0
+  var mutFieldsIndex: Int           = 0
+  val currentScopeAccessedVars      = mutable.Set.empty[Compiler.AccessVariable]
 
   def setFuncScope(funcId: Ast.FuncId): Unit = {
-    currentScopeUsedVars.clear()
+    currentScopeAccessedVars.clear()
     scopes.get(funcId) match {
       case Some(scopeState) =>
         currentScope = funcId

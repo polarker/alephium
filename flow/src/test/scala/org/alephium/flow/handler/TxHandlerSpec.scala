@@ -74,7 +74,7 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
 
     val txs = prepareRandomSequentialTxs(groupConfig.groups)
     txs.length is 4
-    txHandler.underlyingActor.txsBuffer.isEmpty is true
+    txHandler.underlyingActor.outgoingTxBuffer.isEmpty is true
 
     val txs0 = txs.take(2)
     checkInterCliqueBroadcast(txs0)
@@ -100,6 +100,15 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
     intraCliqueProbe.expectMsg(IntraCliqueManager.BroadCastTx(broadcastMsg))
   }
 
+  it should "broadcast valid transactions preserving the order" in new Fixture {
+    val txs = prepareRandomSequentialTxs(3)
+    txs.length is 3
+    txHandler.underlyingActor.outgoingTxBuffer.isEmpty is true
+    txs.foreach(txHandler ! addTx(_))
+    txs.foreach(tx => expectMsg(TxHandler.AddSucceeded(tx.id)))
+    txHandler.underlyingActor.outgoingTxBuffer.keys().toSeq is txs.map(_.toTemplate).toSeq
+  }
+
   it should "not broadcast invalid tx" in new Fixture {
     setSynced()
     val tx = transactionGen(chainIndexGen = Gen.const(chainIndex)).sample.get
@@ -111,6 +120,53 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
       )
     )
     interCliqueProbe.expectNoMessage()
+  }
+
+  it should "rebroadcast tx" in new Fixture {
+    override val configValues = Map(("alephium.mempool.batch-broadcast-txs-frequency", "500 ms"))
+    setSynced()
+    val tx = transactionGen(chainIndexGen = Gen.const(chainIndex)).sample.get.toTemplate
+    txHandler ! TxHandler.Rebroadcast(tx)
+    interCliqueProbe.expectMsgPF() { case InterCliqueManager.BroadCastTx(indexedHashes) =>
+      val hashes = indexedHashes.flatMap(_._2)
+      hashes.length is 1
+      hashes.contains(tx.id) is true
+    }
+  }
+
+  it should "temporarily cache missing inputs tx" in new Fixture {
+    override val configValues = Map(
+      ("alephium.mempool.batch-broadcast-txs-frequency", "500 ms"),
+      ("alephium.mempool.clean-missing-inputs-tx-frequency", "500 ms")
+    )
+
+    val tx = transactionGen(chainIndexGen = Gen.const(chainIndex)).sample.get
+    txHandler ! addTx(tx, isLocalTx = false)
+    txHandler.underlyingActor.missingInputsTxBuffer.getRootTxs() willBe AVector(tx.toTemplate)
+    interCliqueProbe.expectNoMessage()
+
+    setSynced()
+    txHandler.underlyingActor.missingInputsTxBuffer.getRootTxs().isEmpty willBe true
+  }
+
+  it should "broadcast ready txs from missing inputs tx buffer" in new Fixture {
+    override val configValues = Map(
+      ("alephium.mempool.batch-broadcast-txs-frequency", "500 ms")
+    )
+
+    val tx     = transfer(blockFlow, chainIndex).nonCoinbase.head.toTemplate
+    val buffer = txHandler.underlyingActor.missingInputsTxBuffer
+    buffer.add(tx, TimeStamp.now())
+    buffer.getRootTxs() is AVector(tx)
+
+    txHandler ! TxHandler.CleanMissingInputsTx
+    txHandler.underlyingActor.outgoingTxBuffer.contains(tx) willBe true
+    buffer.getRootTxs().isEmpty willBe true
+
+    setSynced()
+    interCliqueProbe.expectMsg(
+      InterCliqueManager.BroadCastTx(AVector((chainIndex, AVector(tx.id))))
+    )
   }
 
   it should "load persisted pending txs only once when node synced" in new FlowFixture {
@@ -133,10 +189,11 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
     }
   }
 
-  it should "load all of the pending txs once the node is synced" in new Fixture {
+  trait StorageFixture extends Fixture {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
-    val txs     = prepareRandomSequentialTxs(4)
+    val txNum   = 4
+    val txs     = prepareRandomSequentialTxs(txNum)
     val startTs = TimeStamp.now()
     txs.foreachWithIndex { case (tx, index) =>
       storages.pendingTxStorage.put(
@@ -144,6 +201,10 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
         tx.toTemplate
       ) isE ()
     }
+    storages.pendingTxStorage.size() is txNum
+  }
+
+  it should "load all of the pending txs once the node is synced" in new StorageFixture {
     blockFlow.getGrandPool().mempools.foreach(_.size is 0)
 
     setSynced()
@@ -151,6 +212,21 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
       blockFlow.getGrandPool().getOutTxsWithTimestamp().map(_._2.id).sorted is
         txs.map(_.id).sorted
     }
+  }
+
+  it should "clear mempool and persisted txs" in new StorageFixture {
+    blockFlow.getGrandPool().size is 0
+    txs.foreach(tx => blockFlow.getGrandPool().add(tx.chainIndex, tx.toTemplate, TimeStamp.now()))
+    (blockFlow
+      .getGrandPool()
+      .size >= txNum) is true // Inter-group txs are counted twice, this will be improved in the future.
+    txHandler.underlyingActor.missingInputsTxBuffer.add(txs.head.toTemplate, TimeStamp.now())
+    txHandler.underlyingActor.missingInputsTxBuffer.size is 1
+
+    txHandler ! TxHandler.ClearMemPool
+    storages.pendingTxStorage.size() willBe 0
+    blockFlow.getGrandPool().size is 0
+    txHandler.underlyingActor.missingInputsTxBuffer.size is 0
   }
 
   it should "persist all of the pending txs once the handler is stopped" in new Fixture {
@@ -181,9 +257,7 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
 
     EventFilter.warning(pattern = ".*already existed.*").intercept {
       txHandler ! addTx(tx)
-      expectMsg(
-        TxHandler.AddFailed(tx.id, s"tx ${tx.id.toHexString} is already included")
-      )
+      expectMsg(TxHandler.AddSucceeded(tx.id))
       interCliqueProbe.expectNoMessage()
     }
   }
@@ -320,23 +394,12 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
     val tx            = transactionGen().sample.get
-    val lowGasPriceTx = tx.copy(unsigned = tx.unsigned.copy(gasPrice = minimalGasPrice))
+    val lowGasPriceTx = tx.copy(unsigned = tx.unsigned.copy(gasPrice = coinbaseGasPrice))
 
     txHandler ! addTx(lowGasPriceTx)
-    expectMsg(
-      TxHandler.AddFailed(lowGasPriceTx.id, s"tx has lower gas price than ${defaultGasPrice}")
-    )
-  }
-
-  it should "check gas price" in new Fixture {
-    val tx            = transactionGen().sample.get.toTemplate
-    val lowGasPriceTx = tx.copy(unsigned = tx.unsigned.copy(gasPrice = minimalGasPrice))
-    TxHandler.checkHighGasPrice(tx) is true
-    TxHandler.checkHighGasPrice(lowGasPriceTx) is false
-    TxHandler.checkHighGasPrice(
-      ALPH.LaunchTimestamp.plusUnsafe(Duration.ofDaysUnsafe(366 + 365 / 2)),
-      lowGasPriceTx
-    ) is true
+    val failure = expectMsgType[TxHandler.AddFailed]
+    failure.txId is lowGasPriceTx.id
+    failure.reason.contains("InvalidGasPrice") is true
   }
 
   it should "mine new block if auto-mine is enabled" in new Fixture {
@@ -357,6 +420,15 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
     confirmed.toGroupConfirmations is 1
     val blockHash = confirmed.index.hash
     blockFlow.getBestDeps(chainIndex.from).deps.contains(blockHash) is true
+  }
+
+  it should "report validation error when auto-mine is enabled" in new Fixture {
+    override val configValues = Map(("alephium.mempool.auto-mine-for-dev", true))
+    config.mempool.autoMineForDev is true
+    val tx = transactionGen(chainIndexGen = Gen.const(chainIndex)).sample.get
+    txHandler ! addTx(tx)
+    val failedMsg = expectMsgType[TxHandler.AddFailed]
+    failedMsg.txId is tx.id
   }
 
   it should "auto mine new blocks if auto-mine is enabled" in new Fixture {
@@ -445,8 +517,8 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
         TxHandler.props(blockFlow, storages.pendingTxStorage)
       )
 
-    def addTx(tx: Transaction, isIntraCliqueSyncing: Boolean = false) =
-      TxHandler.AddToMemPool(AVector(tx.toTemplate), isIntraCliqueSyncing)
+    def addTx(tx: Transaction, isIntraCliqueSyncing: Boolean = false, isLocalTx: Boolean = true) =
+      TxHandler.AddToMemPool(AVector(tx.toTemplate), isIntraCliqueSyncing, isLocalTx)
     def hex(tx: Transaction) = Hex.toHexString(serialize(tx.toTemplate))
     def setSynced() = {
       txHandler ! InterCliqueManager.SyncedResult(true)
@@ -474,7 +546,7 @@ class TxHandlerSpec extends AlephiumFlowActorSpec {
         hashes.contains(txs.last.id) is true
       }
       // use eventually here to avoid test failure on windows
-      eventually(txHandler.underlyingActor.txsBuffer.isEmpty is true)
+      eventually(txHandler.underlyingActor.outgoingTxBuffer.isEmpty is true)
       txs.foreach { tx =>
         txHandler.underlyingActor.blockFlow.getTransactionStatus(tx.id, tx.chainIndex) isE
           Option(MemPooled)

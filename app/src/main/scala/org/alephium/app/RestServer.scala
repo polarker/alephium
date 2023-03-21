@@ -88,7 +88,6 @@ class RestServer(
       getHashesAtHeightLogic,
       getChainInfoLogic,
       getBlockHeaderEntryLogic,
-      listUnconfirmedTransactionsLogic,
       buildTransactionLogic,
       buildSweepAddressTransactionsLogic,
       submitTransactionLogic,
@@ -99,6 +98,10 @@ class RestServer(
       getTransactionStatusLocalLogic,
       decodeUnsignedTransactionLogic,
       getTransactionLogic,
+      listMempoolTransactionsLogic,
+      clearMempoolLogic,
+      validateMempoolTransactionsLogic,
+      rebroadcastMempoolTransactionLogic,
       minerActionLogic,
       mineOneBlockLogic,
       minerListAddressesLogic,
@@ -111,6 +114,7 @@ class RestServer(
       contractStateLogic,
       testContractLogic,
       callContractLogic,
+      multipleCallContractLogic,
       exportBlocksLogic,
       verifySignatureLogic,
       checkHashIndexingLogic,
@@ -140,7 +144,8 @@ class RestServer(
     .route()
     .handler(
       CorsHandler
-        .create(".*.")
+        .create()
+        .addRelativeOrigin(".*.")
         .allowedMethod(HttpMethod.GET)
         .allowedMethod(HttpMethod.POST)
         .allowedMethod(HttpMethod.PUT)

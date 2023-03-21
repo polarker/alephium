@@ -132,7 +132,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
         failure: ExeFailure
     ): Assertion = {
       val (obj, context) =
-        prepareContract(contract, AVector[Val](), gasLimit)
+        prepareContract(contract, AVector.empty, AVector.empty, gasLimit)
       StatefulVM.execute(context, obj, args).leftValue.rightValue is failure
     }
   }
@@ -209,11 +209,15 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
         argsLength = 1,
         localsLength = 1,
         returnLength = 1,
-        instrs = AVector(LoadLocal(0), LoadField(1), U256Add, U256Const5, U256Add, Return)
+        instrs = AVector(LoadLocal(0), LoadImmField(1), U256Add, U256Const5, U256Add, Return)
       )
     val contract = StatefulContract(2, methods = AVector(method))
     val (obj, context) =
-      prepareContract(contract, AVector[Val](Val.U256(U256.Zero), Val.U256(U256.One)))
+      prepareContract(
+        contract,
+        AVector[Val](Val.U256(U256.Zero), Val.U256(U256.One)),
+        AVector.empty
+      )
     StatefulVM.executeWithOutputs(context, obj, AVector(Val.U256(U256.Two))) isE
       AVector[Val](Val.U256(U256.unsafe(8)))
   }
@@ -247,11 +251,11 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
   trait BalancesFixture {
     val (_, pubKey0) = SignatureSchema.generatePriPub()
     val address0     = Val.Address(LockupScript.p2pkh(pubKey0))
-    val balances0    = MutBalancesPerLockup(100, mutable.Map.empty, 0)
+    val balances0    = MutBalancesPerLockup(ALPH.alph(100), mutable.Map.empty, 0)
     val (_, pubKey1) = SignatureSchema.generatePriPub()
     val address1     = Val.Address(LockupScript.p2pkh(pubKey1))
     val tokenId      = TokenId.random
-    val balances1    = MutBalancesPerLockup(1, mutable.Map(tokenId -> 99), 0)
+    val balances1    = MutBalancesPerLockup(ALPH.oneAlph, mutable.Map(tokenId -> 99), 0)
 
     def mockContext(): StatefulContext =
       new StatefulContext with NetworkConfigFixture.Default {
@@ -326,7 +330,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
       BytesConst(Val.ByteVec(tokenId.bytes)),
       TokenRemaining
     )
-    pass(instrs, AVector[Val](Val.U256(100), Val.U256(1), Val.U256(99)))
+    pass(instrs, AVector[Val](Val.U256(ALPH.alph(100)), Val.U256(ALPH.oneAlph), Val.U256(99)))
   }
 
   it should "fail when there is no token balances" in new BalancesFixture {
@@ -341,7 +345,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
   it should "approve balances" in new BalancesFixture {
     val instrs = AVector[Instr[StatefulContext]](
       AddressConst(address0),
-      U256Const(Val.U256(10)),
+      U256Const(Val.U256(ALPH.alph(10))),
       ApproveAlph,
       AddressConst(address0),
       AlphRemaining,
@@ -355,7 +359,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
       BytesConst(Val.ByteVec(tokenId.bytes)),
       TokenRemaining
     )
-    pass(instrs, AVector[Val](Val.U256(90), Val.U256(1), Val.U256(89)))
+    pass(instrs, AVector[Val](Val.U256(ALPH.alph(90)), Val.U256(ALPH.oneAlph), Val.U256(89)))
   }
 
   it should "pass approved tokens to function call" in new BalancesFixture {
@@ -400,7 +404,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
     val instrs = AVector[Instr[StatefulContext]](
       AddressConst(address0),
       AddressConst(address1),
-      U256Const(Val.U256(10)),
+      U256Const(Val.U256(ALPH.alph(10))),
       TransferAlph,
       AddressConst(address1),
       AddressConst(address0),
@@ -416,9 +420,10 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
       TokenRemaining
     )
 
-    val context = pass(instrs, AVector[Val](Val.U256(90), Val.U256(1), Val.U256(98)))
-    context.outputBalances.getAttoAlphAmount(address0.lockupScript).get is 90
-    context.outputBalances.getAttoAlphAmount(address1.lockupScript).get is 11
+    val context =
+      pass(instrs, AVector[Val](Val.U256(ALPH.alph(90)), Val.U256(ALPH.oneAlph), Val.U256(98)))
+    context.outputBalances.getAttoAlphAmount(address0.lockupScript).get is ALPH.alph(90)
+    context.outputBalances.getAttoAlphAmount(address1.lockupScript).get is ALPH.alph(11)
     context.outputBalances.getTokenAmount(address0.lockupScript, tokenId).get is 1
     context.outputBalances.getTokenAmount(address1.lockupScript, tokenId).get is 98
   }
@@ -430,6 +435,7 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
         U256Const(Val.U256(10)),
         ApproveAlph,
         BytesConst(Val.ByteVec(serialize(contract))),
+        BytesConst(Val.ByteVec(serialize(AVector.empty[Val]))),
         BytesConst(Val.ByteVec(serialize(AVector.empty[Val]))),
         CreateContract
       )
@@ -477,7 +483,8 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
         argsLength = 1,
         localsLength = 1,
         returnLength = 0,
-        instrs = AVector(LoadLocal(0), LoadField(1), U256Add, U256Const1, U256Add, StoreField(1))
+        instrs =
+          AVector(LoadLocal(0), LoadMutField(1), U256Add, U256Const1, U256Add, StoreMutField(1))
       )
     val contract = StatefulContract(2, methods = AVector(method))
     serialize(contract)(StatefulContract.serde).nonEmpty is true
@@ -597,7 +604,8 @@ class VMSpec extends AlephiumSpec with ContextGenerators with NetworkConfigFixtu
     val contract3 = StatefulContract(0, AVector(Method(true, false, true, 0, 0, 0, AVector.empty)))
 
     def test(vm: StatefulVM, contract: StatefulContract, succeeded: Boolean) = {
-      val obj = StatefulContractObject.from(contract, AVector.empty, ContractId.random)
+      val obj =
+        StatefulContractObject.from(contract, AVector.empty, AVector.empty, ContractId.random)
       if (succeeded) {
         vm.execute(obj, 0, AVector.empty) match {
           case Right(res)  => res is ()
