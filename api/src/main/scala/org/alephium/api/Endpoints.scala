@@ -90,6 +90,15 @@ trait Endpoints
       .in("transactions")
       .tag("Transactions")
 
+  private lazy val mempoolEndpoint: BaseEndpoint[Unit, Unit] =
+    baseEndpoint
+      .in("mempool")
+      .tag("Mempool")
+
+  private lazy val mempoolTxEndpoint: BaseEndpoint[Unit, Unit] =
+    mempoolEndpoint
+      .in("transactions")
+
   private val minersEndpoint: BaseEndpoint[Unit, Unit] =
     baseEndpoint
       .in("miners")
@@ -282,13 +291,6 @@ trait Endpoints
       .out(jsonBody[ChainInfo])
       .summary("Get infos about the chain from the given groups")
 
-  // have to be lazy to let `groupConfig` being initialized
-  lazy val listUnconfirmedTransactions: BaseEndpoint[Unit, AVector[UnconfirmedTransactions]] =
-    transactionsEndpoint.get
-      .in("unconfirmed")
-      .out(jsonBody[AVector[UnconfirmedTransactions]])
-      .summary("List unconfirmed transactions")
-
   val buildTransaction: BaseEndpoint[BuildTransaction, BuildTransactionResult] =
     transactionsEndpoint.post
       .in("build")
@@ -304,7 +306,7 @@ trait Endpoints
       .in(jsonBody[BuildSweepAddressTransactions])
       .out(jsonBody[BuildSweepAddressTransactionsResult])
       .summary(
-        "Build unsigned transactions to send all unlocked balanced of one address to another address"
+        "Build unsigned transactions to send all unlocked ALPH and token balances of one address to another address"
       )
 
   val submitTransaction: BaseEndpoint[SubmitTransaction, SubmitTxResult] =
@@ -313,6 +315,26 @@ trait Endpoints
       .in(jsonBody[SubmitTransaction])
       .out(jsonBody[SubmitTxResult])
       .summary("Submit a signed transaction")
+
+  lazy val listMempoolTransactions: BaseEndpoint[Unit, AVector[MempoolTransactions]] =
+    mempoolTxEndpoint.get
+      .out(jsonBody[AVector[MempoolTransactions]])
+      .summary("List mempool transactions")
+
+  lazy val rebroadcastMempoolTransaction: BaseEndpoint[TransactionId, Unit] =
+    mempoolTxEndpoint.put
+      .in("rebroadcast")
+      .in(query[TransactionId]("txId"))
+      .summary("Rebroadcase a mempool transaction to the network")
+
+  lazy val clearMempool: BaseEndpoint[Unit, Unit] =
+    mempoolTxEndpoint.delete
+      .summary("Remove all transactions from mempool")
+
+  lazy val validateMempoolTransactions: BaseEndpoint[Unit, Unit] =
+    mempoolTxEndpoint.put
+      .in("validate")
+      .summary("Validate all mempool transactions and remove invalid ones")
 
   val buildMultisigAddress: BaseEndpoint[BuildMultisigAddress, BuildMultisigAddressResult] =
     multisigEndpoint.post
@@ -456,6 +478,13 @@ trait Endpoints
       .out(jsonBody[CallContractResult])
       .summary("Call contract")
 
+  lazy val multiCallContract: BaseEndpoint[MultipleCallContract, MultipleCallContractResult] =
+    contractsEndpoint.post
+      .in("multicall-contract")
+      .in(jsonBody[MultipleCallContract])
+      .out(jsonBody[MultipleCallContractResult])
+      .summary("Multiple call contract")
+
   val exportBlocks: BaseEndpoint[ExportFile, Unit] =
     baseEndpoint.post
       .in("export-blocks")
@@ -550,7 +579,9 @@ object Endpoints {
     alphJsonBody[T]
       .examples(examples)
       .description(
-        s"""Format 1: `${ALPH.oneAlph}`\n\nFormat 2: `x.y ALPH`, where `1 ALPH = ${ALPH.oneAlph}`"""
+        s"Format 1: `${ALPH.oneAlph}`\n\n" +
+          s"Format 2: `x.y ALPH`, where `1 ALPH = ${ALPH.oneAlph}\n\n" +
+          s"Field fromPublicKeyType can be  `default` or `bip340-schnorr`"
       )
   }
 }

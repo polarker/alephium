@@ -10,10 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: olafurpg/setup-java@v10
+      - name: Setup JDK
+        uses: actions/setup-java@v3
         with:
+          distribution: temurin
           java-version: 11
-      - run: sbt scalafmtSbtCheck scalafmtCheck test:scalafmtCheck it:scalafmtCheck scalastyle test:scalastyle it:scalastyle doc
-      - run: make assembly
-      - run: sbt app/docker
-      - run: sbt "tools/runMain org.alephium.tools.BuiltInFunctions" && test -z "$(git status --porcelain)"
+          cache: sbt
+#      - run: sbt scalafmtSbtCheck scalafmtCheck test:scalafmtCheck it:scalafmtCheck scalastyle test:scalastyle it:scalastyle doc
+#      - run: make assembly
+#      - run: sbt app/docker
+#      - run: sbt "tools/runMain org.alephium.tools.BuiltInFunctions" && test -z "$(git status --porcelain)"

@@ -48,7 +48,7 @@ import org.alephium.flow.validation.BlockValidation
 import org.alephium.http.HttpFixture
 import org.alephium.json.Json._
 import org.alephium.protocol.{ALPH, PrivateKey, Signature, SignatureSchema}
-import org.alephium.protocol.model.{Address, Block, ChainIndex, TransactionId}
+import org.alephium.protocol.model.{Address, Block, ChainIndex, TokenId, TransactionId}
 import org.alephium.protocol.vm
 import org.alephium.protocol.vm.{GasPrice, LockupScript}
 import org.alephium.rpc.model.JsonRPC.NotificationUnsafe
@@ -89,7 +89,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
   val privateKey = "d24967efb7f1b558ad40a4d71593ceb5b3cecf46d17f0e68ef53def6b391c33d"
   val mnemonic =
     "toward outdoor daughter deny mansion bench water alien crumble mother exchange screen salute antenna abuse key hair crisp debate goose great market core screen"
-  val (transferAddress, _, _) = generateAccount
+  val (transferAddress, transferPubKey, transferPriKey) = generateAccount
 
   val password = "password"
 
@@ -199,7 +199,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     tx.unsigned.txId is txId
   }
 
-  def txNotFound(txId: TransactionId, restPort: Int): Assertion = {
+  def txNotInBlocks(txId: TransactionId, restPort: Int): Assertion = {
     requestFailed(getTransaction(txId), restPort, StatusCode.NotFound)
   }
 
@@ -671,10 +671,12 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None,
-      initialFields: Option[AVector[vm.Val]] = None,
+      initialImmFields: Option[AVector[vm.Val]] = None,
+      initialMutFields: Option[AVector[vm.Val]] = None,
       issueTokenAmount: Option[U256] = None
   ) = {
-    val bytecode = code + Hex.toHexString(serialize(initialFields.getOrElse(AVector.empty)))
+    val bytecode = code + Hex.toHexString(serialize(initialImmFields.getOrElse(AVector.empty))) +
+      Hex.toHexString(serialize(initialMutFields.getOrElse(AVector.empty)))
     val query = {
       s"""
          |{
@@ -693,9 +695,14 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       fromPublicKey: String,
       code: String,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None
   ) = {
+    val tokensString =
+      tokens
+        .map(t => s"""{"id": "${t._1.toHexString}", "amount": "${t._2.v}"}""")
+        .mkString(""","tokens": [""", ",", "]")
     val query =
       s"""
          {
@@ -704,6 +711,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
            ${gas.map(g => s""","gasAmount": $g""").getOrElse("")}
            ${gasPrice.map(g => s""","gasPrice": "$g"""").getOrElse("")}
            ${attoAlphAmount.map(a => s""","attoAlphAmount": "${a.value.v}"""").getOrElse("")}
+           ${tokensString}
          }
          """
     httpPost("/contracts/unsigned-tx/execute-script", Some(query))
@@ -732,6 +740,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       restPort: Int,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = None,
       gasPrice: Option[GasPrice] = None
   ): BuildExecuteScriptTxResult = {
@@ -741,6 +750,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
         fromPublicKey = publicKey,
         code = compileResult.bytecodeTemplate,
         attoAlphAmount,
+        tokens,
         gas,
         gasPrice
       ),
@@ -752,10 +762,12 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       restPort: Int,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None
   ): BuildExecuteScriptTxResult = {
-    val buildResult = buildExecuteScriptTxWithPort(code, restPort, attoAlphAmount, gas, gasPrice)
+    val buildResult =
+      buildExecuteScriptTxWithPort(code, restPort, attoAlphAmount, tokens, gas, gasPrice)
     submitTxWithPort(buildResult.unsignedTx, buildResult.txId, restPort)
     buildResult
   }

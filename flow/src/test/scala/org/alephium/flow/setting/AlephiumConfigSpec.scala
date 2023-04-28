@@ -33,7 +33,7 @@ import org.alephium.conf._
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.mining.HashRate
-import org.alephium.protocol.model.{Address, ContractId, GroupIndex, NetworkId}
+import org.alephium.protocol.model.{Address, ContractId, Difficulty, GroupIndex, NetworkId}
 import org.alephium.protocol.vm.LogConfig
 import org.alephium.util.{AlephiumSpec, AVector, Duration, Env, Files, Hex, TimeStamp}
 
@@ -67,7 +67,7 @@ class AlephiumConfigSpec extends AlephiumSpec {
     config.discovery.bootstrap.head is new InetSocketAddress("bootstrap0.alephium.org", 9973)
     config.genesis.allocations.length is 858
     config.genesis.allocations.sumBy(_.amount.value.v) is ALPH.alph(140000000).v
-    config.network.lemanHardForkTimestamp is TimeStamp.unsafe(9000000000000000000L)
+    config.network.lemanHardForkTimestamp is TimeStamp.unsafe(1680170400000L)
     config.genesisBlocks.flatMap(_.map(_.shortHex)).mkString("-") is
       "634cb950-2c637231-2a7b9072-077cd3d3-c9844184-ecb22a45-d63f3b36-d392ac97-2c9d4d28-08906609-ced88aaa-b7f0541b-5f78e23c-c7a2b25d-6b8cdade-6fedfc7f"
   }
@@ -266,6 +266,23 @@ class AlephiumConfigSpec extends AlephiumSpec {
       ConfigFactory
         .parseString(configs)
         .as[LogConfig]("event-log")(ValueReader[LogConfig]) is logConfig
+    }
+  }
+
+  it should "adjust diff for height gaps across chains" in new AlephiumConfigFixture {
+    val N    = 123456
+    val diff = Difficulty.unsafe(N)
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, -1) is diff
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, 0) is diff
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, 1) is diff
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, 17) is diff
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, 18) is
+      Difficulty.unsafe(N * 105 / 100)
+    consensusConfig.penalizeDiffForHeightGapLeman(diff, 19) is
+      Difficulty.unsafe(N * 110 / 100)
+    (20 until 18 * 3).foreach { gap =>
+      consensusConfig.penalizeDiffForHeightGapLeman(diff, gap) is
+        Difficulty.unsafe(N * (100 + 5 * (gap - 17)) / 100)
     }
   }
 }

@@ -19,15 +19,16 @@ package org.alephium.api.model
 import akka.util.ByteString
 
 import org.alephium.api.{badRequest, Try}
-import org.alephium.protocol.{vm, PublicKey}
 import org.alephium.protocol.model.BlockHash
+import org.alephium.protocol.vm
 import org.alephium.protocol.vm.{GasBox, GasPrice, StatefulContract}
 import org.alephium.serde._
 import org.alephium.util.AVector
 
 @SuppressWarnings(Array("org.wartremover.warts.DefaultArguments"))
 final case class BuildDeployContractTx(
-    fromPublicKey: PublicKey,
+    fromPublicKey: ByteString,
+    fromPublicKeyType: Option[BuildTxCommon.PublicKeyType] = None,
     bytecode: ByteString,
     initialAttoAlphAmount: Option[Amount] = None,
     initialTokenAmounts: Option[AVector[Token]] = None,
@@ -36,26 +37,36 @@ final case class BuildDeployContractTx(
     gasPrice: Option[GasPrice] = None,
     targetBlockHash: Option[BlockHash] = None
 ) extends BuildTxCommon
+    with BuildTxCommon.FromPublicKey {
+  def decodeBytecode(): Try[BuildDeployContractTx.Code] = {
+    deserialize[BuildDeployContractTx.Code](bytecode).left.map(serdeError =>
+      badRequest(serdeError.getMessage)
+    )
+  }
+}
 
 object BuildDeployContractTx {
-  final case class Code(contract: StatefulContract, initialFields: AVector[vm.Val])
+  final case class Code(
+      contract: StatefulContract,
+      initialImmFields: AVector[vm.Val],
+      initialMutFields: AVector[vm.Val]
+  )
   object Code {
     implicit val serde: Serde[Code] = {
-      val _serde: Serde[Code] = Serde.forProduct2(Code.apply, t => (t.contract, t.initialFields))
+      val _serde: Serde[Code] =
+        Serde.forProduct3(Code.apply, t => (t.contract, t.initialImmFields, t.initialMutFields))
 
       _serde.validate(code =>
-        if (code.contract.validate(code.initialFields)) {
+        if (code.contract.validate(code.initialImmFields, code.initialMutFields)) {
           Right(())
         } else {
           Left(
-            s"Invalid field length, expect ${code.contract.fieldLength}, have ${code.initialFields.length}"
+            s"Invalid field length, expect ${code.contract.fieldLength}, " +
+              s"have ${code.initialImmFields.length} immutable fields and " +
+              s"${code.initialMutFields.length} mutable fields"
           )
         }
       )
     }
-  }
-
-  def decode(bytecode: ByteString): Try[Code] = {
-    deserialize[Code](bytecode).left.map(serdeError => badRequest(serdeError.getMessage))
   }
 }

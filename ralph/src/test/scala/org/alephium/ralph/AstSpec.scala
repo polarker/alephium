@@ -18,7 +18,8 @@ package org.alephium.ralph
 
 import scala.collection.mutable
 
-import org.alephium.util.{AlephiumSpec, AVector}
+import org.alephium.protocol.vm.Val
+import org.alephium.util.{AlephiumSpec, AVector, Hex}
 
 class AstSpec extends AlephiumSpec {
 
@@ -137,10 +138,6 @@ class AstSpec extends AlephiumSpec {
       "h" -> Seq("a", "b", "c", "e"),
       "i" -> Seq("noCheck")
     )
-    state.internalCalls.foreach { case (funcId, _) =>
-      state.hasSubFunctionCall(funcId) is true
-    }
-    state.hasSubFunctionCall(Ast.FuncId("noCheck", false)) is false
     state.externalCalls.isEmpty is true
 
     val table = contract.buildCheckExternalCallerTable(state)
@@ -172,7 +169,6 @@ class AstSpec extends AlephiumSpec {
          |    checkCaller!(true, 0)
          |  }
          |
-         |  // no need to check external call since it does not call external functions
          |  pub fn noCheck() -> () {
          |    noCheckPri()
          |  }
@@ -210,6 +206,7 @@ class AstSpec extends AlephiumSpec {
          |    callee.c()
          |  }
          |
+         |  @using(checkExternalCaller = false)
          |  pub fn f() -> () {
          |    proxy()
          |  }
@@ -220,122 +217,113 @@ class AstSpec extends AlephiumSpec {
   }
 
   it should "check permission for external calls" in new ExternalCallsFixture {
-    val contracts = fastparse.parse(externalCalls, StatefulParser.multiContract(_)).get.value
-    val state     = Compiler.State.buildFor(contracts, 0)(CompilerOptions.Default)
-    state.internalCalls.foreach { case (funcId, _) =>
-      state.hasSubFunctionCall(funcId) is true
-    }
-    state.externalCalls.foreach { case (funcId, _) =>
-      state.hasSubFunctionCall(funcId) is true
-    }
-    state.hasSubFunctionCall(Ast.FuncId("noCheckPri", false)) is false
+    val warnings0 = Compiler.compileContractFull(externalCalls, 0).rightValue.warnings
+    checkExternalCallerWarnings(warnings0).isEmpty is true
 
-    val warnings = Compiler.compileContractFull(externalCalls, 0).rightValue.warnings
-    checkExternalCallerWarnings(warnings).toSet is Set(
-      Warnings.noCheckExternalCallerMsg("InternalCalls", "c"),
-      Warnings.noCheckExternalCallerMsg("InternalCalls", "f"),
-      Warnings.noCheckExternalCallerMsg("InternalCalls", "g")
-    )
+    val warnings1 = Compiler.compileContractFull(internalCalls, 0).rightValue.warnings
+    checkExternalCallerWarnings(warnings1).isEmpty is true
   }
 
-  trait MutualRecursionFixture {
-    val code =
-      s"""
-         |Contract Foo(bar: Bar) {
-         |  pub fn a() -> () {
-         |    bar.a()
-         |  }
-         |  pub fn b() -> () {
-         |    checkCaller!(true, 0)
-         |  }
-         |}
-         |
-         |Contract Bar(foo: Foo) {
-         |  pub fn a() -> () {
-         |    foo.b()
-         |  }
-         |}
-         |""".stripMargin
-  }
-
-  it should "not check permission for mutual recursive calls" in new MutualRecursionFixture {
-    val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
-    checkExternalCallerWarnings(warnings).toSet is Set(
-      Warnings.noCheckExternalCallerMsg("Bar", "a")
-    )
-  }
-
-  it should "test check external caller for interface" in {
+  it should "check permission for recursive calls" in {
     {
-      info("All contracts that inherit from the interface should have check external caller")
       val code =
         s"""
-           |Interface Base {
-           |  pub fn base() -> ()
-           |}
-           |Contract Foo() implements Base {
-           |  pub fn base() -> () {
-           |    checkCaller!(true, 0)
-           |  }
-           |}
-           |Abstract Contract A() implements Base {
-           |  fn a() -> () {
-           |    checkCaller!(true, 0)
-           |  }
-           |}
-           |Contract Bar() extends A() {
-           |  pub fn base() -> () {
+           |Contract Foo() {
+           |  pub fn a() -> () {
            |    a()
            |  }
-           |}
-           |Contract Baz() implements Base {
-           |  pub fn base() -> () {}
-           |}
-           |""".stripMargin
-      val error = Compiler.compileProject(code).leftValue
-      error.message is Warnings.noCheckExternalCallerMsg("Baz", "base")
-    }
-
-    {
-      info("not check external caller for interface function calls")
-      def code(checkExternalCaller: Boolean) =
-        s"""
-           |Contract Bar() {
-           |  pub fn bar(fooId: ByteVec) -> () {
-           |    Foo(fooId).foo()
-           |  }
-           |}
-           |Interface Foo {
-           |  @using(checkExternalCaller = $checkExternalCaller, updateFields = true)
-           |  pub fn foo() -> ()
-           |}
-           |""".stripMargin
-
-      val warnings0 = Compiler.compileContractFull(code(true), 0).rightValue.warnings
-      warnings0.isEmpty is true
-      val warnings1 = Compiler.compileContractFull(code(false), 0).rightValue.warnings
-      warnings1.isEmpty is true
-    }
-
-    {
-      info("implemented function have check external caller in private callee")
-      val code =
-        s"""
-           |Contract Bar() implements Foo {
-           |  pub fn foo() -> () {
-           |    bar()
-           |  }
-           |  fn bar() -> () {
-           |    checkCaller!(true, 0)
-           |  }
-           |}
-           |Interface Foo {
-           |  pub fn foo() -> ()
            |}
            |""".stripMargin
 
       val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
-      warnings.isEmpty is true
+      checkExternalCallerWarnings(warnings).isEmpty is true
+    }
+
+    {
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn a() -> () {
+           |    b()
+           |  }
+           |
+           |  pub fn b() -> () {
+           |    a()
+           |  }
+           |}
+           |""".stripMargin
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      checkExternalCallerWarnings(warnings).isEmpty is true
+    }
+
+    {
+      val code =
+        s"""
+           |Contract Foo(mut v: U256) {
+           |  pub fn x() -> () {
+           |    b()
+           |  }
+           |
+           |  @using(updateFields = true)
+           |  pub fn a() -> () {
+           |    b()
+           |    v = 0
+           |  }
+           |
+           |  pub fn b() -> () {
+           |    a()
+           |  }
+           |}
+           |""".stripMargin
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      checkExternalCallerWarnings(warnings).toSet is Set(
+        Warnings.noCheckExternalCallerMsg("Foo", "x"),
+        Warnings.noCheckExternalCallerMsg("Foo", "a"),
+        Warnings.noCheckExternalCallerMsg("Foo", "b")
+      )
+    }
+
+    {
+      val code =
+        s"""
+           |Contract Foo(bar: Bar) {
+           |  pub fn a() -> () {
+           |    bar.a()
+           |  }
+           |}
+           |
+           |Contract Bar(foo: Foo) {
+           |  pub fn a() -> () {
+           |    foo.a()
+           |  }
+           |}
+           |""".stripMargin
+      val warnings = Compiler.compileProject(code).rightValue._1.flatMap(_.warnings)
+      checkExternalCallerWarnings(warnings).isEmpty is true
+    }
+
+    {
+      val code =
+        s"""
+           |Contract Foo(bar: Bar, mut v: U256) {
+           |  @using(updateFields = true)
+           |  pub fn a() -> () {
+           |    bar.a()
+           |    v = 0
+           |  }
+           |}
+           |
+           |Contract Bar(foo: Foo) {
+           |  pub fn a() -> () {
+           |    foo.a()
+           |  }
+           |}
+           |""".stripMargin
+      val warnings = Compiler.compileProject(code).rightValue._1.flatMap(_.warnings)
+      checkExternalCallerWarnings(warnings).toSet is Set(
+        Warnings.noCheckExternalCallerMsg("Foo", "a"),
+        Warnings.noCheckExternalCallerMsg("Bar", "a")
+      )
     }
   }
 
@@ -349,19 +337,13 @@ class AstSpec extends AlephiumSpec {
            |    return state
            |  }
            |}
-           |
-           |Contract Bar(foo: Foo) {
-           |  pub fn getState() -> U256 {
-           |    return foo.getState()
-           |  }
-           |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings.isEmpty is true
     }
 
     {
-      info("Warning if the function has internal calls")
+      info("No warnings if internal calls are pure")
       val code =
         s"""
            |Contract Foo(state: U256) {
@@ -374,19 +356,33 @@ class AstSpec extends AlephiumSpec {
            |    return
            |  }
            |}
-           |
-           |Contract Bar(foo: Foo) {
+           |""".stripMargin
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      warnings.isEmpty is true
+    }
+
+    {
+      info("Warning if internal calls changes state")
+      val code =
+        s"""
+           |Contract Foo(mut state: U256) {
            |  pub fn getState() -> U256 {
-           |    return foo.getState()
+           |    update()
+           |    return state
+           |  }
+           |
+           |  @using(updateFields = true)
+           |  fn update() -> () {
+           |    state = 0
            |  }
            |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
     }
 
     {
-      info("Warning if the function has external calls")
+      info("No warnings if external calls are pure")
       val code =
         s"""
            |Contract Foo(state: U256, bar: Bar) {
@@ -397,16 +393,34 @@ class AstSpec extends AlephiumSpec {
            |}
            |
            |Contract Bar(foo: Foo) {
-           |  pub fn getState() -> U256 {
-           |    return foo.getState()
-           |  }
-           |
            |  pub fn doNothing() -> () {
            |    return
            |  }
            |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      warnings.isEmpty is true
+    }
+
+    {
+      info("Warning if external calls changes state")
+      val code =
+        s"""
+           |Contract Foo(state: U256, bar: Bar) {
+           |  pub fn getState() -> U256 {
+           |    bar.update()
+           |    return state
+           |  }
+           |}
+           |
+           |Contract Bar(foo: Foo, mut v: U256) {
+           |  @using(updateFields = true)
+           |  pub fn update() -> () {
+           |    v = 0
+           |  }
+           |}
+           |""".stripMargin
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
     }
 
@@ -421,14 +435,8 @@ class AstSpec extends AlephiumSpec {
            |    return state
            |  }
            |}
-           |
-           |Contract Bar(foo: Foo) {
-           |  pub fn getState() -> U256 {
-           |    return foo.getState()
-           |  }
-           |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
     }
 
@@ -442,15 +450,8 @@ class AstSpec extends AlephiumSpec {
            |    return state
            |  }
            |}
-           |
-           |Contract Bar(foo: Foo) {
-           |  @using(preapprovedAssets = true)
-           |  pub fn getState() -> U256 {
-           |    return foo.getState{callerAddress!() -> ALPH: 1 alph}()
-           |  }
-           |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
       warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
     }
 
@@ -465,15 +466,57 @@ class AstSpec extends AlephiumSpec {
            |    return state
            |  }
            |}
-           |
-           |Contract Bar(foo: Foo) {
-           |  pub fn getState() -> U256 {
-           |    return foo.getState(callerAddress!())
+           |""".stripMargin
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
+    }
+
+    {
+      info("No warning if the function call simple builtin functions")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> () {
+           |    panic!()
            |  }
            |}
            |""".stripMargin
-      val warnings = Compiler.compileContractFull(code, 1).rightValue.warnings
-      warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "getState"))
+
+      Compiler.compileContractFull(code, 0).rightValue.warnings.isEmpty is true
+    }
+
+    {
+      info("Warning if the function call builtin functions that need to check external caller")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> () {
+           |    migrate!(#)
+           |  }
+           |}
+           |""".stripMargin
+
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "foo"))
+    }
+
+    {
+      info("Warning if the function has sub interface function call")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo(barId: ByteVec) -> () {
+           |    Bar(barId).bar()
+           |  }
+           |}
+           |
+           |Interface Bar {
+           |  pub fn bar() -> ()
+           |}
+           |""".stripMargin
+
+      val warnings = Compiler.compileContractFull(code, 0).rightValue.warnings
+      warnings is AVector(Warnings.noCheckExternalCallerMsg("Foo", "foo"))
     }
   }
 
@@ -490,6 +533,8 @@ class AstSpec extends AlephiumSpec {
          |Contract Foo() {
          |  fn private0() -> () {}
          |  fn private1() -> () {}
+         |
+         |  @using(checkExternalCaller = false)
          |  pub fn public() -> () {
          |    private0()
          |  }
@@ -509,9 +554,11 @@ class AstSpec extends AlephiumSpec {
          |  }
          |}
          |Contract Bar() extends Foo() {
+         |  @using(checkExternalCaller = false)
          |  pub fn bar() -> () { foo1() }
          |}
          |Contract Baz() extends Foo() {
+         |  @using(checkExternalCaller = false)
          |  pub fn baz() -> () { foo1() }
          |}
          |""".stripMargin
@@ -550,5 +597,99 @@ class AstSpec extends AlephiumSpec {
                   |""".stripMargin
     val error = Compiler.compileProject(code).leftValue
     error.message is "These TxScript/Contract/Interface are defined multiple times: Bar, Foo, Main"
+  }
+
+  it should "check interface std id" in {
+    val foo = Ast.ContractInterface(None, Ast.TypeId("Foo"), Seq.empty, Seq.empty, Seq.empty)
+    val bar = foo.copy(ident = Ast.TypeId("Bar"))
+    val baz = foo.copy(ident = Ast.TypeId("Baz"))
+
+    Ast.MultiContract.getStdId(Seq.empty) is None
+    Ast.MultiContract.getStdId(Seq(foo)) is None
+    Ast.MultiContract.getStdId(
+      Seq(foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))))
+    ) is Some(Val.ByteVec(Hex.unsafe("0001")))
+    Ast.MultiContract.getStdId(Seq(foo, bar, baz)) is None
+    Ast.MultiContract.getStdId(
+      Seq(foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))), bar, baz)
+    ) is Some(Val.ByteVec(Hex.unsafe("0001")))
+    Ast.MultiContract.getStdId(
+      Seq(foo, bar.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))), baz)
+    ) is Some(Val.ByteVec(Hex.unsafe("0001")))
+    Ast.MultiContract.getStdId(
+      Seq(
+        foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))),
+        bar,
+        baz.copy(stdId = Some(Val.ByteVec(Hex.unsafe("000101"))))
+      )
+    ) is Some(Val.ByteVec(Hex.unsafe("000101")))
+    Ast.MultiContract.getStdId(
+      Seq(
+        foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))),
+        bar.copy(stdId = Some(Val.ByteVec(Hex.unsafe("000101")))),
+        baz.copy(stdId = Some(Val.ByteVec(Hex.unsafe("00010101"))))
+      )
+    ) is Some(Val.ByteVec(Hex.unsafe("00010101")))
+    intercept[Compiler.Error](
+      Ast.MultiContract.getStdId(
+        Seq(
+          foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))),
+          bar,
+          baz.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001"))))
+        )
+      )
+    ).message is "The std id of interface Baz is the same as parent interface"
+    intercept[Compiler.Error](
+      Ast.MultiContract.getStdId(
+        Seq(
+          foo.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0001")))),
+          bar,
+          baz.copy(stdId = Some(Val.ByteVec(Hex.unsafe("0002"))))
+        )
+      )
+    ).message is "The std id of interface Baz should starts with 0001"
+  }
+
+  it should "check if the contract std id enabled" in {
+    val foo = Ast.Contract(
+      None,
+      None,
+      false,
+      Ast.TypeId("Foo"),
+      Seq.empty,
+      Seq.empty,
+      Seq.empty,
+      Seq.empty,
+      Seq.empty,
+      Seq.empty,
+      Seq.empty
+    )
+
+    Ast.MultiContract.getStdIdEnabled(Seq.empty, foo.ident) is true
+    Ast.MultiContract.getStdIdEnabled(Seq(foo), foo.ident) is true
+    Ast.MultiContract.getStdIdEnabled(Seq(foo.copy(stdIdEnabled = Some(true))), foo.ident) is true
+    Ast.MultiContract.getStdIdEnabled(Seq(foo.copy(stdIdEnabled = Some(false))), foo.ident) is false
+    Ast.MultiContract.getStdIdEnabled(
+      Seq(foo, foo.copy(stdIdEnabled = Some(true))),
+      foo.ident
+    ) is true
+    Ast.MultiContract.getStdIdEnabled(
+      Seq(foo, foo.copy(stdIdEnabled = Some(false))),
+      foo.ident
+    ) is false
+    Ast.MultiContract.getStdIdEnabled(
+      Seq(foo, foo.copy(stdIdEnabled = Some(true)), foo.copy(stdIdEnabled = Some(true))),
+      foo.ident
+    ) is true
+    Ast.MultiContract.getStdIdEnabled(
+      Seq(foo, foo.copy(stdIdEnabled = Some(false)), foo.copy(stdIdEnabled = Some(false))),
+      foo.ident
+    ) is false
+    intercept[Compiler.Error](
+      Ast.MultiContract.getStdIdEnabled(
+        Seq(foo, foo.copy(stdIdEnabled = Some(false)), foo.copy(stdIdEnabled = Some(true))),
+        foo.ident
+      )
+    ).message is "There are different std id enabled options on the inheritance chain of contract Foo"
   }
 }

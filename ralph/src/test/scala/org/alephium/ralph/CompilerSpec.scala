@@ -16,6 +16,7 @@
 
 package org.alephium.ralph
 
+import akka.util.ByteString
 import org.scalatest.Assertion
 
 import org.alephium.protocol.{Hash, PublicKey, Signature, SignatureSchema}
@@ -60,14 +61,16 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     {
       info("fail without main statements")
 
-      val script =
-        s"""
-           |TxScript Foo {}
-           |""".stripMargin
+      val script = "TxScript Foo {}"
       Compiler
         .compileTxScript(script)
         .leftValue
-        .message is "No main statements defined in TxScript Foo"
+        .message is
+        """-- error (1:15): Syntax error
+          |1 |TxScript Foo {}
+          |  |              ^
+          |  |              Expected main statements for type `Foo`
+          |""".stripMargin
     }
 
     {
@@ -86,7 +89,14 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       Compiler
         .compileTxScript(script)
         .leftValue
-        .message is """Parser failed: Expected multiContract:1:1 / rawTxScript:2:1 / "}":3:3, found "event Add(""""
+        .message is
+        """-- error (3:3): Syntax error
+          |3 |  event Add(a: U256, b: U256)
+          |  |  ^^^^^^^^^^
+          |  |  Expected "}"
+          |  |-------------------------------------------------------------------------------------
+          |  |Trace log: Expected multiContract:1:1 / rawTxScript:2:1 / "}":3:3, found "event Add("
+          |""".stripMargin
     }
   }
 
@@ -446,7 +456,8 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         input: String,
         args: AVector[Val] = AVector.empty,
         output: AVector[Val] = AVector.empty,
-        fields: AVector[Val] = AVector.empty,
+        immFields: AVector[Val] = AVector.empty,
+        mutFields: AVector[Val] = AVector.empty,
         methodIndex: Int = 0
     ): Assertion = {
       val compiled = Compiler.compileContractFull(input).rightValue
@@ -454,7 +465,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       val contract = compiled.code
 
       deserialize[StatefulContract](serialize(contract)) isE contract
-      val (obj, context) = prepareContract(contract, fields)
+      val (obj, context) = prepareContract(contract, immFields, mutFields)
       StatefulVM.executeWithOutputsWithDebug(context, obj, args, methodIndex) isE output
     }
 
@@ -462,12 +473,13 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         input: String,
         args: AVector[Val],
         check: ExeFailure => Assertion,
-        fields: AVector[Val] = AVector.empty
+        immFields: AVector[Val] = AVector.empty,
+        mutFields: AVector[Val] = AVector.empty
     ): Assertion = {
       val contract = Compiler.compileContract(input).toOption.get
 
       deserialize[StatefulContract](serialize(contract)) isE contract
-      val (obj, context) = prepareContract(contract, fields)
+      val (obj, context) = prepareContract(contract, immFields, mutFields)
       check(StatefulVM.executeWithOutputs(context, obj, args).leftValue.rightValue)
     }
   }
@@ -738,14 +750,14 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       contract,
       AVector(Val.U256(U256.unsafe(1000))),
       AVector(Val.U256(U256.unsafe(99))),
-      AVector(Val.U256(U256.unsafe(1000000)), Val.U256(U256.unsafe(100000)))
+      mutFields = AVector(Val.U256(U256.unsafe(1000000)), Val.U256(U256.unsafe(100000)))
     )
 
     test(
       contract,
       AVector(Val.U256(U256.unsafe(1000))),
       AVector(Val.U256(U256.unsafe(99))),
-      AVector(
+      mutFields = AVector(
         Val.U256(U256.unsafe(Long.MaxValue) divUnsafe U256.unsafe(10)),
         Val.U256(U256.unsafe(Long.MaxValue) divUnsafe U256.unsafe(100))
       )
@@ -1194,7 +1206,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         s"""
            |Contract ArrayTest() {
            |  pub fn test() -> () {
-           |    let mut x = [0, 1, 2, 3]
+           |    let x = [0, 1, 2, 3]
            |    let num = 4
            |    assert!(x[foo()] == 3, 0)
            |    assert!(x[num / 2] == 2, 0)
@@ -1322,8 +1334,9 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |}
          |""".stripMargin
 
-    val contract       = Compiler.compileContract(code).rightValue
-    val (obj, context) = prepareContract(contract, AVector.fill(7)(Val.U256(0)))
+    val contract = Compiler.compileContract(code).rightValue
+    val (obj, context) =
+      prepareContract(contract, AVector(Val.U256(0)), AVector.fill(6)(Val.U256(0)))
 
     def test(methodIndex: Int, args: AVector[Val]) = {
       StatefulVM
@@ -1367,7 +1380,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |}
            |""".stripMargin
       val args = AVector.from[Val]((0 until 8).map(Val.U256(_)))
-      test(code, fields = AVector.fill(8)(Val.U256(0)), args = args)
+      test(code, mutFields = AVector.fill(8)(Val.U256(0)), args = args)
     }
 
     {
@@ -1393,7 +1406,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      test(code, fields = AVector(Val.U256(0)))
+      test(code, mutFields = AVector(Val.U256(0)))
     }
 
     {
@@ -1427,7 +1440,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      test(code, fields = AVector.fill(8)(Val.U256(0)))
+      test(code, mutFields = AVector.fill(8)(Val.U256(0)))
     }
 
     {
@@ -1463,7 +1476,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      test(code, fields = AVector.fill(9)(Val.U256(0)))
+      test(code, mutFields = AVector.fill(9)(Val.U256(0)))
     }
   }
 
@@ -1650,7 +1663,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |""".stripMargin
-      test(code, fields = AVector.fill(3)(Val.U256(0)))
+      test(code, mutFields = AVector.fill(3)(Val.U256(0)))
     }
 
     {
@@ -1693,7 +1706,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |  }
          |}
          |""".stripMargin
-    test(code, fields = AVector(Val.U256(0)), output = AVector(Val.U256(1)))
+    test(code, mutFields = AVector(Val.U256(0)), output = AVector(Val.U256(1)))
   }
 
   it should "generate efficient code for arrays" in {
@@ -1701,7 +1714,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       s"""
          |Contract Foo() {
          |  pub fn foo() -> () {
-         |    let mut x = [1, 2, 3, 4]
+         |    let x = [1, 2, 3, 4]
          |    let y = x[0]
          |    return
          |  }
@@ -1855,6 +1868,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         s"""
            |Contract Child(mut x: U256, y: U256) extends Parent(x) {
            |  pub fn bar() -> () {
+           |    x = 0
            |    foo()
            |  }
            |
@@ -2022,27 +2036,81 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       contract.methods.map(_.argsLength) is AVector(2, 1, 3, 0)
     }
 
-    {
-      info("Follow the same function annotation")
+    def wrongSignature(code: String, funcName: String) = {
+      Compiler
+        .compileContract(code)
+        .leftValue
+        .message is s"""Function "$funcName" is implemented with wrong signature"""
+    }
 
-      def code(flag: Boolean) =
+    {
+      info("Check the function annotations")
+
+      def code(interfaceAnnotations: String, implAnnotations: String) =
         s"""
-           |Contract Foo() implements Bar {
-           |  @using(checkExternalCaller = $flag)
+           |Contract Foo(addr: Address) implements Bar {
+           |  $implAnnotations
            |  fn bar() -> () {
+           |    transferTokenToSelf!(addr, ALPH, 1)
+           |    checkCaller!(true, 0)
            |    return
            |  }
            |}
            |Interface Bar {
-           |  @using(checkExternalCaller = false)
+           |  $interfaceAnnotations
            |  fn bar() -> ()
            |}
            |""".stripMargin
-      Compiler.compileContract(code(false)).isRight is true
-      Compiler
-        .compileContract(code(true))
-        .leftValue
-        .message is "Function \"bar\" is implemented with wrong signature"
+
+      def test(annotation: String, mustBeEqual: Boolean): Assertion = {
+        Compiler.compileContract(code("", "")).isRight is true
+        Compiler
+          .compileContract(code(s"@using($annotation = true)", s"@using($annotation = true)"))
+          .isRight is true
+        Compiler
+          .compileContract(code(s"@using($annotation = false)", s"@using($annotation = false)"))
+          .isRight is true
+        if (mustBeEqual) {
+          Compiler.compileContract(code(s"@using($annotation = false)", "")).isRight is true
+          wrongSignature(code(s"@using($annotation = true)", ""), "bar")
+          wrongSignature(code(s"@using($annotation = true)", s"@using($annotation = false)"), "bar")
+          wrongSignature(code(s"@using($annotation = false)", s"@using($annotation = true)"), "bar")
+        } else {
+          Compiler.compileContract(code(s"@using($annotation = true)", "")).isRight is true
+          Compiler.compileContract(code(s"@using($annotation = false)", "")).isRight is true
+          Compiler.compileContract(code("", s"@using($annotation = true)")).isRight is true
+          Compiler.compileContract(code("", s"@using($annotation = false)")).isRight is true
+        }
+      }
+
+      test(Parser.UsingAnnotation.usePreapprovedAssetsKey, true)
+      test(Parser.UsingAnnotation.useContractAssetsKey, true)
+      test(Parser.UsingAnnotation.useCheckExternalCallerKey, false)
+      test(Parser.UsingAnnotation.useUpdateFieldsKey, false)
+    }
+
+    {
+      info("Check the function signature")
+      def code(modifier: String, args: String, rets: String): String =
+        s"""
+           |Contract Foo(c: U256) implements Bar {
+           |  $modifier fn bar($args) -> ($rets) {
+           |    return c
+           |  }
+           |}
+           |
+           |Interface Bar {
+           |  pub fn bar(a: U256) -> U256
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code("pub", "a: U256", "U256")).isRight is true
+      Compiler.compileContract(code("pub", "@unused a: U256", "U256")).isRight is true
+      Compiler.compileContract(code("pub", "b: U256", "U256")).isRight is true
+      wrongSignature(code("", "a: U256", "U256"), "bar")
+      wrongSignature(code("pub", "mut a: U256", "U256"), "bar")
+      wrongSignature(code("pub", "a: ByteVec", "U256"), "bar")
+      wrongSignature(code("", "a: U256", "ByteVec"), "bar")
     }
   }
 
@@ -2553,7 +2621,13 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |""".stripMargin
 
       Compiler.compileContract(code).leftValue.message is
-        "If else expressions should be terminated with an else branch"
+        """-- error (5:3): Syntax error
+          |5 |  }
+          |  |  ^
+          |  |  Expected `else` statement
+          |  |------------------------------------------------------------------------------------------
+          |  |Description: `if/else` expressions require both `if` and `else` statements to be complete.
+          |""".stripMargin
     }
 
     {
@@ -2845,6 +2919,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |Contract Foo(v: U256) extends Base(v) {
+           |  @using(checkExternalCaller = false)
            |  pub fn foo() -> () {
            |    base()
            |  }
@@ -2922,9 +2997,11 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
            |  }
            |}
            |Contract Bar() extends Foo() {
+           |  @using(checkExternalCaller = false)
            |  pub fn bar() -> () { foo(0) }
            |}
            |Contract Baz() extends Foo() {
+           |  @using(checkExternalCaller = false)
            |  pub fn baz() -> () { foo(0) }
            |}
            |""".stripMargin
@@ -3145,8 +3222,9 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       val code =
         s"""
            |Contract Foo() {
+           |  @using(checkExternalCaller = false)
            |  pub fn foo(code: ByteVec, fields: ByteVec) -> () {
-           |    migrateWithFields!(code, fields)
+           |    migrateWithFields!(code, #00, fields)
            |  }
            |}
            |""".stripMargin
@@ -3362,5 +3440,548 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     val method1 = Compiler.compileContract(code).rightValue.methods(1)
     tokenInstrs.foreach(instr => method1.instrs.contains(instr) is true)
     alphInstrs.foreach(instr => method1.instrs.contains(instr) is false)
+  }
+
+  it should "load both mutable and immutable fields" in {
+    val code =
+      s"""
+         |Contract Foo(mut a: U256, mut x: [U256; 2], b: Bool, y: [Bool; 2]) {
+         |  pub fn foo(z: I256) -> () {
+         |    a = 0
+         |    x[0] = 0
+         |    assert!(x[1] != 0, 0)
+         |    assert!(z != 0i, 0)
+         |  }
+         |
+         |  pub fn bar(z: ByteVec) -> () {
+         |    assert!(y[1], 0)
+         |    assert!(z != #, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val contract = Compiler.compileContract(code).rightValue
+    contract is StatefulContract(
+      6,
+      methods = AVector(
+        Method[StatefulContext](
+          true,
+          false,
+          false,
+          1,
+          1,
+          0,
+          AVector[Instr[StatefulContext]](
+            U256Const0,
+            StoreMutField(0.toByte),
+            U256Const0,
+            StoreMutField(1.toByte),
+            LoadMutField(2.toByte),
+            U256Const0,
+            U256Neq,
+            U256Const0,
+            AssertWithErrorCode
+          ) ++
+            AVector(LoadLocal(0.toByte), I256Const0, I256Neq, U256Const0, AssertWithErrorCode)
+        ),
+        Method[StatefulContext](
+          true,
+          false,
+          false,
+          1,
+          1,
+          0,
+          AVector[Instr[StatefulContext]](
+            LoadImmField(2.toByte),
+            U256Const0,
+            AssertWithErrorCode
+          ) ++
+            AVector(
+              LoadLocal(0.toByte),
+              BytesConst(Val.ByteVec(ByteString.empty)),
+              ByteVecNeq,
+              U256Const0,
+              AssertWithErrorCode
+            )
+        )
+      )
+    )
+  }
+
+  it should "load both mutable and immutable fields by index" in {
+    val code =
+      s"""
+         |Contract Foo(mut a: U256, mut x: [U256; 2], b: Bool, y: [Bool; 2]) {
+         |  pub fn foo(z: I256, c: U256) -> () {
+         |    a = 0
+         |    x[0] = 0
+         |    assert!(x[c + 1] != 0, 0)
+         |    assert!(z != 0i, 0)
+         |  }
+         |
+         |  pub fn bar(z: ByteVec, c: U256) -> () {
+         |    assert!(y[c + 1], 0)
+         |    assert!(z != #, 0)
+         |  }
+         |}
+         |""".stripMargin
+    val contract = Compiler.compileContract(code).rightValue
+    contract is StatefulContract(
+      6,
+      methods = AVector(
+        Method[StatefulContext](
+          true,
+          false,
+          false,
+          2,
+          2,
+          0,
+          AVector[Instr[StatefulContext]](
+            U256Const0,
+            StoreMutField(0.toByte),
+            U256Const0,
+            StoreMutField(1.toByte),
+            LoadLocal(1.toByte),
+            U256Const1,
+            U256Add,
+            Dup,
+            U256Const2,
+            U256Lt,
+            Assert,
+            U256Const1,
+            U256Add,
+            LoadMutFieldByIndex,
+            U256Const0,
+            U256Neq,
+            U256Const0,
+            AssertWithErrorCode
+          ) ++
+            AVector(LoadLocal(0.toByte), I256Const0, I256Neq, U256Const0, AssertWithErrorCode)
+        ),
+        Method[StatefulContext](
+          true,
+          false,
+          false,
+          2,
+          2,
+          0,
+          AVector[Instr[StatefulContext]](
+            LoadLocal(1.toByte),
+            U256Const1,
+            U256Add,
+            Dup,
+            U256Const2,
+            U256Lt,
+            Assert,
+            U256Const1,
+            U256Add,
+            LoadImmFieldByIndex,
+            U256Const0,
+            AssertWithErrorCode
+          ) ++
+            AVector(
+              LoadLocal(0.toByte),
+              BytesConst(Val.ByteVec(ByteString.empty)),
+              ByteVecNeq,
+              U256Const0,
+              AssertWithErrorCode
+            )
+        )
+      )
+    )
+  }
+
+  it should "compile exp expressions" in {
+    def code(baseType: String, expType: String, op: String, retType: String): String = {
+      s"""
+         |Contract Foo() {
+         |  pub fn foo(base: $baseType, exp: $expType) -> $retType {
+         |    return base $op exp
+         |  }
+         |}
+         |""".stripMargin
+    }
+
+    Compiler.compileContract(code("I256", "I256", "**", "I256")).leftValue.message is
+      "Invalid param types List(I256, I256) for exp operator"
+    Compiler.compileContract(code("U256", "U256", "**", "U256")).isRight is true
+    Compiler.compileContract(code("U256", "U256", "**", "I256")).leftValue.message is
+      s"""Invalid return types: expected "List(I256)", got "List(U256)""""
+    Compiler.compileContract(code("I256", "U256", "**", "I256")).isRight is true
+    Compiler.compileContract(code("I256", "U256", "**", "U256")).leftValue.message is
+      s"""Invalid return types: expected "List(U256)", got "List(I256)""""
+
+    Compiler.compileContract(code("I256", "I256", "|**|", "I256")).leftValue.message is
+      "ModExp accepts U256 only"
+    Compiler.compileContract(code("U256", "U256", "|**|", "U256")).isRight is true
+    Compiler.compileContract(code("I256", "U256", "|**|", "U256")).leftValue.message is
+      "Invalid param types List(I256, U256) for ArithOperator"
+    Compiler.compileContract(code("U256", "U256", "|**|", "I256")).leftValue.message is
+      """Invalid return types: expected "List(I256)", got "List(U256)""""
+  }
+
+  it should "compile Schnorr address lockup script" in {
+    val (script, warnings) =
+      Compiler.compileAssetScript(Address.schnorrAddressLockupScript).rightValue
+    warnings.isEmpty is true
+    script is StatelessScript.unsafe(
+      AVector(
+        Method[StatelessContext](
+          isPublic = true,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          argsLength = 0,
+          localsLength = 0,
+          returnLength = 0,
+          instrs = AVector[Instr[StatelessContext]](
+            TxId,
+            TemplateVariable("publicKey", Val.ByteVec, 0),
+            GetSegregatedSignature,
+            VerifyBIP340Schnorr
+          )
+        )
+      )
+    )
+    script.toTemplateString() is "0101000000000458{0}8685"
+  }
+
+  it should "check mutable field assignments" in {
+    def unassignedErrorMsg(contract: String, fields: Seq[String]): String = {
+      s"There are unassigned mutable fields in contract $contract: ${fields.mkString(",")}"
+    }
+
+    {
+      info("Check assignment for mutable field")
+      val code =
+        s"""
+           |Contract Foo(mut a: U256) {
+           |  pub fn foo() -> U256 {
+           |    return a
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg("Foo", Seq("a"))
+    }
+
+    {
+      info("No error if field is assigned")
+      val code =
+        s"""
+           |Contract Foo(mut a: U256) {
+           |  pub fn foo() -> () {
+           |    a = 0
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("Check assignment for multiple mutable fields")
+      val code =
+        s"""
+           |Contract Foo(mut a: U256, mut b: U256) {
+           |  pub fn foo() -> (U256, U256) {
+           |    return a, b
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg("Foo", Seq("a", "b"))
+    }
+
+    {
+      info("Check assignment for mutable array field")
+      val code =
+        s"""
+           |Contract Foo(mut a: [U256; 2]) {
+           |  pub fn foo() -> [U256; 2] {
+           |    return a
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg("Foo", Seq("a"))
+    }
+
+    {
+      info("Check assignment for multiple mutable array fields")
+      val code =
+        s"""
+           |Contract Foo(mut a: [U256; 2], mut b: [U256; 2]) {
+           |  pub fn foo() -> [[U256; 2]; 2] {
+           |    return [a, b]
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg("Foo", Seq("a", "b"))
+    }
+
+    {
+      info("No error if array field is assigned")
+      val code =
+        s"""
+           |Contract Foo(mut a: [U256; 2]) {
+           |  @using(updateFields = true)
+           |  pub fn foo() -> () {
+           |    a = [0, 0]
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("No error if array element is assigned(case 0)")
+      val code =
+        s"""
+           |Contract Foo(mut a: [U256; 2]) {
+           |  @using(updateFields = true)
+           |  pub fn foo() -> () {
+           |    a[0] = 0
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("No error if array element is assigned(case 1)")
+      val code =
+        s"""
+           |Contract Foo(mut a: [U256; 2]) {
+           |  @using(updateFields = true)
+           |  pub fn foo(index: U256) -> () {
+           |    a[index] = 0
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+  }
+
+  it should "check mutable local vars assignment" in {
+    def unassignedErrorMsg(contract: String, func: String, fields: Seq[String]): String = {
+      s"There are unassigned mutable local vars in function $contract.$func: ${fields.mkString(",")}"
+    }
+
+    {
+      info("Check assignment for mutable local vars")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> U256 {
+           |    let mut a = 0
+           |    return a
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg(
+        "Foo",
+        "foo",
+        Seq("foo.a")
+      )
+    }
+
+    {
+      info("No error if local vars is assigned")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> U256 {
+           |    let mut a = 0
+           |    a = 1
+           |    return a
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("Check assignment for multiple mutable local vars")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> (U256, U256) {
+           |    let mut a = 0
+           |    let mut b = 0
+           |    return a, b
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg(
+        "Foo",
+        "foo",
+        Seq("foo.a", "foo.b")
+      )
+    }
+
+    {
+      info("Check assignment for mutable local array var")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> [U256; 2] {
+           |    let mut a = [0, 0]
+           |    return a
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg(
+        "Foo",
+        "foo",
+        Seq("foo.a")
+      )
+    }
+
+    {
+      info("Check assignment for multiple mutable local array vars")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> [[U256; 2]; 2] {
+           |    let mut a = [0, 0]
+           |    let mut b = [0, 0]
+           |    return [a, b]
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).leftValue.message is unassignedErrorMsg(
+        "Foo",
+        "foo",
+        Seq("foo.a", "foo.b")
+      )
+    }
+
+    {
+      info("No error if local array var is assigned")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> () {
+           |    let mut a = [0, 0]
+           |    a = [1, 1]
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("No error if array element is assigned(case 0)")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo() -> () {
+           |    let mut a = [0, 0]
+           |    a[0] = 1
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+
+    {
+      info("No error if array element is assigned(case 1)")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  pub fn foo(index: U256) -> () {
+           |    let mut a = [0, 0]
+           |    a[index] = 1
+           |  }
+           |}
+           |""".stripMargin
+      Compiler.compileContract(code).isRight is true
+    }
+  }
+
+  it should "generate code for std id" in {
+    def code(contractAnnotation: String, interfaceAnnotation: String): String =
+      s"""
+         |$contractAnnotation
+         |Contract Bar() implements Foo {
+         |  pub fn foo() -> () {}
+         |}
+         |
+         |$interfaceAnnotation
+         |Interface Foo {
+         |  pub fn foo() -> ()
+         |}
+         |""".stripMargin
+
+    Compiler.compileContract(code("", "")).rightValue.fieldLength is 0
+    Compiler.compileContract(code("", "@std(id = #0001)")).rightValue.fieldLength is 1
+    Compiler
+      .compileContract(code("@std(enabled = true)", "@std(id = #0001)"))
+      .rightValue
+      .fieldLength is 1
+    Compiler
+      .compileContract(code("@std(enabled = false)", "@std(id = #0001)"))
+      .rightValue
+      .fieldLength is 0
+  }
+
+  it should "use built-in contract functions" in {
+    def code(
+        contractAnnotation: String,
+        interfaceAnnotation: String,
+        input0: String,
+        input1: String
+    ): String =
+      s"""
+         |$contractAnnotation
+         |Contract Bar(a: U256, @unused mut b: I256) implements Foo {
+         |  @using(checkExternalCaller = false)
+         |  pub fn foo() -> () {
+         |    let bs0 = Bar.encodeImmFields!(${input0})
+         |    let bs1 = Bar.encodeMutFields!(${input1})
+         |    assert!(bs0 == #, 0)
+         |    assert!(bs1 == #, 0)
+         |  }
+         |}
+         |
+         |$interfaceAnnotation
+         |Interface Foo {
+         |  @using(checkExternalCaller = false)
+         |  pub fn foo() -> ()
+         |}
+         |""".stripMargin
+
+    Compiler.compileContract(code("", "", "1", "2i")).rightValue.fieldLength is 2
+    Compiler.compileContract(code("", "@std(id = #0001)", "1", "2i")).rightValue.fieldLength is 3
+    Compiler
+      .compileContract(code("@std(enabled = true)", "@std(id = #0001)", "1", "2i"))
+      .rightValue
+      .fieldLength is 3
+    Compiler
+      .compileContract(code("@std(enabled = false)", "@std(id = #0001)", "1", "2i"))
+      .rightValue
+      .fieldLength is 2
+  }
+
+  it should "check whether a function is static or not" in {
+    def compile(testCode: String) = {
+      val code = s"""
+                    |Contract Foo() {
+                    |  pub fn foo(bar: Bar) -> () {
+                    |    ${testCode}
+                    |    return
+                    |  }
+                    |}
+                    |Contract Bar() {
+                    |  pub fn bar() -> () {
+                    |    return
+                    |  }
+                    |}
+                    |""".stripMargin
+      Compiler.compileContractFull(code)
+    }
+    compile("let x = bar.encodeImmFields!()").leftValue.message is
+      s"""Expected non-static function, got "Bar.encodeImmFields""""
+    compile("bar.encodeImmFields!()").leftValue.message is
+      s"""Expected non-static function, got "Bar.encodeImmFields""""
+    compile("let x = Bar.bar()").leftValue.message is
+      s"""Expected static function, got "Bar.bar""""
+    compile("Bar.bar()").leftValue.message is
+      s"""Expected static function, got "Bar.bar""""
   }
 }

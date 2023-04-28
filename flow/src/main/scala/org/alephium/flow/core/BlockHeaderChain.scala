@@ -59,6 +59,10 @@ trait BlockHeaderChain extends BlockHeaderPool with BlockHashChain with LazyLogg
     getBlockHeader(hash).map(_.timestamp)
   }
 
+  def getTimestampUnsafe(hash: BlockHash): TimeStamp = {
+    getBlockHeaderUnsafe(hash).timestamp
+  }
+
   def getTarget(hash: BlockHash): IOResult[Target] = {
     getBlockHeader(hash).map(_.target)
   }
@@ -100,6 +104,43 @@ trait BlockHeaderChain extends BlockHeaderPool with BlockHashChain with LazyLogg
       _ <- addHeader(header)
       _ <- addGenesis(header.hash)
     } yield ()
+  }
+
+  override def checkCompletenessUnsafe(hash: BlockHash): Boolean = {
+    checkCompletenessHelper(
+      hash,
+      hash => headerStorage.existsUnsafe(hash) && super.checkCompletenessUnsafe(hash),
+      _ => true
+    )
+  }
+
+  def checkCompletenessHelper(
+      hash: BlockHash,
+      checkSelf: BlockHash => Boolean,
+      checkSuper: BlockHash => Boolean
+  ): Boolean = {
+    checkSelf(hash) && checkSuper(hash) && {
+      var toCheckHeader = getBlockHeaderUnsafe(hash)
+      (0 until 10).forall { _ =>
+        if (toCheckHeader.isGenesis) {
+          true
+        } else {
+          val toCheckHash = toCheckHeader.hash
+          toCheckHeader = getBlockHeaderUnsafe(toCheckHeader.parentHash)
+          checkSelf(toCheckHash)
+        }
+      }
+    }
+  }
+
+  def cleanTips(): Unit = {
+    val currentTips = getAllTips
+    val invalidTips = currentTips.filter(!checkCompletenessUnsafe(_))
+    if (currentTips.length > invalidTips.length) {
+      invalidTips.foreach(removeInvalidTip)
+    } else {
+      // TODO: recover valid tips
+    }
   }
 
   // We use height for canonicality checking. This will converge to weight based checking eventually

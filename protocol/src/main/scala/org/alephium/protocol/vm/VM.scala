@@ -370,9 +370,8 @@ final class StatefulVM(
 
   private def outputGeneratedBalances(outputBalances: MutBalances): ExeResult[Unit] = {
     EitherF.foreachTry(outputBalances.all) { case (lockupScript, balances) =>
-      balances.toTxOutput(lockupScript).flatMap {
-        case Some(output) => ctx.generateOutput(output)
-        case None         => Right(())
+      balances.toTxOutput(lockupScript, ctx.getHardFork()).flatMap { outputs =>
+        outputs.foreachE(output => ctx.generateOutput(output))
       }
     }
   }
@@ -448,6 +447,36 @@ object StatefulVM {
       _      <- execute(context, script.toObject, AVector.empty)
       result <- prepareResult(context)
     } yield result
+  }
+
+  def runTxScriptMockup(
+      worldState: WorldState.Staging,
+      blockEnv: BlockEnv,
+      tx: TransactionAbstract,
+      preOutputs: AVector[AssetOutput],
+      script: StatefulScript,
+      gasRemaining: GasBox
+  )(implicit networkConfig: NetworkConfig, logConfig: LogConfig): ExeResult[TxScriptExecution] = {
+    val context = StatefulContext(blockEnv, tx, gasRemaining, worldState, preOutputs)
+    runTxScriptMockup(context, script)
+  }
+
+  def runTxScriptMockup(
+      context: StatefulContext,
+      script: StatefulScript
+  ): ExeResult[TxScriptExecution] = {
+    for {
+      _ <- execute(context, script.toObject, AVector.empty)
+    } yield prepareResultMockup(context)
+  }
+
+  private def prepareResultMockup(context: StatefulContext): TxScriptExecution = {
+    TxScriptExecution(
+      context.gasRemaining,
+      AVector.from(context.contractInputs.view.map(_._1)),
+      AVector.from(context.contractInputs.view.map(_._2)),
+      AVector.from(context.generatedOutputs)
+    )
   }
 
   def runTxScriptWithOutputs(

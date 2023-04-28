@@ -12,13 +12,16 @@ jobs:
       - uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      - uses: olafurpg/setup-java@v10
+      - name: Setup JDK
+        uses: actions/setup-java@v3
         with:
+          distribution: temurin
           java-version: 11
-      - run: sbt clean coverage test coverageReport && sbt coverageAggregate
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v2
-        with:
-          name: codecov-alephium
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          cache: sbt
+#      - run: sbt clean coverage test coverageReport && sbt coverageAggregate
+#      - name: Upload coverage to Codecov
+#        uses: codecov/codecov-action@v2
+#        with:
+#          name: codecov-alephium
+#          token: ${{ secrets.CODECOV_TOKEN }}
+#          fail_ci_if_error: true

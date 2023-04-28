@@ -30,6 +30,7 @@ import org.alephium.protocol.vm.Val.ByteVec
 import org.alephium.ralph.ArithOperator._
 import org.alephium.ralph.LogicalOperator._
 import org.alephium.ralph.TestOperator._
+import org.alephium.ralph.error.CompilerError
 import org.alephium.util._
 
 // scalastyle:off number.of.methods
@@ -42,7 +43,7 @@ object Lexer {
   def newline[Unknown: P]: P[Unit]   = P(NoTrace(StringIn("\r\n", "\n")))
 
   private def id[Unknown: P, T](prefix: => P[Unit], func: String => T): P[T] =
-    P(prefix ~ (letter | digit | "_").rep).!.filter(!keywordSet.contains(_)).map(func)
+    P(prefix ~ (letter | digit | "_").rep).!.filter(!Keyword.Used.exists(_)).map(func)
   def ident[Unknown: P]: P[Ast.Ident] = id(lowercase, Ast.Ident)
   def constantIdent[Unknown: P]: P[Ast.Ident] =
     id(uppercase.opaque("constant variables must start with an uppercase letter"), Ast.Ident)
@@ -56,84 +57,99 @@ object Lexer {
     obj.getClass.getSimpleName.dropRight(1)
   }
 
-  def token[Unknown: P](s: String): P[Unit] = {
-    s ~ !(letter | digit | "_")
+  def token[Unknown: P](keyword: Keyword): P[Unit] = {
+    keyword.name ~ !(letter | digit | "_")
   }
-  def keyword[Unknown: P](s: String): P[Unit] = {
-    require(keywordSet.contains(s))
-    token(s)
-  }
-  def unused[Unknown: P]: P[Boolean] = token("@unused").?.!.map(_.nonEmpty)
-  def mut[Unknown: P]: P[Boolean]    = P(keyword("mut").?.!).map(_.nonEmpty)
+
+  def unused[Unknown: P]: P[Boolean] = token(Keyword.`@unused`).?.!.map(_.nonEmpty)
+  def mut[Unknown: P]: P[Boolean]    = P(token(Keyword.mut).?.!).map(_.nonEmpty)
+
+  /** @return
+    *   - Failure if `allowMutable` is `false` and a `mut` declaration was found.
+    *   - Else a boolean value: `true` if mut` declaration found, else `false`.
+    */
+  def mutMaybe[Unknown: P](allowMutable: Boolean): P[Boolean] =
+    P(Index ~ mut) map { case (index, mutable) =>
+      if (!allowMutable && mutable) {
+        throw CompilerError.`Expected an immutable variable`(index)
+      } else {
+        mutable
+      }
+    }
 
   def lineComment[Unknown: P]: P[Unit] = P("//" ~ CharsWhile(_ != '\n', 0))
   def emptyChars[Unknown: P]: P[Unit]  = P((CharsWhileIn(" \t\r\n") | lineComment).rep)
 
   def hexNum[Unknown: P]: P[BigInteger] = P("0x") ~ hex.!.map(new BigInteger(_, 16))
-  def decNum[Unknown: P]: P[BigInteger] = P(
-    (CharsWhileIn("0-9_") ~ ("." ~ CharsWhileIn("0-9_")).? ~
+  def integer[Unknown: P]: P[BigInteger] = P(
+    Index ~ (CharsWhileIn("0-9_") ~ ("." ~ CharsWhileIn("0-9_")).? ~
       ("e" ~ "-".? ~ CharsWhileIn("0-9")).?).! ~
-      CharsWhileIn(" ", 0) ~ keyword("alph").?.!
-  ).map { case (input, unit) =>
+      CharsWhileIn(" ", 0) ~ token(Keyword.alph).?.!
+  ).map { case (index, input, unit) =>
     try {
       var num = new BigDecimal(input.replaceAll("_", ""))
       if (unit == "alph") num = num.multiply(new BigDecimal(ALPH.oneAlph.toBigInt))
       num.toBigIntegerExact()
     } catch {
-      case NonFatal(_) => throw Compiler.Error(s"Invalid number ${input}")
+      case NonFatal(_) => throw CompilerError.`Invalid number`(input, index)
     }
   }
-  def num[Unknown: P]: P[BigInteger] = negatable(P(hexNum | decNum))
+  def num[Unknown: P]: P[BigInteger] = negatable(P(hexNum | integer))
   def negatable[Unknown: P](p: => P[BigInteger]): P[BigInteger] =
     ("-".?.! ~ p).map {
       case ("-", i) => i.negate()
       case (_, i)   => i
     }
   def typedNum[Unknown: P]: P[Val] =
-    P(num ~ ("i" | "u").?.!)
+    P(Index ~ num ~ ("i" | "u").?.!)(
+      sourcecode.Name(CompilerError.`an I256 or U256 value`.message),
+      implicitly[P[_]]
+    )
       .map {
-        case (n, postfix) if Number.isNegative(n) || postfix == "i" =>
+        case (index, n, postfix) if Number.isNegative(n) || postfix == "i" =>
           I256.from(n) match {
             case Some(value) => Val.I256(value)
-            case None        => throw Compiler.Error(s"Invalid I256 value: $n")
+            case None        => throw CompilerError.`Expected an I256 value`(index, n)
           }
-        case (n, _) =>
+
+        case (index, n, _) =>
           U256.from(n) match {
             case Some(value) => Val.U256(value)
-            case None        => throw Compiler.Error(s"Invalid U256 value: $n")
+            case None        => throw CompilerError.`Expected an U256 value`(index, n)
           }
       }
 
   def bytesInternal[Unknown: P]: P[Val.ByteVec] =
-    P(CharsWhileIn("0-9a-zA-Z", 0)).!.map { string =>
+    P(Index ~ CharsWhileIn("0-9a-zA-Z", 0).!).map { case (index, string) =>
       Hex.from(string) match {
         case Some(bytes) => ByteVec(bytes)
         case None =>
           Address.extractLockupScript(string) match {
             case Some(LockupScript.P2C(contractId)) => ByteVec(contractId.bytes)
-            case _ => throw Compiler.Error(s"Invalid byteVec: $string")
+            case _ => throw CompilerError.`Invalid byteVec`(string, index)
           }
       }
     }
   def bytes[Unknown: P]: P[Val.ByteVec] = P("#" ~ bytesInternal)
   def contractAddress[Unknown: P]: P[Val.ByteVec] =
     addressInternal.map {
-      case Val.Address(LockupScript.P2C(contractId)) => Val.ByteVec(contractId.bytes)
-      case addr => throw Compiler.Error(s"Invalid contract address: #@${addr.toBase58}")
+      case (Val.Address(LockupScript.P2C(contractId)), _) => Val.ByteVec(contractId.bytes)
+      case (addr, index) =>
+        throw CompilerError.`Invalid contract address`(s"#@${addr.toBase58}", index)
     }
 
-  def addressInternal[Unknown: P]: P[Val.Address] =
-    P(CharsWhileIn("0-9a-zA-Z")).!.map { input =>
+  def addressInternal[Unknown: P]: P[(Val.Address, Int)] =
+    P(Index ~ CharsWhileIn("0-9a-zA-Z").!).map { case (index, input) =>
       val lockupScriptOpt = Address.extractLockupScript(input)
       lockupScriptOpt match {
-        case Some(lockupScript) => Val.Address(lockupScript)
-        case None               => throw Compiler.Error(s"Invalid address: $input")
+        case Some(lockupScript) => (Val.Address(lockupScript), index)
+        case None               => throw CompilerError.`Invalid address`(input, index)
       }
     }
-  def address[Unknown: P]: P[Val.Address] = P("@" ~ addressInternal)
+  def address[Unknown: P]: P[Val.Address] = P("@" ~ addressInternal.map(_._1))
 
   def bool[Unknown: P]: P[Val.Bool] =
-    P(keyword("true") | keyword("false")).!.map {
+    P(token(Keyword.`true`) | token(Keyword.`false`)).!.map {
       case "true" => Val.Bool(true)
       case _      => Val.Bool(false)
     }
@@ -160,12 +176,14 @@ object Lexer {
   ): P[(AVector[String], Seq[T])] =
     P("`" ~ stringChained(stringInterpolator) ~ "`")
 
-  def `abstract`[Unknown: P]: P[Boolean] = P(keyword("Abstract").?.!).map(_.nonEmpty)
+  def `abstract`[Unknown: P]: P[Boolean] = P(token(Keyword.Abstract).?.!).map(_.nonEmpty)
 
   def opByteVecAdd[Unknown: P]: P[Operator] = P("++").map(_ => Concat)
   def opAdd[Unknown: P]: P[Operator]        = P("+").map(_ => Add)
   def opSub[Unknown: P]: P[Operator]        = P("-").map(_ => Sub)
   def opMul[Unknown: P]: P[Operator]        = P("*").map(_ => Mul)
+  def opExp[Unknown: P]: P[Operator]        = P("**").map(_ => Exp)
+  def opModExp[Unknown: P]: P[Operator]     = P("|**|").map(_ => ModExp)
   def opDiv[Unknown: P]: P[Operator]        = P("/").map(_ => Div)
   def opMod[Unknown: P]: P[Operator]        = P("%").map(_ => Mod)
   def opModAdd[Unknown: P]: P[Operator]     = P("⊕" | "|+|").map(_ => ModAdd)
@@ -192,36 +210,9 @@ object Lexer {
     case object Pub     extends FuncModifier
     case object Payable extends FuncModifier
 
-    def pub[Unknown: P]: P[FuncModifier]       = keyword("pub").map(_ => Pub)
+    def pub[Unknown: P]: P[FuncModifier]       = token(Keyword.pub).map(_ => Pub)
     def modifiers[Unknown: P]: P[FuncModifier] = P(pub)
   }
-
-  def keywordSet: Set[String] = Set(
-    "Contract",
-    "AssetScript",
-    "TxScript",
-    "Interface",
-    "let",
-    "mut",
-    "fn",
-    "return",
-    "true",
-    "false",
-    "if",
-    "else",
-    "while",
-    "for",
-    "pub",
-    "event",
-    "emit",
-    "extends",
-    "implements",
-    "alph",
-    "const",
-    "enum",
-    "Abstract",
-    "ALPH"
-  )
 
   val primTpes: Map[String, Type] =
     Type.primitives.map(tpe => (getSimpleName(tpe), tpe)).toArray.toMap

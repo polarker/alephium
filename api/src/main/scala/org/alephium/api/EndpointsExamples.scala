@@ -136,8 +136,8 @@ trait EndpointsExamples extends ErrorExamples {
     1,
     1,
     None,
-    model.defaultGas.value,
-    model.defaultGasPrice.value,
+    model.minimalGas.value,
+    model.nonCoinbaseMinGasPrice.value,
     AVector(inputAsset),
     AVector(outputAsset)
   )
@@ -343,8 +343,8 @@ trait EndpointsExamples extends ErrorExamples {
       : List[Example[BlocksAndEventsPerTimeStampRange]] =
     simpleExample(BlocksAndEventsPerTimeStampRange(AVector(AVector(blockAndEvents))))
 
-  implicit val unconfirmedTransactionsExamples: List[Example[AVector[UnconfirmedTransactions]]] =
-    simpleExample(AVector(UnconfirmedTransactions(0, 1, AVector(transactionTemplate))))
+  implicit val mempoolTransactionsExamples: List[Example[AVector[MempoolTransactions]]] =
+    simpleExample(AVector(MempoolTransactions(0, 1, AVector(transactionTemplate))))
 
   implicit val blockEntryExamples: List[Example[BlockEntry]] =
     simpleExample(blockEntry)
@@ -402,17 +402,19 @@ trait EndpointsExamples extends ErrorExamples {
   implicit val buildTransactionExamples: List[Example[BuildTransaction]] = List(
     defaultExample(
       BuildTransaction(
-        publicKey,
+        publicKey.bytes,
+        None,
         defaultDestinations
       )
     ),
     moreSettingsExample(
       BuildTransaction(
-        publicKey,
+        publicKey.bytes,
+        Some(BuildTxCommon.BIP340Schnorr),
         moreSettingsDestinations,
         Some(AVector(outputRef)),
         Some(model.minimalGas),
-        Some(model.defaultGasPrice)
+        Some(model.nonCoinbaseMinGasPrice)
       )
     )
   )
@@ -431,7 +433,7 @@ trait EndpointsExamples extends ErrorExamples {
           address,
           Some(ts),
           Some(model.minimalGas),
-          Some(model.defaultGasPrice)
+          Some(model.nonCoinbaseMinGasPrice)
         )
       )
     )
@@ -441,7 +443,7 @@ trait EndpointsExamples extends ErrorExamples {
       BuildTransactionResult(
         unsignedTx = hexString,
         model.minimalGas,
-        model.defaultGasPrice,
+        model.nonCoinbaseMinGasPrice,
         txId,
         fromGroup = 2,
         toGroup = 1
@@ -451,7 +453,12 @@ trait EndpointsExamples extends ErrorExamples {
   implicit val buildSweepAddressTransactionsResultExamples
       : List[Example[BuildSweepAddressTransactionsResult]] = {
     val sweepAddressTxs = AVector(
-      SweepAddressTransaction(txId, hexString, model.minimalGas, model.defaultGasPrice)
+      SweepAddressTransaction(
+        txId,
+        hexString,
+        model.minimalGas,
+        model.nonCoinbaseMinGasPrice
+      )
     )
     simpleExample(BuildSweepAddressTransactionsResult(sweepAddressTxs, fromGroup = 2, toGroup = 1))
   }
@@ -490,7 +497,7 @@ trait EndpointsExamples extends ErrorExamples {
         AVector(publicKey),
         moreSettingsDestinations,
         Some(model.minimalGas),
-        Some(model.defaultGasPrice)
+        Some(model.nonCoinbaseMinGasPrice)
       )
     )
   )
@@ -602,7 +609,8 @@ trait EndpointsExamples extends ErrorExamples {
         fieldTypes = AVector("Bool", "U256", "ByteVec", "Address")
       )
     ),
-    warnings = AVector("Found unused fields in Foo: a")
+    warnings = AVector("Found unused fields in Foo: a"),
+    stdInterfaceId = Some("0001")
   )
   implicit val compileContractResultExamples: List[Example[CompileContractResult]] =
     simpleExample(compileContractResult)
@@ -616,30 +624,32 @@ trait EndpointsExamples extends ErrorExamples {
     )
 
   implicit val buildDeployContractTxExamples: List[Example[BuildDeployContractTx]] = List(
-    defaultExample(BuildDeployContractTx(publicKey, bytecode = byteString)),
+    defaultExample(BuildDeployContractTx(publicKey.bytes, None, bytecode = byteString)),
     moreSettingsExample(
       BuildDeployContractTx(
-        publicKey,
+        publicKey.bytes,
+        Some(BuildTxCommon.BIP340Schnorr),
         byteString,
         Some(bigAmount),
         Some(tokens),
         Some(bigAmount),
         Some(model.minimalGas),
-        Some(model.defaultGasPrice)
+        Some(model.nonCoinbaseMinGasPrice)
       )
     )
   )
 
   implicit val buildExecuteScriptTxExamples: List[Example[BuildExecuteScriptTx]] = List(
-    defaultExample(BuildExecuteScriptTx(publicKey, bytecode = byteString)),
+    defaultExample(BuildExecuteScriptTx(publicKey.bytes, None, bytecode = byteString)),
     moreSettingsExample(
       BuildExecuteScriptTx(
-        publicKey,
+        publicKey.bytes,
+        Some(BuildTxCommon.Default),
         byteString,
         Some(Amount(model.dustUtxoAmount)),
         Some(tokens),
         Some(model.minimalGas),
-        Some(model.defaultGasPrice)
+        Some(model.nonCoinbaseMinGasPrice)
       )
     )
   )
@@ -651,7 +661,7 @@ trait EndpointsExamples extends ErrorExamples {
         toGroup = 2,
         unsignedTx = hexString,
         model.minimalGas,
-        model.defaultGasPrice,
+        model.nonCoinbaseMinGasPrice,
         txId = txId,
         contractAddress = Address.contract(contractId)
       )
@@ -664,7 +674,7 @@ trait EndpointsExamples extends ErrorExamples {
         toGroup = 2,
         unsignedTx = hexString,
         model.minimalGas,
-        model.defaultGasPrice,
+        model.nonCoinbaseMinGasPrice,
         txId = txId
       )
     )
@@ -682,8 +692,9 @@ trait EndpointsExamples extends ErrorExamples {
     address = Address.contract(anotherContractId),
     bytecode = code,
     codeHash = code.hash,
-    initialStateHash = Some(code.initialStateHash(AVector.empty)),
-    fields = AVector[Val](ValU256(ALPH.alph(2))),
+    initialStateHash = Some(code.initialStateHash(AVector.empty, AVector.empty)),
+    immFields = AVector[Val](ValU256(ALPH.alph(1))),
+    mutFields = AVector[Val](ValU256(ALPH.alph(2))),
     asset = asset(2)
   )
   implicit val testContractExamples: List[Example[TestContract]] = {
@@ -692,7 +703,8 @@ trait EndpointsExamples extends ErrorExamples {
         group = Some(0),
         address = Some(Address.contract(ContractId.zero)),
         bytecode = code,
-        initialFields = Some(AVector[Val](ValU256(ALPH.oneAlph))),
+        initialImmFields = Some(AVector[Val](ValU256(ALPH.alph(1)))),
+        initialMutFields = Some(AVector[Val](ValU256(ALPH.alph(2)))),
         initialAsset = Some(asset(1)),
         methodIndex = Some(0),
         args = Some(AVector[Val](ValU256(ALPH.oneAlph))),
@@ -718,32 +730,38 @@ trait EndpointsExamples extends ErrorExamples {
       )
     )
 
+  val callContractExample = CallContract(
+    group = 0,
+    worldStateBlockHash = Some(blockHash),
+    txId = Some(txId),
+    address = Address.contract(ContractId.zero),
+    methodIndex = 0,
+    args = Some(AVector[Val](ValU256(U256.Zero))),
+    existingContracts = Some(AVector(contractAddress)),
+    inputAssets = Some(AVector(TestInputAsset(address, asset(3))))
+  )
   implicit val callContractExamples: List[Example[CallContract]] = {
-    simpleExample(
-      CallContract(
-        group = 0,
-        worldStateBlockHash = Some(blockHash),
-        txId = Some(txId),
-        address = Address.contract(ContractId.zero),
-        methodIndex = 0,
-        args = Some(AVector[Val](ValU256(U256.Zero))),
-        existingContracts = Some(AVector(contractAddress)),
-        inputAssets = Some(AVector(TestInputAsset(address, asset(3))))
-      )
-    )
+    simpleExample(callContractExample)
   }
 
+  val callContractResultExample = CallContractResult(
+    returns = AVector[Val](ValU256(U256.Zero)),
+    gasUsed = 20000,
+    contracts = AVector(existingContract),
+    txInputs = AVector(contractAddress),
+    txOutputs = AVector(ContractOutput(1, hash, Amount(ALPH.oneAlph), contractAddress, tokens)),
+    events = AVector(eventByTxId)
+  )
   implicit val callContractResultExamples: List[Example[CallContractResult]] = {
-    simpleExample(
-      CallContractResult(
-        returns = AVector[Val](ValU256(U256.Zero)),
-        gasUsed = 20000,
-        contracts = AVector(existingContract),
-        txInputs = AVector(contractAddress),
-        txOutputs = AVector(ContractOutput(1, hash, Amount(ALPH.oneAlph), contractAddress, tokens)),
-        events = AVector(eventByTxId)
-      )
-    )
+    simpleExample(callContractResultExample)
+  }
+
+  implicit val multipleCallContractExamples: List[Example[MultipleCallContract]] = {
+    simpleExample(MultipleCallContract(AVector(callContractExample)))
+  }
+
+  implicit val multipleCallContractResultExamples: List[Example[MultipleCallContractResult]] = {
+    simpleExample(MultipleCallContractResult(AVector(callContractResultExample)))
   }
 
   implicit val exportFileExamples: List[Example[ExportFile]] =
