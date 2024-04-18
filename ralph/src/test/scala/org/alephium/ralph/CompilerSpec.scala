@@ -1363,6 +1363,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       isPublic = false,
       usePreapprovedAssets = false,
       useContractAssets = false,
+      usePayToContractOnly = false,
       argsLength = 0,
       localsLength = 6,
       returnLength = 0,
@@ -1383,6 +1384,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       isPublic = false,
       usePreapprovedAssets = false,
       useContractAssets = false,
+      usePayToContractOnly = false,
       argsLength = 0,
       localsLength = 14,
       returnLength = 0,
@@ -1825,6 +1827,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
         isPublic = true,
         usePreapprovedAssets = false,
         useContractAssets = false,
+        usePayToContractOnly = false,
         argsLength = 0,
         localsLength = 5,
         returnLength = 0,
@@ -2810,7 +2813,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       .isRight is true
     testContractError(
       code("true"),
-      "Function \"Foo.foo\" does not use contract assets, but its annotation of contract assets is turn on." +
+      "Function \"Foo.foo\" does not use contract assets, but its annotation of contract assets is turn on. " +
         "Please remove the `assetsInContract` annotation or set it to `enforced`"
     )
     Compiler.compileContract(replace(code("enforced"))).isRight is true
@@ -4018,9 +4021,10 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       6,
       methods = AVector(
         Method[StatefulContext](
-          true,
-          false,
-          false,
+          isPublic = true,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          usePayToContractOnly = false,
           1,
           1,
           0,
@@ -4038,9 +4042,10 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
             AVector(LoadLocal(0.toByte), I256Const0, I256Neq, U256Const0, AssertWithErrorCode)
         ),
         Method[StatefulContext](
-          true,
-          false,
-          false,
+          isPublic = true,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          usePayToContractOnly = false,
           1,
           1,
           0,
@@ -4083,13 +4088,14 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       6,
       methods = AVector(
         Method[StatefulContext](
-          true,
-          false,
-          false,
-          2,
-          2,
-          0,
-          AVector[Instr[StatefulContext]](
+          isPublic = true,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          usePayToContractOnly = false,
+          argsLength = 2,
+          localsLength = 2,
+          returnLength = 0,
+          instrs = AVector[Instr[StatefulContext]](
             U256Const0,
             StoreMutField(0.toByte),
             U256Const0,
@@ -4112,9 +4118,10 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
             AVector(LoadLocal(0.toByte), I256Const0, I256Neq, U256Const0, AssertWithErrorCode)
         ),
         Method[StatefulContext](
-          true,
-          false,
-          false,
+          isPublic = true,
+          usePreapprovedAssets = false,
+          useContractAssets = false,
+          usePayToContractOnly = false,
           2,
           2,
           0,
@@ -4219,6 +4226,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
           isPublic = true,
           usePreapprovedAssets = false,
           useContractAssets = false,
+          usePayToContractOnly = false,
           argsLength = 0,
           localsLength = 0,
           returnLength = 0,
@@ -6172,11 +6180,12 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       Ast.FuncDef(
         Seq.empty,
         Ast.FuncId(name, false),
-        false,
-        false,
+        isPublic = false,
+        usePreapprovedAssets = false,
         Ast.NotUseContractAssets,
-        false,
-        false,
+        usePayToContractOnly = false,
+        useCheckExternalCaller = false,
+        useUpdateFields = false,
         methodIndex,
         Seq.empty,
         Seq.empty,
@@ -6227,5 +6236,30 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       funcs3,
       Map("f1" -> 0, "f0" -> 1, "f2" -> 2, "f3" -> 5)
     )
+  }
+
+  it should "generate the right asset modifiers for functions" in {
+    val code =
+      s"""
+         |Contract Foo() {
+         |  @using(preapprovedAssets = false, assetsInContract = false, payToContractOnly = true)
+         |  pub fn foo0() -> () {
+         |    transferTokenToSelf!(callerAddress!(), ALPH, 1 alph)
+         |  }
+         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  pub fn foo1() -> () {
+         |    transferTokenToSelf!(callerAddress!(), ALPH, 1 alph)
+         |  }
+         |}
+         |""".stripMargin
+    val contract = Compiler.compileContract(code).rightValue
+    val method0  = contract.methods(0)
+    method0.usePreapprovedAssets is false
+    method0.useContractAssets is false
+    method0.usePayToContractOnly is true
+    val method1 = contract.methods(1)
+    method1.usePreapprovedAssets is true
+    method1.useContractAssets is true
+    method1.usePayToContractOnly is false
   }
 }

@@ -458,7 +458,7 @@ class VMSpec extends AlephiumSpec with Generators {
          |Contract ShinyToken() {
          |  @using(assetsInContract = true)
          |  pub fn transfer(to: Address, amount: U256) -> () {
-         |    transferTokenFromSelf!(to, selfContractId!(), amount)
+         |    transferTokenFromSelf!(to, selfTokenId!(), amount)
          |    transferTokenFromSelf!(to, ALPH, dustAmount!())
          |  }
          |}
@@ -1615,7 +1615,7 @@ class VMSpec extends AlephiumSpec with Generators {
          |
          |$foo
          |""".stripMargin
-    failCallTxScript(main, ContractAssetAlreadyInUsing)
+    failCallTxScript(main, ContractDestructionShouldNotBeCalledFromSelf)
   }
 
   it should "fetch block env" in new ContractFixture {
@@ -2137,6 +2137,7 @@ class VMSpec extends AlephiumSpec with Generators {
         isPublic = true,
         usePreapprovedAssets = true,
         useContractAssets = true,
+        usePayToContractOnly = false,
         argsLength = 0,
         localsLength = 0,
         returnLength = 0,
@@ -5631,7 +5632,7 @@ class VMSpec extends AlephiumSpec with Generators {
         BytesConst(Val.ByteVec(subContractId.bytes)),
         CallExternal(CreateMapEntry.LoadImmFieldMethodIndex)
       )
-      val loadImmFieldMethod = Method(true, false, false, 0, 0, 0, loadImmFieldInstrs)
+      val loadImmFieldMethod = Method(true, false, false, false, 0, 0, 0, loadImmFieldInstrs)
       val loadMutFieldInstrs = AVector[Instr[StatefulContext]](
         ConstInstr.u256(Val.U256(U256.Zero)), // the index of `Bar.a`
         ConstInstr.u256(Val.U256(U256.One)),
@@ -5639,7 +5640,7 @@ class VMSpec extends AlephiumSpec with Generators {
         BytesConst(Val.ByteVec(subContractId.bytes)),
         CallExternal(CreateMapEntry.LoadMutFieldMethodIndex)
       )
-      val loadMutFieldMethod = Method(true, false, false, 0, 0, 0, loadMutFieldInstrs)
+      val loadMutFieldMethod = Method(true, false, false, false, 0, 0, 0, loadMutFieldInstrs)
       val storeFieldInstrs = AVector[Instr[StatefulContext]](
         ConstInstr.u256(Val.U256(U256.One)),  // new value
         ConstInstr.u256(Val.U256(U256.Zero)), // mutable field index
@@ -5648,7 +5649,7 @@ class VMSpec extends AlephiumSpec with Generators {
         BytesConst(Val.ByteVec(subContractId.bytes)),
         CallExternal(CreateMapEntry.StoreMutFieldMethodIndex)
       )
-      val storeFieldMethod = Method(true, false, false, 0, 0, 0, storeFieldInstrs)
+      val storeFieldMethod = Method(true, false, false, false, 0, 0, 0, storeFieldInstrs)
       val destroyInstrs = AVector[Instr[StatefulContext]](
         AddressConst(Val.Address(genesisAddress.lockupScript)),
         ConstInstr.u256(Val.U256(U256.One)),
@@ -5656,7 +5657,7 @@ class VMSpec extends AlephiumSpec with Generators {
         BytesConst(Val.ByteVec(subContractId.bytes)),
         CallExternal(CreateMapEntry.DestroyMethodIndex)
       )
-      val destroyMethod = Method(true, false, false, 0, 0, 0, destroyInstrs)
+      val destroyMethod = Method(true, false, false, false, 0, 0, 0, destroyInstrs)
       StatefulContract(
         0,
         AVector(loadImmFieldMethod, loadMutFieldMethod, storeFieldMethod, destroyMethod)
@@ -5671,7 +5672,7 @@ class VMSpec extends AlephiumSpec with Generators {
         BytesConst(Val.ByteVec(callerContractId.bytes)),
         CallExternal(methodIndex.toByte)
       )
-      StatefulScript.unsafe(AVector(Method(true, true, false, 0, 0, 0, callInstrs)))
+      StatefulScript.unsafe(AVector(Method(true, true, false, false, 0, 0, 0, callInstrs)))
     }
 
     failCallTxScript(createCallScript(invalidCallerId, 0), AssertionFailed) // load `Bar.b`
@@ -5789,6 +5790,111 @@ class VMSpec extends AlephiumSpec with Generators {
       getContractAsset(fooId).amount is minimalAlphInContract * (idx + 2)
     }
     getContractAsset(fooId).amount is initialAmount
+  }
+
+  behavior of "Reentrancy protection"
+
+  trait ReentrancyFixture extends ContractFixture {
+    val foo =
+      s"""
+         |Contract Foo() {
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw0(target: Address) -> () {
+         |    transferTokenFromSelf!(target, ALPH, 1 alph)
+         |  }
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw1(target: Address) -> () {
+         |    transferTokenFromSelf!(target, ALPH, 1 alph)
+         |  }
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw2(target: Address) -> () {
+         |    transferTokenFromSelf!(target, ALPH, 1 alph)
+         |    withdraw1(target)
+         |  }
+         |}
+         |""".stripMargin
+
+    lazy val fooId = createContract(foo, initialAttoAlphAmount = ALPH.alph(10))._1
+
+    lazy val script =
+      s"""
+         |TxScript Main {
+         |  let foo = Foo(#${fooId.toHexString})
+         |  foo.withdraw0(callerAddress!())
+         |  foo.withdraw2(callerAddress!())
+         |}
+         |$foo
+         |""".stripMargin
+  }
+
+  it should "call multiple asset functions in the same contract: Rhone" in new ReentrancyFixture {
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Ghost
+    callTxScript(script)
+    getContractAsset(fooId).amount is ALPH.alph(10 - 3)
+  }
+
+  it should "not call multiple asset functions in the same contract: Leman" in new ReentrancyFixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
+    failCallTxScript(script, ContractAssetAlreadyInUsing)
+  }
+
+  behavior of "Pay to contract only"
+
+  trait PayToContractOnlyFixture extends ContractFixture {
+    val foo =
+      s"""
+         |Contract Foo() {
+         |  @using(preapprovedAssets = true, payToContractOnly = true)
+         |  pub fn deposit(sender: Address) -> () {
+         |    transferTokenToSelf!(sender, ALPH, 10 alph)
+         |  }
+         |  @using(preapprovedAssets = true, payToContractOnly = true)
+         |  pub fn depositN(sender: Address, n: U256) -> () {
+         |    transferTokenToSelf!(sender, ALPH, 10 alph)
+         |    if (n > 0) {
+         |      depositN{sender -> ALPH: 10 alph * n}(sender, n - 1)
+         |    }
+         |  }
+         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  pub fn both(sender: Address, target: Address) -> () {
+         |    transferTokenFromSelf!(target, ALPH, 1 alph)
+         |    depositN{sender -> ALPH: 10 alph * 6}(target, 5)
+         |  }
+         |}
+         |""".stripMargin
+
+    lazy val fooId = createContract(foo, initialAttoAlphAmount = ALPH.alph(100))._1
+
+    lazy val script =
+      s"""
+         |TxScript Main {
+         |  let foo = Foo(#${fooId.toHexString})
+         |  let caller = callerAddress!()
+         |  foo.deposit{caller -> ALPH: 10 alph}(caller)
+         |  foo.deposit{caller -> ALPH: 10 alph}(caller)
+         |  foo.both{caller -> ALPH: 10 alph * 6}(caller, caller)
+         |}
+         |$foo
+         |""".stripMargin
+  }
+
+  it should "call the same deposit function multiple times in the same contract: Rhone" in new PayToContractOnlyFixture {
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Ghost
+
+    getContractAsset(fooId).amount is ALPH.alph(100)
+    callTxScript(script)
+    getContractAsset(fooId).amount is ALPH.alph(100 + 20 + 10 * 6 - 1)
+  }
+
+  it should "not call the same deposit function multiple times in the same contract: Leman" in new PayToContractOnlyFixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
+
+    intercept[AssertionError](callTxScript(script)).getMessage is
+      s"Right(TxScriptExeFailed($InvalidMethodModifierBeforeRhone))"
   }
 
   private def getEvents(
