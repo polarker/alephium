@@ -112,17 +112,21 @@ class GrandPoolSpec extends AlephiumSpec {
       val block = transfer(blockFlow, chainIndex)
       val tx    = block.nonCoinbase.head.toTemplate
       pool.add(tx.chainIndex, tx, TimeStamp.now())
+      pool.size is 1
+      pool.get(tx.id).value is tx
       brokerConfig.groupRange.foreach { group =>
         val groupIndex = GroupIndex.unsafe(group)
         val memPool    = pool.getMemPool(groupIndex)
         if (groupIndex == chainIndex.from) {
           memPool.size is 1
           tx.unsigned.inputs.foreach(input => memPool.isSpent(input.outputRef) is true)
-          tx.assetOutputRefs.foreach(ref => memPool.getOutput(ref).nonEmpty is true)
+          tx.fixedOutputRefs.foreach(ref => memPool.getOutput(ref).nonEmpty is true)
         } else {
           memPool.size is 0
         }
       }
+      pool.clear()
+      pool.size is 0
     }
 
     def testXGroupTx(chainIndex: ChainIndex) = {
@@ -131,6 +135,8 @@ class GrandPoolSpec extends AlephiumSpec {
       val block = transfer(blockFlow, chainIndex)
       val tx    = block.nonCoinbase.head.toTemplate
       pool.add(tx.chainIndex, tx, TimeStamp.now())
+      pool.size is (if (brokerConfig.contains(tx.chainIndex.to)) 2 else 1)
+      pool.get(tx.id).value is tx
       brokerConfig.groupRange.foreach { group =>
         val groupIndex = GroupIndex.unsafe(group)
         val memPool    = pool.getMemPool(groupIndex)
@@ -140,7 +146,7 @@ class GrandPoolSpec extends AlephiumSpec {
             memPool.sharedTxIndexes.inputIndex.contains(input.outputRef) is true
           )
           tx.unsigned.inputs.foreach(input => memPool.isSpent(input.outputRef) is true)
-          tx.assetOutputRefs.foreach(ref =>
+          tx.fixedOutputRefs.foreach(ref =>
             if (ref.fromGroup == chainIndex.from) {
               memPool.getOutput(ref).nonEmpty is true
             } else {
@@ -152,7 +158,7 @@ class GrandPoolSpec extends AlephiumSpec {
           tx.unsigned.inputs.foreach(input =>
             memPool.sharedTxIndexes.inputIndex.contains(input.outputRef) is false
           )
-          tx.assetOutputRefs
+          tx.fixedOutputRefs
             .foreach(ref =>
               if (ref.fromGroup == chainIndex.to) {
                 memPool.getOutput(ref).nonEmpty is true
@@ -164,6 +170,8 @@ class GrandPoolSpec extends AlephiumSpec {
           memPool.size is 0
         }
       }
+      pool.clear()
+      pool.size is 0
     }
   }
 }

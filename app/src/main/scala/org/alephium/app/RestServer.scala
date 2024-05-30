@@ -76,9 +76,11 @@ class RestServer(
       discoveryActionLogic,
       getHistoryHashRateLogic,
       getCurrentHashRateLogic,
+      getCurrentDifficultyLogic,
       getBlocksLogic,
       getBlocksAndEventsLogic,
       getBlockLogic,
+      getMainChainBlockByGhostUncleLogic,
       getBlockAndEventsLogic,
       isBlockInMainChainLogic,
       getBalanceLogic,
@@ -88,17 +90,22 @@ class RestServer(
       getHashesAtHeightLogic,
       getChainInfoLogic,
       getBlockHeaderEntryLogic,
-      listUnconfirmedTransactionsLogic,
       buildTransactionLogic,
       buildSweepAddressTransactionsLogic,
       submitTransactionLogic,
       buildMultisigAddressLogic,
       buildMultisigLogic,
+      buildSweepMultisigLogic,
+      buildMultiInputsTransactionLogic,
       submitMultisigTransactionLogic,
       getTransactionStatusLogic,
       getTransactionStatusLocalLogic,
       decodeUnsignedTransactionLogic,
       getTransactionLogic,
+      listMempoolTransactionsLogic,
+      clearMempoolLogic,
+      validateMempoolTransactionsLogic,
+      rebroadcastMempoolTransactionLogic,
       minerActionLogic,
       mineOneBlockLogic,
       minerListAddressesLogic,
@@ -111,9 +118,11 @@ class RestServer(
       contractStateLogic,
       testContractLogic,
       callContractLogic,
+      multipleCallContractLogic,
       exportBlocksLogic,
       verifySignatureLogic,
       checkHashIndexingLogic,
+      targetToHashrateLogic,
       getContractEventsLogic,
       getContractEventsCurrentCountLogic,
       getEventsByTxIdLogic,
@@ -140,7 +149,8 @@ class RestServer(
     .route()
     .handler(
       CorsHandler
-        .create(".*.")
+        .create()
+        .addRelativeOrigin(".*.")
         .allowedMethod(HttpMethod.GET)
         .allowedMethod(HttpMethod.POST)
         .allowedMethod(HttpMethod.PUT)

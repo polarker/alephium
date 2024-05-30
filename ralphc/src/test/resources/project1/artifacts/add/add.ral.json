@@ -1,15 +1,15 @@
 {
-  "version": "v1.6.0",
+  "version": "v2.14.9",
   "name": "Add",
-  "bytecode": "02020d40300100020402041600160100010200000202021205160016015fa00116002a16012aa101a001160016010e0da000010002",
-  "codeHash": "a20cffb6f8f9416decd7aec0375b12e04475e8cf19ba80775f8f2d7633e2556d",
+  "bytecode": "0202124035010002040205d34fbb20db1600160100010200000202021205160016015fa00016002a16012aa100a000160016010e0dce00010002",
+  "codeHash": "ced886ef883695e3fef889195680afbffbd2cf7eba7fb3c018e1b4e58a59b61b",
   "fieldsSig": {
     "names": [
       "sub",
       "result"
     ],
     "types": [
-      "ByteVec",
+      "Sub",
       "U256"
     ],
     "isMutable": [

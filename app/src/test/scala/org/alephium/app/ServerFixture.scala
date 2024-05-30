@@ -55,18 +55,19 @@ trait ServerFixture
     with ModelGenerators
     with TxGenerators
     with StoragesFixture.Default
-    with NoIndexModelGeneratorsLike {
+    with NoIndexModelGeneratorsLike
+    with AlephiumFixture {
 
   lazy val dummyBlockHeader =
     blockGen.sample.get.header.copy(timestamp = (TimeStamp.now() - Duration.ofMinutes(5).get).get)
-  lazy val dummyBlock = blockGen.sample.get.copy(header = dummyBlockHeader)
+  lazy val dummyBlock      = blockGen.sample.get.copy(header = dummyBlockHeader)
+  lazy val dummyBlockEntry = BlockEntry.from(dummyBlock, 1).rightValue
   lazy val dummyFetchResponse = BlocksPerTimeStampRange(
-    AVector(AVector(BlockEntry.from(dummyBlock, 1)))
+    AVector(AVector(dummyBlockEntry))
   )
   lazy val dummyIntraCliqueInfo = genIntraCliqueInfo
   lazy val dummySelfClique =
     EndpointsLogic.selfCliqueFrom(dummyIntraCliqueInfo, true, true)
-  lazy val dummyBlockEntry    = BlockEntry.from(dummyBlock, 1)
   lazy val dummyNeighborPeers = NeighborPeers(AVector.empty)
   lazy val dummyBalance =
     Balance.from(
@@ -76,11 +77,11 @@ trait ServerFixture
       Some(AVector(Token(TokenId.hash("token2"), U256.Two))),
       0
     )
-  lazy val dummyGroup         = Group(Gen.choose(0, brokerConfig.groups - 1).sample.get)
-  lazy val dummyContract      = counterContract
-  lazy val dummyContractGroup = Group(brokerConfig.groups - 1)
+  lazy val dummyGroup    = Group(Gen.choose(0, brokerConfig.groups - 1).sample.get)
+  lazy val dummyContract = counterContract
   lazy val dummyContractAddress =
-    Address.Contract(LockupScript.P2C(ContractId.zero)).toBase58
+    Address.Contract(LockupScript.P2C(ContractId.zero))
+  lazy val dummyContractGroup = dummyContractAddress.groupIndex
   lazy val (dummyKeyAddress, dummyKey, dummyPrivateKey) = addressStringGen(
     GroupIndex.unsafe(dummyGroup.group)
   ).sample.get
@@ -251,16 +252,18 @@ object ServerFixture {
 
     override def getBalance(
         lockupScript: LockupScript,
-        utxosLimit: Int
+        utxosLimit: Int,
+        getMempoolUtxos: Boolean
     ): IOResult[(U256, U256, AVector[(TokenId, U256)], AVector[(TokenId, U256)], Int)] = {
       val tokens       = AVector((TokenId.hash("token1"), U256.One))
       val lockedTokens = AVector((TokenId.hash("token2"), U256.Two))
       Right((U256.Zero, U256.Zero, tokens, lockedTokens, 0))
     }
 
-    override def getUTXOsIncludePool(
+    override def getUTXOs(
         lockupScript: LockupScript,
-        utxosLimit: Int
+        utxosLimit: Int,
+        getMempoolUtxos: Boolean
     ): IOResult[AVector[OutputInfo]] = {
       val assetOutputInfos = AVector(U256.One, U256.Two).map { amount =>
         val tokens = AVector((TokenId.hash("token1"), U256.One))
@@ -307,6 +310,22 @@ object ServerFixture {
         lockTimeOpt: Option[TimeStamp],
         gasOpt: Option[GasBox],
         gasPrice: GasPrice,
+        maxAttoAlphPerUTXOOpt: Option[U256],
+        utxosLimit: Int
+    ): IOResult[Either[String, AVector[UnsignedTransaction]]] = {
+      Right(Right(AVector(dummySweepAddressTx(dummyTx, toLockupScript, lockTimeOpt).unsigned)))
+    }
+
+    // scalastyle:off parameter.number
+    override def sweepAddressFromScripts(
+        targetBlockHashOpt: Option[BlockHash],
+        fromLockupScript: LockupScript.Asset,
+        fromUnlockScript: UnlockScript,
+        toLockupScript: LockupScript.Asset,
+        lockTimeOpt: Option[TimeStamp],
+        gasOpt: Option[GasBox],
+        gasPrice: GasPrice,
+        maxAttoAlphPerUTXOOpt: Option[U256],
         utxosLimit: Int
     ): IOResult[Either[String, AVector[UnsignedTransaction]]] = {
       Right(Right(AVector(dummySweepAddressTx(dummyTx, toLockupScript, lockTimeOpt).unsigned)))
@@ -454,16 +473,10 @@ object ServerFixture {
 
     // scalastyle:off no.equal
     override def getBestCachedWorldState(groupIndex: GroupIndex): IOResult[WorldState.Cached] = {
-      val contractGroup = brokerConfig.groups - 1
-      if (
-        brokerConfig.groupRange
-          .contains(groupIndex.value) && brokerConfig.groupRange.contains(
-          contractGroup
-        ) && (groupIndex.value == contractGroup)
-      ) {
+      if (brokerConfig.groupRange.contains(groupIndex.value)) {
         val contractId: ContractId = ContractId.zero
         storages.emptyWorldState
-          .createContractUnsafe(
+          .createContractLegacyUnsafe(
             contractId,
             dummyContract.toHalfDecoded(),
             AVector(vm.Val.U256(U256.Zero)),

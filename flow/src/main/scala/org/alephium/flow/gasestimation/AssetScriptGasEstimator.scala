@@ -51,6 +51,8 @@ object AssetScriptGasEstimator {
     def estimate(
         p2sh: UnlockScript.P2SH
     ): Either[String, GasBox] = {
+      val maximalGasPerTx = getMaximalGasPerTx()
+
       def runScript(
           blockEnv: BlockEnv,
           unsignedTx: UnsignedTransaction,
@@ -61,7 +63,7 @@ object AssetScriptGasEstimator {
         val txEnv = TxEnv(
           txTemplate,
           preOutputs.getOrElse(AVector.empty),
-          Stack.popOnly(AVector.empty[Signature])
+          Stack.popOnly(AVector.fill(16)(Signature.generate))
         )
 
         val result = for {
@@ -71,13 +73,13 @@ object AssetScriptGasEstimator {
             blockEnv,
             txEnv,
             remaining1,
-            p2sh.script,
+            p2sh.script.mockup(),
             p2sh.params
           )
         } yield exeResult
 
         result.left.map {
-          case Right(InvalidPublicKey) =>
+          case Right(InvalidPublicKey(_)) =>
             "Please use binary search to set the gas manually as signature is required in P2SH script"
           case Right(error) =>
             s"Execution error when estimating gas for P2SH script: $error"

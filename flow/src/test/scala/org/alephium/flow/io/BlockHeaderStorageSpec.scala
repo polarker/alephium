@@ -17,7 +17,7 @@
 package org.alephium.flow.io
 
 import org.alephium.io.{IOError, RocksDBSource}
-import org.alephium.protocol.config.ConsensusConfigFixture
+import org.alephium.protocol.config.ConsensusConfigsFixture
 import org.alephium.protocol.model.{BlockHeader, NoIndexModelGenerators}
 import org.alephium.util.AlephiumSpec
 
@@ -37,7 +37,7 @@ class BlockHeaderStorageSpec
   }
 
   it should "create database" in {
-    RocksDBSource.open(dbPath, RocksDBSource.Compaction.HDD).isLeft is true
+    RocksDBSource.open(dbPath).isLeft is true
   }
 
   it should "check existence" in {
@@ -55,14 +55,14 @@ class BlockHeaderStorageSpec
     storage.exists(blockHeader) isE false
   }
 
-  it should "work for transactions" in new ConsensusConfigFixture.Default {
+  it should "work for transactions" in new ConsensusConfigsFixture.Default {
     forAll(blockGen) { block =>
       val header = block.header
       val hash   = block.hash
       storage.put(header) isE ()
       storage.get(hash) isE header
       storage.getOpt(hash) isE Some(header)
-      storage.delete(hash) isE ()
+      storage.remove(hash) isE ()
       storage.get(hash).leftValue is a[IOError.KeyNotFound]
       storage.getOpt(hash) isE None
     }

@@ -29,12 +29,13 @@ import org.alephium.util.{ConcurrentHashMap, TimeStamp}
 class BlockHashChainStateSpec extends AlephiumFlowSpec { Test =>
   trait Fixture {
     val chainState = new BlockHashChainState {
-      private val dummyIndex       = ChainIndex.unsafe(0, 0)
-      override def consensusConfig = Test.consensusConfig
+      private val dummyIndex        = ChainIndex.unsafe(0, 0)
+      override def consensusConfigs = Test.consensusConfigs
       override def chainStateStorage: ChainStateStorage =
         Test.storages.nodeStateStorage.chainStateStorage(dummyIndex)
 
       override def getTimestamp(hash: BlockHash): IOResult[TimeStamp] = ???
+      override def getTimestampUnsafe(hash: BlockHash): TimeStamp     = ???
 
       def state: BlockHashChain.State = chainStateStorage.loadState().rightValue
 
@@ -69,7 +70,7 @@ class BlockHashChainStateSpec extends AlephiumFlowSpec { Test =>
     checkState(2, Set(hashes(0), hashes(1)))
     chainState.setGenesisState(
       hashes(2),
-      TimeStamp.unsafe(1) + Test.consensusConfig.tipsPruneDuration
+      TimeStamp.unsafe(1) + Test.consensusConfigs.tipsPruneDuration
     )
     checkState(3, Set(hashes(1), hashes(2)))
   }

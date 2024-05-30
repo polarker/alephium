@@ -21,13 +21,14 @@ import java.nio.file.Path
 import org.rocksdb.WriteOptions
 
 import org.alephium.crypto.Byte32
+import org.alephium.flow.setting.NodeSetting
 import org.alephium.io._
 import org.alephium.io.RocksDBSource.ColumnFamily._
 import org.alephium.io.SparseMerkleTrie.Node
 import org.alephium.protocol.Hash
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model.ContractId
-import org.alephium.protocol.vm.{LogStateRef, LogStates, LogStatesId, WorldState}
+import org.alephium.protocol.vm._
 import org.alephium.protocol.vm.event.LogStorage
 import org.alephium.util.AVector
 
@@ -40,9 +41,14 @@ object Storages {
   val dbVersionPostfix: Byte     = 5
   val bootstrapInfoPostFix: Byte = 6
 
+  // scalastyle:off method.length
   def createUnsafe(rootPath: Path, storageDbFolder: String, writeOptions: WriteOptions)(implicit
-      config: GroupConfig
+      config: GroupConfig,
+      nodeSetting: NodeSetting
   ): Storages = {
+    WorldState.assetTrieCache.setMaxByteSize(nodeSetting.assetTrieCacheMaxByteSize)
+    WorldState.contractTrieCache.setMaxByteSize(nodeSetting.contractTrieCacheMaxByteSize)
+
     val db                = createRocksDBUnsafe(rootPath, storageDbFolder)
     val blockStorage      = BlockRockDBStorage(db, Block, writeOptions)
     val headerStorage     = BlockHeaderRockDBStorage(db, Header, writeOptions)
@@ -54,9 +60,19 @@ object Storages {
     val logRefStorage = RocksDBKeyValueStorage[Byte32, AVector[LogStateRef]](db, Log, writeOptions)
     val logCounterStorage = RocksDBKeyValueStorage[ContractId, Int](db, LogCounter, writeOptions)
     val logStorage        = LogStorage(logStateStorage, logRefStorage, logCounterStorage)
+    val trieImmutableStateStorage =
+      RocksDBKeyValueStorage[Hash, ContractStorageImmutableState](db, Trie, writeOptions)
     val worldStateStorage =
-      WorldStateRockDBStorage(trieStorage, logStorage, db, All, writeOptions)
-    val emptyWorldState  = WorldState.emptyPersisted(trieStorage, logStorage)
+      WorldStateRockDBStorage(
+        trieStorage,
+        trieImmutableStateStorage,
+        logStorage,
+        db,
+        All,
+        writeOptions
+      )
+    val emptyWorldState =
+      WorldState.emptyPersisted(trieStorage, trieImmutableStateStorage, logStorage)
     val pendingTxStorage = PendingTxRocksDBStorage(db, PendingTx, writeOptions)
     val readyTxStorage   = ReadyTxRocksDBStorage(db, ReadyTx, writeOptions)
     val brokerStorage    = BrokerRocksDBStorage(db, Broker, writeOptions)
@@ -79,7 +95,7 @@ object Storages {
 
   def createRocksDBUnsafe(rootPath: Path, dbFolder: String): RocksDBSource = {
     val dbPath = rootPath.resolve(dbFolder)
-    RocksDBSource.openUnsafe(dbPath, RocksDBSource.Compaction.HDD)
+    RocksDBSource.openUnsafe(dbPath)
   }
 }
 

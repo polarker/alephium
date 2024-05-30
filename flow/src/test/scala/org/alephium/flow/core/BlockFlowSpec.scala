@@ -127,6 +127,7 @@ class BlockFlowSpec extends AlephiumSpec {
       } yield transferOnlyForIntraGroup(blockFlow, ChainIndex.unsafe(i, j))
       newBlocks1.foreach { block =>
         addAndCheck(blockFlow, block, 1)
+        val consensusConfig = consensusConfigs.getConsensusConfig(block.timestamp)
         blockFlow.getWeight(block) isE consensusConfig.minBlockWeight * 1
       }
       checkInBestDeps(GroupIndex.unsafe(0), blockFlow, newBlocks1)
@@ -163,7 +164,7 @@ class BlockFlowSpec extends AlephiumSpec {
       addAndCheck(blockFlow, block11, 1)
       addAndCheck(blockFlow, block12, 1)
       checkInBestDeps(GroupIndex.unsafe(0), blockFlow, IndexedSeq(block11, block12))
-      blockFlow.grandPool.clean(
+      blockFlow.grandPool.cleanInvalidTxs(
         blockFlow,
         TimeStamp.now()
       ) // remove double spending tx
@@ -380,11 +381,14 @@ class BlockFlowSpec extends AlephiumSpec {
   it should "sanity check rewards" in new FlowFixture {
     val block = transferOnlyForIntraGroup(blockFlow, ChainIndex.unsafe(0, 0))
     block.nonCoinbase.nonEmpty is true
+    val consensusConfig = consensusConfigs.getConsensusConfig(block.timestamp)
     val minimalReward = Seq(
       consensusConfig.emission.lowHashRateInitialRewardPerChain,
       consensusConfig.emission.stableMaxRewardPerChain
     ).min
-    (block.coinbase.attoAlphAmountInOutputs.get > minimalReward.subUnsafe(defaultGasFee)) is true
+    (block.coinbase.attoAlphAmountInOutputs.get > minimalReward.subUnsafe(
+      nonCoinbaseMinGasFee
+    )) is true
   }
 
   it should "reduce target gradually and reach a stable target eventually" in new FlowFixture {
@@ -398,7 +402,7 @@ class BlockFlowSpec extends AlephiumSpec {
       targets.head
     }
 
-    var lastTarget = consensusConfig.maxMiningTarget
+    var lastTarget = consensusConfigs.getConsensusConfig(TimeStamp.now()).maxMiningTarget
     while ({
       val newTarget = step()
       if (lastTarget != Target.Max) {
@@ -428,7 +432,7 @@ class BlockFlowSpec extends AlephiumSpec {
     addAndCheck(blockFlow, block, 1)
 
     val pubScript = block.nonCoinbase.head.unsigned.fixedOutputs.head.lockupScript
-    checkBalance(blockFlow, pubScript, ALPH.alph(1) - defaultGasFee)
+    checkBalance(blockFlow, pubScript, ALPH.alph(1) - nonCoinbaseMinGasFee)
     checkBalance(blockFlow, testGroup, genesisBalance - ALPH.alph(1))
   }
 
@@ -467,12 +471,12 @@ class BlockFlowSpec extends AlephiumSpec {
     addAndCheck(blockFlow0, fromGroupBlock, 2)
     addAndCheck(blockFlow1, fromGroupBlock.header, 2)
     checkBalance(blockFlow0, fromGroup, genesisBalance - ALPH.alph(1))
-    checkBalance(blockFlow1, pubScript, ALPH.alph(1) - defaultGasFee)
+    checkBalance(blockFlow1, pubScript, ALPH.alph(1) - nonCoinbaseMinGasFee)
 
     val toGroupBlock = emptyBlock(blockFlow1, ChainIndex.unsafe(toGroup, toGroup))
     addAndCheck(blockFlow1, toGroupBlock, 3)
     addAndCheck(blockFlow0, toGroupBlock.header, 3)
-    checkBalance(blockFlow1, pubScript, ALPH.alph(1) - defaultGasFee)
+    checkBalance(blockFlow1, pubScript, ALPH.alph(1) - nonCoinbaseMinGasFee)
 
     fromGroup isnot toGroup
     val newBlock = emptyBlock(blockFlow0, ChainIndex.unsafe(fromGroup, toGroup))
@@ -521,6 +525,7 @@ class BlockFlowSpec extends AlephiumSpec {
   }
 
   it should "cache blocks & headers during initialization" in new FlowFixture {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
     blockFlow.getGroupCache(GroupIndex.unsafe(0)).size is 5
 
     val blockFlow1 = storageBlockFlow()
@@ -528,19 +533,63 @@ class BlockFlowSpec extends AlephiumSpec {
     blockFlow1.blockHeaderChains.foreach(_.foreach { chain =>
       chain.headerCache.size is 1
       chain.stateCache.size is 1
+      chain.hashesCache.size is 1
+    })
+    (blockFlow1.inBlockChains ++ blockFlow1.outBlockChains).foreach(_.foreach { chain =>
+      chain.blockCache.size is 1
     })
 
-    (0 until consensusConfig.blockCacheCapacityPerChain).foreach { _ =>
+    (0 until consensusConfigs.blockCacheCapacityPerChain).foreach { _ =>
       addAndCheck(blockFlow, emptyBlock(blockFlow, ChainIndex.unsafe(0, 1)))
+      addAndCheck(blockFlow, emptyBlock(blockFlow, ChainIndex.unsafe(1, 1)))
     }
 
     val blockFlow2 = storageBlockFlow()
     blockFlow2.getGroupCache(GroupIndex.unsafe(0)).size is
-      consensusConfig.blockCacheCapacityPerChain + 5
-    blockFlow2.getHeaderChain(ChainIndex.unsafe(0, 1)).headerCache.size is
-      consensusConfig.blockCacheCapacityPerChain + 1
-    blockFlow2.getHeaderChain(ChainIndex.unsafe(0, 1)).stateCache.size is
-      consensusConfig.blockCacheCapacityPerChain + 1
+      consensusConfigs.blockCacheCapacityPerChain + 5
+    val headerChain = blockFlow2.getHeaderChain(ChainIndex.unsafe(0, 1))
+    headerChain.headerCache.size is consensusConfigs.blockCacheCapacityPerChain + 1
+    headerChain.stateCache.size is consensusConfigs.blockCacheCapacityPerChain + 1
+    headerChain.hashesCache.size is consensusConfigs.blockCacheCapacityPerChain + 1
+    blockFlow2
+      .getBlockChain(ChainIndex.unsafe(1, 1))
+      .blockCache
+      .size is consensusConfigs.blockCacheCapacityPerChain + 1
+  }
+
+  it should "cache block and block hashes" in new FlowFixture {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+    val chainIndex            = ChainIndex.random
+    val blockChain            = blockFlow.getBlockChain(chainIndex)
+    blockChain.hashesCache.size is 1
+    blockChain.blockCache.size is 1
+
+    blockChain.hashesCache.get(1) is None
+    val block00 = emptyBlock(blockFlow, chainIndex)
+    val block01 = emptyBlock(blockFlow, chainIndex)
+    addAndCheck(blockFlow, block00)
+    blockChain.hashesCache.get(1) is Some(AVector(block00.hash))
+    addAndCheck(blockFlow, block01)
+
+    blockChain.blockCache.get(block00.hash) is Some(block00)
+    blockChain.blockCache.get(block01.hash) is Some(block01)
+    blockChain.blockCache.size is 3
+
+    val hashes0 = blockChain.hashesCache.get(1).get
+    hashes0.toSet is Set(block00.hash, block01.hash)
+    hashes0 is blockChain.heightIndexStorage.getUnsafe(1)
+    blockChain.hashesCache.size is 2
+
+    val block1 = emptyBlock(blockFlow, chainIndex)
+    blockChain.hashesCache.get(2) is None
+    addAndCheck(blockFlow, block1)
+    blockChain.blockCache.size is 4
+    blockChain.blockCache.get(block1.hash) is Some(block1)
+
+    val hashes1 = blockChain.hashesCache.get(2).get
+    hashes1 is AVector(block1.hash)
+    hashes1 is blockChain.heightIndexStorage.getUnsafe(2)
+    blockChain.hashesCache.size is 3
   }
 
   it should "generate random group orders" in new GroupConfigFixture {
@@ -567,7 +616,7 @@ class BlockFlowSpec extends AlephiumSpec {
             lockTimeOpt,
             ALPH.alph(1),
             None,
-            defaultGasPrice,
+            nonCoinbaseMinGasPrice,
             defaultUtxoLimit
           )
           .rightValue
@@ -589,8 +638,8 @@ class BlockFlowSpec extends AlephiumSpec {
     val toPrivateKey   = keyManager(toLockupScript)
 
     addAndCheck(blockFlow, block)
-    val lockedBalance = ALPH.alph(1) - defaultGasFee
-    blockFlow.getBalance(toLockupScript, Int.MaxValue) is Right(
+    val lockedBalance = ALPH.alph(1) - nonCoinbaseMinGasFee
+    blockFlow.getBalance(toLockupScript, Int.MaxValue, true) is Right(
       (
         lockedBalance,
         lockedBalance,
@@ -607,7 +656,7 @@ class BlockFlowSpec extends AlephiumSpec {
         None,
         dustUtxoAmount,
         None,
-        defaultGasPrice,
+        nonCoinbaseMinGasPrice,
         defaultUtxoLimit
       )
       .rightValue
@@ -621,7 +670,7 @@ class BlockFlowSpec extends AlephiumSpec {
           None,
           dustUtxoAmount,
           None,
-          defaultGasPrice,
+          nonCoinbaseMinGasPrice,
           defaultUtxoLimit
         )
         .rightValue
@@ -629,9 +678,14 @@ class BlockFlowSpec extends AlephiumSpec {
     }
   }
 
-  it should "handle sequential txs" in new FlowFixture {
-    override val configValues = Map(("alephium.broker.broker-num", 1))
-    val fromGroup             = GroupIndex.unsafe(Random.nextInt(groupConfig.groups))
+  it should "handle sequential txs: pre-rhone" in new FlowFixture {
+    override val configValues = Map(
+      ("alephium.broker.broker-num", 1),
+      ("alephium.network.rhone-hard-fork-timestamp", TimeStamp.Max.millis)
+    )
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
+
+    val fromGroup = GroupIndex.unsafe(Random.nextInt(groupConfig.groups))
     val (fromPriKey, fromPubKey, initialAmount) = genesisKeys(fromGroup.value)
     val fromLockup                              = LockupScript.p2pkh(fromPubKey)
     val theGrandPool                            = blockFlow.getGrandPool()
@@ -652,7 +706,7 @@ class BlockFlowSpec extends AlephiumSpec {
           None,
           ALPH.oneAlph,
           None,
-          defaultGasPrice,
+          nonCoinbaseMinGasPrice,
           defaultUtxoLimit
         )
         .rightValue
@@ -663,9 +717,9 @@ class BlockFlowSpec extends AlephiumSpec {
       theGrandPool.add(chainIndex, tx, TimeStamp.now())
       theMemPool.contains(tx.id) is true
 
-      val balance = initialAmount - (ALPH.oneAlph + defaultGasFee).mulUnsafe(txCount)
+      val balance = initialAmount - (ALPH.oneAlph + nonCoinbaseMinGasFee).mulUnsafe(txCount)
       blockFlow
-        .getBalance(fromLockup, Int.MaxValue)
+        .getBalance(fromLockup, Int.MaxValue, true)
         .rightValue is ((
         balance,
         U256.Zero,
@@ -680,7 +734,7 @@ class BlockFlowSpec extends AlephiumSpec {
     val tx0         = transfer()
     val tx1         = transfer()
     val tx2         = transfer()
-    val fromBalance = blockFlow.getBalance(fromLockup, Int.MaxValue).rightValue
+    val fromBalance = blockFlow.getBalance(fromLockup, Int.MaxValue, true).rightValue
     theMemPool.contains(tx0.id) is true
     theMemPool.contains(tx1.id) is true
     theMemPool.contains(tx2.id) is true
@@ -696,7 +750,7 @@ class BlockFlowSpec extends AlephiumSpec {
     theMemPool.isReady(tx1.id) is true
     theMemPool.isReady(tx2.id) is false
     blockFlow.getBestDeps(fromLockup.groupIndex).deps.contains(block0.hash) is true
-    blockFlow.getBalance(fromLockup, Int.MaxValue).rightValue is fromBalance
+    blockFlow.getBalance(fromLockup, Int.MaxValue, true).rightValue is fromBalance
 
     val block1 = mineFromMemPool(blockFlow, tx1.chainIndex)
     addAndCheck(blockFlow, block1)
@@ -704,13 +758,13 @@ class BlockFlowSpec extends AlephiumSpec {
     theMemPool.contains(tx2.id) is true
     theMemPool.isReady(tx2.id) is true
     blockFlow.getBestDeps(fromLockup.groupIndex).deps.contains(block1.hash) is true
-    blockFlow.getBalance(fromLockup, Int.MaxValue).rightValue is fromBalance
+    blockFlow.getBalance(fromLockup, Int.MaxValue, true).rightValue is fromBalance
 
     val block2 = mineFromMemPool(blockFlow, tx2.chainIndex)
     addAndCheck(blockFlow, block2)
     theMemPool.contains(tx2.id) is false
     blockFlow.getBestDeps(fromLockup.groupIndex).deps.contains(block2.hash) is true
-    blockFlow.getBalance(fromLockup, Int.MaxValue).rightValue is fromBalance
+    blockFlow.getBalance(fromLockup, Int.MaxValue, true).rightValue is fromBalance
   }
 
   it should "fetch bocks for the corresponding groups" in {
@@ -850,33 +904,50 @@ class BlockFlowSpec extends AlephiumSpec {
     }
   }
 
-  it should "not include new block as dependency when dependency gap time is large" in new FlowFixture {
+  trait DependencyGapTimeFixture extends FlowFixture {
+    def test() = {
+      val blocks0 = for {
+        from <- 0 until groups0
+        to   <- 0 until groups0
+      } yield emptyBlock(blockFlow, ChainIndex.unsafe(from, to))
+      blocks0.foreach(addAndCheck(blockFlow, _, 1))
+
+      val blocks1 = for {
+        from <- 0 until groups0
+        to   <- 0 until groups0
+      } yield emptyBlock(blockFlow, ChainIndex.unsafe(from, to))
+      blocks1.foreach(addAndCheck(blockFlow, _, 2))
+      blocks0.zip(blocks1).foreach { case (block0, block1) =>
+        val chainIndex = block0.chainIndex
+        block1.blockDeps.inDeps is block0.blockDeps.inDeps
+        block1.blockDeps.outDeps(chainIndex.to.value) is block0.hash
+        block1.blockDeps.outDeps.take(chainIndex.to.value) is
+          block0.blockDeps.outDeps.take(chainIndex.to.value)
+        block1.blockDeps.outDeps.drop(chainIndex.to.value + 1) is
+          block0.blockDeps.outDeps.drop(chainIndex.to.value + 1)
+      }
+    }
+  }
+
+  it should "not include new block as dependency when dependency gap time is large for pre-rhone hardfork" in new DependencyGapTimeFixture {
     override val configValues =
       Map(
-        ("alephium.consensus.uncle-dependency-gap-time", "5 seconds"),
+        ("alephium.consensus.mainnet.uncle-dependency-gap-time", "5 seconds"),
+        ("alephium.network.rhone-hard-fork-timestamp", TimeStamp.Max.millis),
         ("alephium.broker.broker-num", 1)
       )
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
+    test()
+  }
 
-    val blocks0 = for {
-      from <- 0 until groups0
-      to   <- 0 until groups0
-    } yield emptyBlock(blockFlow, ChainIndex.unsafe(from, to))
-    blocks0.foreach(addAndCheck(blockFlow, _, 1))
-
-    val blocks1 = for {
-      from <- 0 until groups0
-      to   <- 0 until groups0
-    } yield emptyBlock(blockFlow, ChainIndex.unsafe(from, to))
-    blocks1.foreach(addAndCheck(blockFlow, _, 2))
-    blocks0.zip(blocks1).foreach { case (block0, block1) =>
-      val chainIndex = block0.chainIndex
-      block1.blockDeps.inDeps is block0.blockDeps.inDeps
-      block1.blockDeps.outDeps(chainIndex.to.value) is block0.hash
-      block1.blockDeps.outDeps.take(chainIndex.to.value) is
-        block0.blockDeps.outDeps.take(chainIndex.to.value)
-      block1.blockDeps.outDeps.drop(chainIndex.to.value + 1) is
-        block0.blockDeps.outDeps.drop(chainIndex.to.value + 1)
-    }
+  it should "not include new block as dependency when dependency gap time is large for rhone hardfork" in new DependencyGapTimeFixture {
+    override val configValues =
+      Map(
+        ("alephium.consensus.rhone.uncle-dependency-gap-time", "5 seconds"),
+        ("alephium.broker.broker-num", 1)
+      )
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Rhone
+    test()
   }
 
   it should "include new block as dependency when gap time is past" in new FlowFixture {
@@ -904,10 +975,16 @@ class BlockFlowSpec extends AlephiumSpec {
   it should "support sequential transactions" in new FlowFixture with Generators {
     override val configValues = Map(("alephium.broker.broker-num", 1))
 
+    var now = TimeStamp.now()
+    def nextBlockTs: TimeStamp = {
+      now = now.plusMillisUnsafe(1)
+      now
+    }
+
     forAll(groupIndexGen, groupIndexGen, groupIndexGen) { case (fromGroup, toGroup0, toGroup1) =>
-      val block0 = transfer(blockFlow, ChainIndex(fromGroup, toGroup0))
+      val block0 = transfer(blockFlow, ChainIndex(fromGroup, toGroup0), nextBlockTs)
       addAndCheck(blockFlow, block0)
-      val block1 = transfer(blockFlow, ChainIndex(fromGroup, toGroup1))
+      val block1 = transfer(blockFlow, ChainIndex(fromGroup, toGroup1), nextBlockTs)
       addAndCheck(blockFlow, block1)
     }
   }

@@ -39,8 +39,7 @@ import org.alephium.api.ApiModelCodec
 import org.alephium.api.UtilJson.avectorWriter
 import org.alephium.api.model._
 import org.alephium.flow.io.{Storages, StoragesFixture}
-import org.alephium.flow.mining.Miner
-import org.alephium.flow.model.MiningBlob
+import org.alephium.flow.mining.{Job, Miner}
 import org.alephium.flow.network.DiscoveryServer
 import org.alephium.flow.network.broker.MisbehaviorManager
 import org.alephium.flow.setting.AlephiumConfig
@@ -48,7 +47,7 @@ import org.alephium.flow.validation.BlockValidation
 import org.alephium.http.HttpFixture
 import org.alephium.json.Json._
 import org.alephium.protocol.{ALPH, PrivateKey, Signature, SignatureSchema}
-import org.alephium.protocol.model.{Address, Block, ChainIndex, TransactionId}
+import org.alephium.protocol.model.{Address, Block, ChainIndex, GroupIndex, TokenId, TransactionId}
 import org.alephium.protocol.vm
 import org.alephium.protocol.vm.{GasPrice, LockupScript}
 import org.alephium.rpc.model.JsonRPC.NotificationUnsafe
@@ -69,8 +68,8 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     with HttpFixture { Fixture =>
   implicit val system: ActorSystem = spec.system
 
-  private val vertx      = Vertx.vertx()
-  private val httpClient = vertx.createHttpClient()
+  private val vertx           = Vertx.vertx()
+  private val webSocketClient = vertx.createWebSocketClient()
 
   implicit override val patienceConfig =
     PatienceConfig(timeout = Span(60, Seconds), interval = Span(2, Seconds))
@@ -83,13 +82,18 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     (Address.p2pkh(pubKey).toBase58, pubKey.toHexString, priKey.toHexString)
   }
 
+  def generateAccount(groupIndex: GroupIndex): (String, String, String) = {
+    val (priKey, pubKey) = groupIndex.generateKey
+    (Address.p2pkh(pubKey).toBase58, pubKey.toHexString, priKey.toHexString)
+  }
+
   // This address is allocated 1 ALPH in the genensis block
   val address    = "14PqtYSSbwpUi2RJKUvv9yUwGafd6yHbEcke7ionuiE7w"
   val publicKey  = "03e75902fa24caff042b2b4c350e8f2ffeb3cb95f4263f0e109a2c2d7aa3dcae5c"
   val privateKey = "d24967efb7f1b558ad40a4d71593ceb5b3cecf46d17f0e68ef53def6b391c33d"
   val mnemonic =
     "toward outdoor daughter deny mansion bench water alien crumble mother exchange screen salute antenna abuse key hair crisp debate goose great market core screen"
-  val (transferAddress, _, _) = generateAccount
+  val (transferAddress, transferPubKey, transferPriKey) = generateAccount
 
   val password = "password"
 
@@ -152,15 +156,27 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     res
   }
 
+  def transferGeneric(
+      inputs: AVector[BuildMultiAddressesTransaction.Source],
+      privateKeys: AVector[String],
+      restPort: Int
+  ): SubmitTxResult = eventually {
+    val buildTx          = buildGenericTransaction(inputs)
+    val unsignedTx       = request[BuildTransactionResult](buildTx, restPort)
+    val submitMultisigTx = signAndSubmitMultisigTransaction(unsignedTx, privateKeys)
+    val res              = request[SubmitTxResult](submitMultisigTx, restPort)
+    res
+  }
+
   def mineAndAndOneBlock(server: Server, index: ChainIndex): Block = {
     val blockFlow = server.node.blockFlow
     val blockTemplate =
       blockFlow.prepareBlockFlowUnsafe(index, LockupScript.p2pkh(genesisKeys(index.to.value)._2))
-    val miningBlob = MiningBlob.from(blockTemplate)
+    val job = Job.from(blockTemplate)
 
     @tailrec
     def mine(): Block = {
-      Miner.mine(index, miningBlob)(server.config.broker, server.config.mining) match {
+      Miner.mine(index, job)(server.config.broker, server.config.mining) match {
         case Some((block, _)) => block
         case None             => mine()
       }
@@ -199,7 +215,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     tx.unsigned.txId is txId
   }
 
-  def txNotFound(txId: TransactionId, restPort: Int): Assertion = {
+  def txNotInBlocks(txId: TransactionId, restPort: Int): Assertion = {
     requestFailed(getTransaction(txId), restPort, StatusCode.NotFound)
   }
 
@@ -266,7 +282,9 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
         ("alephium.network.miner-api-port", minerPort(publicPort)),
         ("alephium.broker.broker-num", brokerNum),
         ("alephium.broker.broker-id", brokerId),
-        ("alephium.consensus.block-target-time", "1 seconds"),
+        ("alephium.consensus.mainnet.block-target-time", "2 seconds"),
+        ("alephium.consensus.rhone.block-target-time", "1 seconds"),
+        ("alephium.consensus.rhone.uncle-dependency-gap-time", "1 seconds"),
         ("alephium.consensus.num-zeros-at-least-in-hash", "8"),
         ("alephium.mining.batch-delay", "200 milli"),
         ("alephium.wallet.port", walletPort),
@@ -373,8 +391,8 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
   }
 
   def startWS(port: Int): Future[WebSocketBase] = {
-    httpClient
-      .webSocket(port, "127.0.0.1", "/events")
+    webSocketClient
+      .connect(port, "127.0.0.1", "/events")
       .asScala
       .map { ws =>
         ws.textMessageHandler { blockNotify =>
@@ -428,6 +446,20 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     )
   }
 
+  def buildGenericTransaction(
+      inputs: AVector[BuildMultiAddressesTransaction.Source]
+  ): Int => HttpRequest = {
+    val p = s"""
+               |{
+               |  "from": ${write(inputs)}
+               |}
+        """.stripMargin
+    httpPost(
+      "/transactions/build-multi-addresses",
+      Some(p)
+    )
+  }
+
   def buildMultisigTransaction(
       fromAddress: String,
       fromPublicKeys: AVector[String],
@@ -449,6 +481,25 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
 
     httpPost(
       "/multisig/build",
+      Some(body)
+    )
+  }
+
+  def buildSweepMultisigTransaction(
+      fromAddress: String,
+      fromPublicKeys: AVector[String],
+      toAddress: String
+  ) = {
+    val body = s"""
+                  |{
+                  |  "fromAddress": "$fromAddress",
+                  |  "fromPublicKeys": ${write(fromPublicKeys)},
+                  |  "toAddress": "$toAddress"
+                  |}
+        """.stripMargin
+
+    httpPost(
+      "/multisig/sweep",
       Some(body)
     )
   }
@@ -611,8 +662,8 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
     httpPost(s"/contracts/compile-contract", Some(contract))
   }
 
-  def getContractState(address: String, group: Int) = {
-    httpGet(s"/contracts/${address}/state?group=${group}")
+  def getContractState(address: String) = {
+    httpGet(s"/contracts/${address}/state")
   }
 
   def getContractEvents(start: Int, address: Address) = {
@@ -671,10 +722,12 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None,
-      initialFields: Option[AVector[vm.Val]] = None,
+      initialImmFields: Option[AVector[vm.Val]] = None,
+      initialMutFields: Option[AVector[vm.Val]] = None,
       issueTokenAmount: Option[U256] = None
   ) = {
-    val bytecode = code + Hex.toHexString(serialize(initialFields.getOrElse(AVector.empty)))
+    val bytecode = code + Hex.toHexString(serialize(initialImmFields.getOrElse(AVector.empty))) +
+      Hex.toHexString(serialize(initialMutFields.getOrElse(AVector.empty)))
     val query = {
       s"""
          |{
@@ -693,9 +746,14 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       fromPublicKey: String,
       code: String,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None
   ) = {
+    val tokensString =
+      tokens
+        .map(t => s"""{"id": "${t._1.toHexString}", "amount": "${t._2.v}"}""")
+        .mkString(""","tokens": [""", ",", "]")
     val query =
       s"""
          {
@@ -704,6 +762,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
            ${gas.map(g => s""","gasAmount": $g""").getOrElse("")}
            ${gasPrice.map(g => s""","gasPrice": "$g"""").getOrElse("")}
            ${attoAlphAmount.map(a => s""","attoAlphAmount": "${a.value.v}"""").getOrElse("")}
+           ${tokensString}
          }
          """
     httpPost("/contracts/unsigned-tx/execute-script", Some(query))
@@ -732,6 +791,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       restPort: Int,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = None,
       gasPrice: Option[GasPrice] = None
   ): BuildExecuteScriptTxResult = {
@@ -741,6 +801,7 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
         fromPublicKey = publicKey,
         code = compileResult.bytecodeTemplate,
         attoAlphAmount,
+        tokens,
         gas,
         gasPrice
       ),
@@ -752,10 +813,12 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
       code: String,
       restPort: Int,
       attoAlphAmount: Option[Amount] = None,
+      tokens: Option[(TokenId, U256)] = None,
       gas: Option[Int] = Some(100000),
       gasPrice: Option[GasPrice] = None
   ): BuildExecuteScriptTxResult = {
-    val buildResult = buildExecuteScriptTxWithPort(code, restPort, attoAlphAmount, gas, gasPrice)
+    val buildResult =
+      buildExecuteScriptTxWithPort(code, restPort, attoAlphAmount, tokens, gas, gasPrice)
     submitTxWithPort(buildResult.unsignedTx, buildResult.txId, restPort)
     buildResult
   }

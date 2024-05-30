@@ -14,6 +14,7 @@ alephium {
     nonce-step = 400
     batch-delay = 50 milli
     polling-interval = 2 seconds
+    job-cache-size-per-chain = 100
   }
 
   network {
@@ -83,18 +84,25 @@ alephium {
     mempool-capacity-per-chain = 2000
     tx-max-number-per-block = 1000
     clean-mempool-frequency = 10 minutes
+    unconfirmed-tx-expiry-duration = 120 minutes
+    clean-missing-inputs-tx-frequency = 5 seconds
     batch-broadcast-txs-frequency = 500 milli
     batch-download-txs-frequency = 500 milli
     auto-mine-for-dev = false
   }
 
   wallet {
+    enabled = true
     secret-dir = ""
     locking-timeout = 10 minutes
   }
 
   node {
     db-sync-write = true
+
+    asset-trie-cache-max-byte-size = 20000000
+    contract-trie-cache-max-byte-size = 10000000
+
     event-log {
       enabled = true
       index-by-tx-id = true

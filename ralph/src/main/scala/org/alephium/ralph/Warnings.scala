@@ -39,6 +39,12 @@ trait Warnings {
     }
   }
 
+  def warnUnusedMaps(typeId: Ast.TypeId, unusedMaps: Seq[String]): Unit = {
+    if (!compilerOptions.ignoreUnusedVariablesWarnings) {
+      warnings += s"Found unused maps in ${typeId.name}: ${unusedMaps.sorted.mkString(", ")}"
+    }
+  }
+
   def warnUnusedConstants(
       typeId: Ast.TypeId,
       unusedConstants: mutable.ArrayBuffer[String]
@@ -64,19 +70,21 @@ trait Warnings {
 
   def warnNoUpdateFieldsCheck(typeId: Ast.TypeId, funcId: Ast.FuncId): Unit = {
     if (!compilerOptions.ignoreUpdateFieldsCheckWarnings) {
-      warnings += s"Function ${Ast.funcName(typeId, funcId)} changes state, please use @using(updateFields = true) for the function"
+      warnings += s"""Function ${Ast.funcName(typeId, funcId)} updates fields. """ +
+        s"""Please use "@using(updateFields = true)" for the function."""
     }
   }
 
   def warnUnnecessaryUpdateFieldsCheck(typeId: Ast.TypeId, funcId: Ast.FuncId): Unit = {
     if (!compilerOptions.ignoreUpdateFieldsCheckWarnings) {
-      warnings += s"Function ${typeId.name}.${funcId.name} does not update fields, please remove @using(updateFields = true) for the function"
+      warnings += s"Function ${Ast.funcName(typeId, funcId)} does not update fields. " +
+        s"""Please remove "@using(updateFields = true)" for the function."""
     }
   }
 
   def warnUnusedPrivateFunction(typeId: Ast.TypeId, funcId: Ast.FuncId): Unit = {
     if (!compilerOptions.ignoreUnusedPrivateFunctionsWarnings) {
-      warnings += s"Private function ${typeId.name}.${funcId.name} is not used"
+      warnings += s"Private function ${Ast.funcName(typeId, funcId)} is not used"
     }
   }
 
@@ -85,9 +93,32 @@ trait Warnings {
       warnings += Warnings.noCheckExternalCallerMsg(typeId.name, funcId.name)
     }
   }
+
+  def warnPrivateFuncHasCheckExternalCaller(typeId: Ast.TypeId, funcId: Ast.FuncId): Unit = {
+    if (!compilerOptions.ignoreCheckExternalCallerWarnings) {
+      warnings += s"No need to add the checkExternalCaller annotation to the private function ${Ast
+          .funcName(typeId, funcId)}"
+    }
+  }
+
+  def warningUnusedCallReturn(typeId: Ast.TypeId, funcId: Ast.FuncId): Unit = {
+    warnings += s"The return values of the function ${Ast.funcName(typeId, funcId)} are not used." +
+      s" If this is intentional, consider using anonymous variables to suppress this warning."
+  }
+
+  def warningMutableStructField(
+      typeId: Ast.TypeId,
+      fieldId: Ast.Ident,
+      structId: Ast.TypeId
+  ): Unit = {
+    warnings +=
+      s"The struct ${structId.name} is immutable, you can remove the `mut` from ${typeId.name}.${fieldId.name}"
+  }
 }
 
 object Warnings {
-  def noCheckExternalCallerMsg(typeId: String, funcId: String): String =
-    s"No check external caller for function: ${typeId}.${funcId}, please use checkCaller!(...) for the function or its private callees."
+  def noCheckExternalCallerMsg(typeId: String, funcId: String): String = {
+    s"""No external caller check for function "${typeId}.${funcId}". """ +
+      s"""Please use "checkCaller!(...)" in the function or its callees, or disable it with "@using(checkExternalCaller = false)"."""
+  }
 }

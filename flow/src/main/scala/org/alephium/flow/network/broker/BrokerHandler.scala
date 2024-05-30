@@ -37,6 +37,7 @@ import org.alephium.protocol.model.{
   BrokerInfo,
   ChainIndex,
   FlowData,
+  ReleaseVersion,
   TransactionId
 }
 import org.alephium.util._
@@ -105,10 +106,16 @@ trait BrokerHandler extends FlowDataHandler {
       case Received(hello: Hello) =>
         log.debug(s"Hello message received: $hello")
         cancelHandshakeTick()
-        handleHandshakeInfo(BrokerInfo.from(remoteAddress, hello.brokerInfo), hello.clientId)
 
-        pingPongTickOpt = Some(scheduleCancellable(self, SendPing, pingFrequency))
-        context become (exchanging orElse pingPong)
+        if (!ReleaseVersion.checkClientId(hello.clientId)) {
+          log.warning(s"Unknown client id from ${remoteAddress}: ${hello.clientId}")
+          stop(MisbehaviorManager.InvalidClientVersion(remoteAddress))
+        } else {
+          handleHandshakeInfo(BrokerInfo.from(remoteAddress, hello.brokerInfo), hello.clientId)
+
+          pingPongTickOpt = Some(scheduleCancellable(self, SendPing, pingFrequency))
+          context become (exchanging orElse pingPong)
+        }
       case HandShakeTimeout =>
         log.warning(s"HandShake timeout when connecting to $brokerAlias, closing the connection")
         stop(MisbehaviorManager.RequestTimeout(remoteAddress))
@@ -139,19 +146,31 @@ trait BrokerHandler extends FlowDataHandler {
         s"Download #${hashes.length} blocks ${Utils.showDigest(hashes)} from $remoteAddress"
       )
       send(BlocksRequest(hashes))
-    case Received(NewBlock(block)) =>
-      log.debug(
-        s"Received new block ${block.hash.shortHex} from $remoteAddress"
-      )
-      handleNewBlock(block)
-    case Received(BlocksResponse(requestId, blocks)) =>
-      log.debug(
-        s"Received #${blocks.length} blocks ${Utils.showDataDigest(blocks)} from $remoteAddress with $requestId"
-      )
-      handleFlowData(blocks, dataOrigin, isBlock = true)
+    case Received(NewBlock(blockEither)) =>
+      blockEither match {
+        case Left(block) =>
+          log.debug(
+            s"Received new block ${block.hash.shortHex} from $remoteAddress"
+          )
+          handleNewBlock(block)
+        case Right(_) => // Dead branch since deserialized NewBlock should always contain block
+          log.error("Unexpected NewBlock data")
+      }
+    case Received(BlocksResponse(requestId, blocksEither)) =>
+      blocksEither match {
+        case Left(blocks) =>
+          log.debug(
+            s"Received #${blocks.length} blocks ${Utils.showDataDigest(blocks)} from $remoteAddress with $requestId"
+          )
+          handleFlowData(blocks, dataOrigin, isBlock = true)
+        case Right(_) =>
+          // Dead branch since deserialized BlocksResponse should always contain blocks
+          log.error("Unexpected BlocksResponse data")
+      }
     case Received(BlocksRequest(requestId, hashes)) =>
-      escapeIOError(hashes.mapE(blockflow.getHeaderVerifiedBlock), "load blocks") { blocks =>
-        send(BlocksResponse(requestId, blocks))
+      escapeIOError(hashes.mapE(blockflow.getHeaderVerifiedBlockBytes), "load blocks") {
+        blockBytes =>
+          send(BlocksResponse.fromBlockBytes(requestId, blockBytes))
       }
     case Received(NewHeader(header)) =>
       log.debug(
@@ -192,7 +211,7 @@ trait BrokerHandler extends FlowDataHandler {
     case TxHandler.AddSucceeded(hash) =>
       log.debug(s"Tx ${hash.shortHex} was added successfully")
     case TxHandler.AddFailed(hash, reason) =>
-      log.debug(s"Tx ${hash.shortHex} failed in adding. Reason: ${reason}")
+      log.debug(s"Failed in adding new TX ${hash.shortHex}. Reason: ${reason}")
   }
 
   def dataOrigin: DataOrigin
@@ -269,7 +288,7 @@ trait FlowDataHandler extends BaseHandler {
   def blockflow: BlockFlow
 
   def validateFlowData[T <: FlowData](datas: AVector[T], isBlock: Boolean): Boolean = {
-    if (!Validation.preValidate(datas)(blockflow.consensusConfig)) {
+    if (!Validation.preValidate(datas)(blockflow.consensusConfigs)) {
       log.warning(s"The data received does not contain minimal work")
       handleMisbehavior(MisbehaviorManager.InvalidPoW(remoteAddress))
       false

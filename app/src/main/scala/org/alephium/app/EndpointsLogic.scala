@@ -28,24 +28,23 @@ import io.prometheus.client.exporter.common.TextFormat
 import sttp.model.{StatusCode, Uri}
 import sttp.tapir.server.ServerEndpoint
 
-import org.alephium.api.{ApiError, Endpoints, Try}
+import org.alephium.api.{notFound, ApiError, Endpoints, Try}
 import org.alephium.api.model.{TransactionTemplate => _, _}
 import org.alephium.app.FutureTry
 import org.alephium.flow.client.Node
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.handler.{TxHandler, ViewHandler}
 import org.alephium.flow.mining.Miner
-import org.alephium.flow.model.MiningBlob
 import org.alephium.flow.network.{Bootstrapper, CliqueManager, DiscoveryServer, InterCliqueManager}
 import org.alephium.flow.network.bootstrap.IntraCliqueInfo
 import org.alephium.flow.network.broker.MisbehaviorManager
 import org.alephium.flow.network.broker.MisbehaviorManager.Peers
-import org.alephium.flow.setting.{ConsensusSetting, NetworkSetting}
+import org.alephium.flow.setting.{ConsensusSettings, NetworkSetting}
 import org.alephium.http.EndpointSender
 import org.alephium.protocol.config.{BrokerConfig, GroupConfig}
+import org.alephium.protocol.mining.HashRate
 import org.alephium.protocol.model.{Transaction => _, _}
 import org.alephium.protocol.vm.{LockupScript, LogConfig}
-import org.alephium.serde._
 import org.alephium.util._
 
 // scalastyle:off file.size.limit
@@ -64,11 +63,11 @@ trait EndpointsLogic extends Endpoints {
   implicit def apiConfig: ApiConfig
   implicit def brokerConfig: BrokerConfig
 
-  implicit lazy val groupConfig: GroupConfig         = brokerConfig
-  implicit lazy val networkConfig: NetworkSetting    = node.config.network
-  implicit lazy val consenseConfig: ConsensusSetting = node.config.consensus
-  implicit lazy val logConfig: LogConfig             = node.config.node.eventLogConfig
-  implicit lazy val askTimeout: Timeout              = Timeout(apiConfig.askTimeout.asScala)
+  implicit lazy val groupConfig: GroupConfig            = brokerConfig
+  implicit lazy val networkConfig: NetworkSetting       = node.config.network
+  implicit lazy val consensusConfigs: ConsensusSettings = node.config.consensus
+  implicit lazy val logConfig: LogConfig                = node.config.node.eventLogConfig
+  implicit lazy val askTimeout: Timeout                 = Timeout(apiConfig.askTimeout.asScala)
 
   private lazy val serverUtils: ServerUtils = new ServerUtils
 
@@ -157,6 +156,10 @@ trait EndpointsLogic extends Endpoints {
     Future.successful(result)
   }
 
+  val getCurrentDifficultyLogic = serverLogic(getCurrentDifficulty) { _ =>
+    Future.successful(serverUtils.getCurrentDifficulty(blockFlow).map(CurrentDifficulty.apply))
+  }
+
   val getBlocksLogic = serverLogic(getBlocks) { timeInterval =>
     Future.successful(serverUtils.getBlocks(blockFlow, timeInterval))
   }
@@ -167,6 +170,11 @@ trait EndpointsLogic extends Endpoints {
 
   val getBlockLogic = serverLogic(getBlock) { hash =>
     Future.successful(serverUtils.getBlock(blockFlow, hash))
+  }
+
+  val getMainChainBlockByGhostUncleLogic = serverLogic(getMainChainBlockByGhostUncle) {
+    ghostUncleHash =>
+      Future.successful(serverUtils.getMainChainBlockByGhostUncle(blockFlow, ghostUncleHash))
   }
 
   val getBlockAndEventsLogic = serverLogic(getBlockAndEvents) { hash =>
@@ -181,8 +189,8 @@ trait EndpointsLogic extends Endpoints {
     Future.successful(serverUtils.getBlockHeader(blockFlow, hash))
   }
 
-  val getBalanceLogic = serverLogic(getBalance) { address =>
-    Future.successful(serverUtils.getBalance(blockFlow, address))
+  val getBalanceLogic = serverLogic(getBalance) { case (address, getMempoolUtxos) =>
+    Future.successful(serverUtils.getBalance(blockFlow, address, getMempoolUtxos.getOrElse(true)))
   }
 
   val getUTXOsLogic = serverLogic(getUTXOs) { address =>
@@ -274,8 +282,31 @@ trait EndpointsLogic extends Endpoints {
     Future.successful(serverUtils.getChainInfo(blockFlow, chainIndex))
   }
 
-  val listUnconfirmedTransactionsLogic = serverLogic(listUnconfirmedTransactions) { _ =>
-    Future.successful(serverUtils.listUnconfirmedTransactions(blockFlow))
+  val listMempoolTransactionsLogic = serverLogic(listMempoolTransactions) { _ =>
+    Future.successful(serverUtils.listMempoolTransactions(blockFlow))
+  }
+
+  val clearMempoolLogic = serverLogic(clearMempool) { _ =>
+    logger.info("Clearing mempool")
+    txHandler ! TxHandler.ClearMemPool
+    Future.successful(Right(()))
+  }
+
+  val validateMempoolTransactionsLogic = serverLogic(validateMempoolTransactions) { _ =>
+    val removed = blockFlow.grandPool.validateAllTxs(blockFlow)
+    logger.info(
+      s"Removed #${removed} invalid txs from Mempool. Note that cross-group txs might be counted twice."
+    )
+    Future.successful(Right(()))
+  }
+
+  val rebroadcastMempoolTransactionLogic = serverLogic(rebroadcastMempoolTransaction) { txId =>
+    blockFlow.grandPool.get(txId) match {
+      case Some(tx) =>
+        txHandler ! TxHandler.Rebroadcast(tx)
+        Future.successful(Right(()))
+      case None => Future.successful(Left(notFound(s"TxId: ${txId.toHexString}")))
+    }
   }
 
   type BaseServerEndpoint[A, B] = ServerEndpoint[Any, Future]
@@ -347,7 +378,7 @@ trait EndpointsLogic extends Endpoints {
             )
         )
       },
-    bt => Right(Some(LockupScript.p2pkh(bt.fromPublicKey).groupIndex(brokerConfig)))
+    bt => bt.getLockPair().map(_._1.groupIndex(brokerConfig)).map(Option.apply)
   )
 
   val buildMultisigLogic = serverLogicRedirect(buildMultisig)(
@@ -362,6 +393,37 @@ trait EndpointsLogic extends Endpoints {
         )
       },
     bt => Right(Some(bt.fromAddress.lockupScript.groupIndex(brokerConfig)))
+  )
+
+  val buildSweepMultisigLogic = serverLogicRedirect(buildSweepMultisig)(
+    buildSweepMultisig =>
+      withSyncedClique {
+        Future.successful(
+          serverUtils
+            .buildSweepMultisig(
+              blockFlow,
+              buildSweepMultisig
+            )
+        )
+      },
+    bt => Right(Some(bt.fromAddress.lockupScript.groupIndex(brokerConfig)))
+  )
+
+  val buildMultiInputsTransactionLogic = serverLogicRedirect(buildMultiAddressesTransaction)(
+    buildMultiInputsTransaction =>
+      withSyncedClique {
+        Future.successful(
+          serverUtils
+            .buildMultiInputsTransaction(
+              blockFlow,
+              buildMultiInputsTransaction
+            )
+        )
+      },
+    bt =>
+      bt.from.headOption
+        .map(t => t.getLockPair().map(_._1.groupIndex(brokerConfig)).map(Option.apply))
+        .getOrElse(Left(ApiError.BadRequest("Empty list of input")))
   )
 
   val buildSweepAddressTransactionsLogic = serverLogicRedirect(buildSweepAddressTransactions)(
@@ -577,12 +639,31 @@ trait EndpointsLogic extends Endpoints {
     Future.successful(Right(()))
   }
 
-  val contractStateLogic = serverLogic(contractState) { case (contractAddress, groupIndex) =>
+  val targetToHashrateLogic = serverLogic(targetToHashrate) { targetToHashrate =>
+    Future.successful(
+      try {
+        val consensusConfig = consensusConfigs.getConsensusConfig(TimeStamp.now())
+        val hashrate =
+          HashRate.from(Target.unsafe(targetToHashrate.target), consensusConfig.blockTargetTime)
+        Right(TargetToHashrate.Result(hashrate.value))
+      } catch {
+        case _: Throwable =>
+          Left(
+            ApiError.BadRequest(
+              s"Invalid target string: ${Hex.toHexString(targetToHashrate.target)}"
+            )
+          )
+      }
+    )
+  }
+
+  val contractStateLogic = serverLogic(contractState) { contractAddress =>
+    val groupIndex = contractAddress.groupIndex
     requestFromGroupIndex(
       groupIndex,
-      Future.successful(serverUtils.getContractState(blockFlow, contractAddress, groupIndex)),
+      Future.successful(serverUtils.getContractState(blockFlow, contractAddress)),
       contractState,
-      (contractAddress, groupIndex)
+      contractAddress
     )
   }
 
@@ -597,7 +678,11 @@ trait EndpointsLogic extends Endpoints {
   }
 
   val callContractLogic = serverLogic(callContract) { params: CallContract =>
-    Future.successful(serverUtils.callContract(blockFlow, params))
+    Future.successful(Right(serverUtils.callContract(blockFlow, params)))
+  }
+
+  val multipleCallContractLogic = serverLogic(multiCallContract) { params: MultipleCallContract =>
+    Future.successful(serverUtils.multipleCallContract(blockFlow, params))
   }
 
   val exportBlocksLogic = serverLogic(exportBlocks) { exportFile =>
@@ -688,11 +773,12 @@ trait EndpointsLogic extends Endpoints {
   }
 
   def fetchChainParams(): FutureTry[ChainParams] = {
+    val now = TimeStamp.now()
     Future.successful(
       Right(
         ChainParams(
           networkConfig.networkId,
-          consenseConfig.numZerosAtLeastInHash,
+          consensusConfigs.getConsensusConfig(now).numZerosAtLeastInHash,
           brokerConfig.groupNumPerBroker,
           brokerConfig.groups
         )
@@ -800,31 +886,5 @@ object EndpointsLogic {
       syncStatus.isSynced,
       syncStatus.clientInfo
     )
-  }
-
-  // Cannot do this in `BlockCandidate` as `flow.BlockTemplate` isn't accessible in `api`
-  def blockTempateToCandidate(
-      chainIndex: ChainIndex,
-      template: MiningBlob
-  ): BlockCandidate = {
-    BlockCandidate(
-      fromGroup = chainIndex.from.value,
-      toGroup = chainIndex.to.value,
-      headerBlob = template.headerBlob,
-      target = template.target,
-      txsBlob = template.txsBlob
-    )
-  }
-
-  @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
-  def blockSolutionToBlock(
-      solution: BlockSolution
-  ): Either[ApiError[_ <: StatusCode], (Block, U256)] = {
-    deserialize[Block](solution.blockBlob) match {
-      case Right(block) =>
-        Right(block -> solution.miningCount)
-      case Left(error) =>
-        Left(ApiError.InternalServerError(s"Block deserialization error: ${error.getMessage}"))
-    }
   }
 }

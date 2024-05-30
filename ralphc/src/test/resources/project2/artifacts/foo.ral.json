@@ -1,8 +1,8 @@
 {
-  "version": "v1.6.0",
+  "version": "v2.14.9",
   "name": "Foo",
-  "bytecode": "050111010000000506a000a001a002a003a00402",
-  "codeHash": "424c056943d4d31540aebb0537533280d9a7724264d7dd58ddcbd764e8cad3c0",
+  "bytecode": "050116010000000507d3a326e9e2ce00ce01ce02ce03ce0402",
+  "codeHash": "5e770de7380fd93ffc4f3a02462d4fd3ac4e624252421e25041c113381a1e175",
   "fieldsSig": {
     "names": [
       "a",
@@ -26,24 +26,16 @@
       false
     ]
   },
-  "eventsSig": [
-    
-  ],
+  "eventsSig": [],
   "functions": [
     {
       "name": "foo",
       "usePreapprovedAssets": false,
       "useAssetsInContract": false,
       "isPublic": true,
-      "paramNames": [
-        
-      ],
-      "paramTypes": [
-        
-      ],
-      "paramIsMutable": [
-        
-      ],
+      "paramNames": [],
+      "paramTypes": [],
+      "paramIsMutable": [],
       "returnTypes": [
         "Bool",
         "I256",

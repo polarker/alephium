@@ -17,6 +17,7 @@
 package org.alephium.io
 
 import org.alephium.crypto.{Blake2b => Hash}
+import org.alephium.serde.serialize
 import org.alephium.util.AlephiumSpec
 
 class KeyValueStorageSpec extends AlephiumSpec {
@@ -25,6 +26,8 @@ class KeyValueStorageSpec extends AlephiumSpec {
     val storage = newDBStorage()
     val db      = newDB[Hash, Hash](storage, RocksDBSource.ColumnFamily.All)
     val pairs   = Seq.tabulate(1000)(_ => Hash.random -> Hash.random)
+    val keys    = pairs.map(_._1)
+    val values  = pairs.map(_._2)
     db.putBatch { putAccumulate =>
       pairs.foreach { case (key, value) =>
         putAccumulate(key, value)
@@ -32,6 +35,13 @@ class KeyValueStorageSpec extends AlephiumSpec {
     }
     pairs.foreach { case (key, value) =>
       db.get(key) isE value
+      db.getRawUnsafe(key) is serialize(value)
     }
+
+    db.multiGetUnsafe(keys) is values
+
+    db.removeBatchUnsafe(keys)
+
+    assertThrows[IOError.KeyNotFound](db.multiGetUnsafe(keys))
   }
 }

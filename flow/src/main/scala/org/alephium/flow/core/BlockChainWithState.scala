@@ -18,7 +18,7 @@ package org.alephium.flow.core
 
 import org.alephium.flow.Utils
 import org.alephium.flow.io._
-import org.alephium.flow.setting.ConsensusSetting
+import org.alephium.flow.setting.ConsensusSettings
 import org.alephium.io.IOResult
 import org.alephium.protocol.Hash
 import org.alephium.protocol.config.{BrokerConfig, NetworkConfig}
@@ -63,6 +63,10 @@ trait BlockChainWithState extends BlockChain {
       _             <- add(block.header, weight)
     } yield ()
   }
+
+  override def checkCompletenessUnsafe(hash: BlockHash): Boolean = {
+    checkCompletenessHelper(hash, worldStateStorage.existsUnsafe, super.checkCompletenessUnsafe)
+  }
 }
 
 object BlockChainWithState {
@@ -71,7 +75,7 @@ object BlockChainWithState {
   )(genesisBlock: Block, updateState: BlockFlow.WorldStateUpdater)(implicit
       brokerConfig: BrokerConfig,
       networkConfig: NetworkConfig,
-      consensusSetting: ConsensusSetting
+      consensusSettings: ConsensusSettings
   ): BlockChainWithState = {
     val initialize = initializeGenesis(genesisBlock, storages.emptyWorldState)(_)
     createUnsafe(genesisBlock, storages, updateState, initialize)
@@ -82,7 +86,7 @@ object BlockChainWithState {
   )(genesisBlock: Block, updateState: BlockFlow.WorldStateUpdater)(implicit
       brokerConfig: BrokerConfig,
       networkConfig: NetworkConfig,
-      consensusSetting: ConsensusSetting
+      consensusSettings: ConsensusSettings
   ): BlockChainWithState = {
     createUnsafe(genesisBlock, storages, updateState, initializeFromStorage)
   }
@@ -95,12 +99,12 @@ object BlockChainWithState {
   )(implicit
       _brokerConfig: BrokerConfig,
       _networkConfig: NetworkConfig,
-      _consensusSetting: ConsensusSetting
+      _consensusSettings: ConsensusSettings
   ): BlockChainWithState = {
     val blockchain = new BlockChainWithState {
       override val brokerConfig      = _brokerConfig
       override val networkConfig     = _networkConfig
-      override val consensusConfig   = _consensusSetting
+      override val consensusConfigs  = _consensusSettings
       override val blockStorage      = storages.blockStorage
       override val txStorage         = storages.txStorage
       override val headerStorage     = storages.headerStorage

@@ -90,6 +90,15 @@ trait Endpoints
       .in("transactions")
       .tag("Transactions")
 
+  private lazy val mempoolEndpoint: BaseEndpoint[Unit, Unit] =
+    baseEndpoint
+      .in("mempool")
+      .tag("Mempool")
+
+  private lazy val mempoolTxEndpoint: BaseEndpoint[Unit, Unit] =
+    mempoolEndpoint
+      .in("transactions")
+
   private val minersEndpoint: BaseEndpoint[Unit, Unit] =
     baseEndpoint
       .in("miners")
@@ -202,6 +211,12 @@ trait Endpoints
       .out(jsonBody[HashRateResponse])
       .summary("Get average hashrate from `now - timespan(millis)` to `now`")
 
+  val getCurrentDifficulty: BaseEndpoint[Unit, CurrentDifficulty] =
+    infosEndpoint.get
+      .in("current-difficulty")
+      .out(jsonBody[CurrentDifficulty])
+      .summary("Get the average difficulty of the latest blocks from all shards")
+
   val getBlocks: BaseEndpoint[TimeInterval, BlocksPerTimeStampRange] =
     blockflowEndpoint.get
       .in("blocks")
@@ -223,6 +238,13 @@ trait Endpoints
       .out(jsonBody[BlockEntry])
       .summary("Get a block with hash")
 
+  lazy val getMainChainBlockByGhostUncle: BaseEndpoint[BlockHash, BlockEntry] =
+    blockflowEndpoint.get
+      .in("main-chain-block-by-ghost-uncle")
+      .in(path[BlockHash]("ghost_uncle_hash"))
+      .out(jsonBody[BlockEntry])
+      .summary("Get a mainchain block by ghost uncle hash")
+
   val getBlockAndEvents: BaseEndpoint[BlockHash, BlockAndEvents] =
     blockflowEndpoint.get
       .in("blocks-with-events")
@@ -237,10 +259,11 @@ trait Endpoints
       .out(jsonBody[Boolean])
       .summary("Check if the block is in main chain")
 
-  val getBalance: BaseEndpoint[Address, Balance] =
+  val getBalance: BaseEndpoint[(Address, Option[Boolean]), Balance] =
     addressesEndpoint.get
       .in(path[Address]("address"))
       .in("balance")
+      .in(query[Option[Boolean]]("mempool"))
       .out(jsonBodyWithAlph[Balance])
       .summary("Get the balance of an address")
 
@@ -282,19 +305,22 @@ trait Endpoints
       .out(jsonBody[ChainInfo])
       .summary("Get infos about the chain from the given groups")
 
-  // have to be lazy to let `groupConfig` being initialized
-  lazy val listUnconfirmedTransactions: BaseEndpoint[Unit, AVector[UnconfirmedTransactions]] =
-    transactionsEndpoint.get
-      .in("unconfirmed")
-      .out(jsonBody[AVector[UnconfirmedTransactions]])
-      .summary("List unconfirmed transactions")
-
   val buildTransaction: BaseEndpoint[BuildTransaction, BuildTransactionResult] =
     transactionsEndpoint.post
       .in("build")
       .in(jsonBodyWithAlph[BuildTransaction])
       .out(jsonBody[BuildTransactionResult])
       .summary("Build an unsigned transaction to a number of recipients")
+
+  val buildMultiAddressesTransaction
+      : BaseEndpoint[BuildMultiAddressesTransaction, BuildTransactionResult] =
+    transactionsEndpoint.post
+      .in("build-multi-addresses")
+      .in(jsonBodyWithAlph[BuildMultiAddressesTransaction])
+      .out(jsonBody[BuildTransactionResult])
+      .summary(
+        "Build an unsigned transaction with multiple addresses to a number of recipients"
+      )
 
   val buildSweepAddressTransactions
       : BaseEndpoint[BuildSweepAddressTransactions, BuildSweepAddressTransactionsResult] =
@@ -304,7 +330,7 @@ trait Endpoints
       .in(jsonBody[BuildSweepAddressTransactions])
       .out(jsonBody[BuildSweepAddressTransactionsResult])
       .summary(
-        "Build unsigned transactions to send all unlocked balanced of one address to another address"
+        "Build unsigned transactions to send all unlocked ALPH and token balances of one address to another address"
       )
 
   val submitTransaction: BaseEndpoint[SubmitTransaction, SubmitTxResult] =
@@ -313,6 +339,26 @@ trait Endpoints
       .in(jsonBody[SubmitTransaction])
       .out(jsonBody[SubmitTxResult])
       .summary("Submit a signed transaction")
+
+  lazy val listMempoolTransactions: BaseEndpoint[Unit, AVector[MempoolTransactions]] =
+    mempoolTxEndpoint.get
+      .out(jsonBody[AVector[MempoolTransactions]])
+      .summary("List mempool transactions")
+
+  lazy val rebroadcastMempoolTransaction: BaseEndpoint[TransactionId, Unit] =
+    mempoolTxEndpoint.put
+      .in("rebroadcast")
+      .in(query[TransactionId]("txId"))
+      .summary("Rebroadcase a mempool transaction to the network")
+
+  lazy val clearMempool: BaseEndpoint[Unit, Unit] =
+    mempoolTxEndpoint.delete
+      .summary("Remove all transactions from mempool")
+
+  lazy val validateMempoolTransactions: BaseEndpoint[Unit, Unit] =
+    mempoolTxEndpoint.put
+      .in("validate")
+      .summary("Validate all mempool transactions and remove invalid ones")
 
   val buildMultisigAddress: BaseEndpoint[BuildMultisigAddress, BuildMultisigAddressResult] =
     multisigEndpoint.post
@@ -327,6 +373,15 @@ trait Endpoints
       .in(jsonBody[BuildMultisig])
       .out(jsonBody[BuildTransactionResult])
       .summary("Build a multisig unsigned transaction")
+
+  val buildSweepMultisig: BaseEndpoint[BuildSweepMultisig, BuildSweepAddressTransactionsResult] =
+    multisigEndpoint.post
+      .in("sweep")
+      .in(jsonBody[BuildSweepMultisig])
+      .out(jsonBody[BuildSweepAddressTransactionsResult])
+      .summary(
+        "Sweep all unlocked ALPH and token balances of a multisig address to another address"
+      )
 
   val submitMultisigTransaction: BaseEndpoint[SubmitMultisig, SubmitTxResult] =
     multisigEndpoint.post
@@ -434,11 +489,10 @@ trait Endpoints
       .out(jsonBody[BuildDeployContractTxResult])
       .summary("Build an unsigned contract")
 
-  lazy val contractState: BaseEndpoint[(Address.Contract, GroupIndex), ContractState] =
+  lazy val contractState: BaseEndpoint[Address.Contract, ContractState] =
     contractsEndpoint.get
       .in(path[Address.Contract]("address"))
       .in("state")
-      .in(query[GroupIndex]("group"))
       .out(jsonBody[ContractState])
       .summary("Get contract state")
 
@@ -455,6 +509,13 @@ trait Endpoints
       .in(jsonBody[CallContract])
       .out(jsonBody[CallContractResult])
       .summary("Call contract")
+
+  lazy val multiCallContract: BaseEndpoint[MultipleCallContract, MultipleCallContractResult] =
+    contractsEndpoint.post
+      .in("multicall-contract")
+      .in(jsonBody[MultipleCallContract])
+      .out(jsonBody[MultipleCallContractResult])
+      .summary("Multiple call contract")
 
   val exportBlocks: BaseEndpoint[ExportFile, Unit] =
     baseEndpoint.post
@@ -486,6 +547,13 @@ trait Endpoints
     utilsEndpoint.put
       .in("check-hash-indexing")
       .summary("Check and repair the indexing of block hashes")
+
+  val targetToHashrate: BaseEndpoint[TargetToHashrate, TargetToHashrate.Result] =
+    utilsEndpoint.post
+      .in("target-to-hashrate")
+      .in(jsonBody[TargetToHashrate])
+      .out(jsonBody[TargetToHashrate.Result])
+      .summary("Convert a target to hashrate")
 
   lazy val getContractEvents
       : BaseEndpoint[(Address.Contract, CounterRange, Option[GroupIndex]), ContractEvents] =
@@ -550,7 +618,9 @@ object Endpoints {
     alphJsonBody[T]
       .examples(examples)
       .description(
-        s"""Format 1: `${ALPH.oneAlph}`\n\nFormat 2: `x.y ALPH`, where `1 ALPH = ${ALPH.oneAlph}`"""
+        s"Format 1: `${ALPH.oneAlph}`\n\n" +
+          s"Format 2: `x.y ALPH`, where `1 ALPH = ${ALPH.oneAlph}\n\n" +
+          s"Field fromPublicKeyType can be  `default` or `bip340-schnorr`"
       )
   }
 }

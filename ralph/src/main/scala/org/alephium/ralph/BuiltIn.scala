@@ -21,7 +21,7 @@ import scala.language.reflectiveCalls
 import org.alephium.protocol.model.dustUtxoAmount
 import org.alephium.protocol.vm._
 import org.alephium.ralph.Compiler.{Error, FuncInfo}
-import org.alephium.util.AVector
+import org.alephium.util.{AVector, U256}
 
 // scalastyle:off file.size.limit
 // scalastyle:off number.of.methods
@@ -37,10 +37,6 @@ object BuiltIn {
 
     def isPublic: Boolean        = true
     def useUpdateFields: Boolean = false
-
-    def genExternalCallCode(typeId: Ast.TypeId): Seq[Instr[StatefulContext]] = {
-      throw Compiler.Error(s"Built-in function $name does not belong to contract ${typeId.name}")
-    }
   }
 
   sealed trait Category {
@@ -49,6 +45,7 @@ object BuiltIn {
   object Category {
     case object Contract     extends Category
     case object SubContract  extends Category
+    case object Map          extends Category
     case object Asset        extends Category
     case object Utils        extends Category
     case object Chain        extends Category
@@ -59,7 +56,7 @@ object BuiltIn {
 
   trait DocUtils {
     def name: String
-    def returnType: Seq[Type]
+    def returnType(selfContractType: Type): Seq[Type]
 
     def argsCommentedName: Seq[(String, String)]
     def retComment: String
@@ -73,23 +70,21 @@ object BuiltIn {
     def returns: String = s"@returns $retComment"
   }
 
-  trait NoOverloadingUtils {
+  sealed trait NoOverloadingUtils[-Ctx <: StatelessContext] {
     def name: String
     def argsType: Seq[Type]
     def argsCommentedName: Seq[(String, String)]
-    def returnType: Seq[Type]
+    def returnType(selfContractType: Type): Seq[Type]
 
-    def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+    def getReturnType[C <: Ctx](inputType: Seq[Type], state: Compiler.State[C]): Seq[Type] = {
       if (inputType == argsType) {
-        returnType
+        returnType(state.selfContractType)
       } else {
-        throw Error(s"Invalid args type $inputType for builtin func $name, expected $argsType")
+        throw Error(
+          s"Invalid args type ${quote(inputType)} for builtin func $name, expected ${quote(argsType)}",
+          None
+        )
       }
-    }
-
-    def signature: String = {
-      val args = argsCommentedName.zip(argsType).map { case ((name, _), tpe) => s"$name:$tpe" }
-      s"fn $name!(${args.mkString(", ")}) -> (${returnType.mkString(", ")})"
     }
   }
 
@@ -99,17 +94,24 @@ object BuiltIn {
       returnType: Seq[Type],
       instrs: Seq[Instr[Ctx]],
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean,
+      useAssetsInContract: Ast.ContractAssetsAnnotation,
       category: Category,
       argsCommentedName: Seq[(String, String)],
       retComment: String,
       doc: String
   ) extends BuiltIn[Ctx]
       with DocUtils
-      with NoOverloadingUtils {
+      with NoOverloadingUtils[Ctx] {
     require(argsCommentedName.length == argsType.length)
 
+    override def returnType(selfContractType: Type): Seq[Type] = returnType
+
     override def genCode(inputType: Seq[Type]): Seq[Instr[Ctx]] = instrs
+
+    def signature: String = {
+      val args = argsCommentedName.zip(argsType).map { case ((name, _), tpe) => s"$name:$tpe" }
+      s"fn $name!(${args.mkString(", ")}) -> (${returnType.mkString(", ")})"
+    }
   }
 
   // scalastyle:off parameter.number
@@ -125,7 +127,7 @@ object BuiltIn {
           retComment: String,
           doc: String,
           usePreapprovedAssets: Boolean = false,
-          useAssetsInContract: Boolean = false
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
       ): SimpleBuiltIn[Ctx] =
         SimpleBuiltIn(
           name,
@@ -150,13 +152,38 @@ object BuiltIn {
           argsName: Seq[(String, String)],
           retComment: String,
           usePreapprovedAssets: Boolean = false,
-          useAssetsInContract: Boolean = false
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
       ): SimpleBuiltIn[Ctx] =
         SimpleBuiltIn(
           name,
           argsType,
           returnType,
           Seq(instr),
+          usePreapprovedAssets,
+          useAssetsInContract,
+          category,
+          argsName,
+          retComment,
+          doc = s"Returns $retComment."
+        )
+    }
+
+    private def multipleInstrReturn[Ctx <: StatelessContext](category: Category) = new {
+      def apply(
+          name: String,
+          argsType: Seq[Type],
+          returnType: Seq[Type],
+          instrs: Seq[Instr[Ctx]],
+          argsName: Seq[(String, String)],
+          retComment: String,
+          usePreapprovedAssets: Boolean = false,
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+      ): SimpleBuiltIn[Ctx] =
+        SimpleBuiltIn(
+          name,
+          argsType,
+          returnType,
+          instrs,
           usePreapprovedAssets,
           useAssetsInContract,
           category,
@@ -181,6 +208,8 @@ object BuiltIn {
 
     private[BuiltIn] def utils[Ctx <: StatelessContext]       = tag[Ctx](Category.Utils)
     private[BuiltIn] def utilsSimple[Ctx <: StatelessContext] = simpleReturn[Ctx](Category.Utils)
+    private[BuiltIn] def utilsMultipleInstr[Ctx <: StatelessContext] =
+      multipleInstrReturn[Ctx](Category.Utils)
 
     def hash(
         name: String,
@@ -214,25 +243,30 @@ object BuiltIn {
       signature: String,
       doc: String,
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean
+      useAssetsInContract: Ast.ContractAssetsAnnotation
   ) extends BuiltIn[Ctx]
       with DocUtils {
-    override def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+    override def getReturnType[C <: Ctx](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] = {
       assume(argsTypeWithInstrs.distinctBy(_.argsTypes).length == argsTypeWithInstrs.length)
 
       if (argsTypeWithInstrs.exists(_.argsTypes == inputType)) {
         returnType
       } else {
-        throw Error(s"Invalid args type $inputType for builtin func $name")
+        throw Error(s"Invalid args type ${quote(inputType)} for builtin func $name", None)
       }
     }
+
+    override def returnType(selfContractType: Type): Seq[Type] = returnType
 
     override def genCode(inputType: Seq[Type]): Seq[Instr[Ctx]] = {
       argsTypeWithInstrs.find(_.argsTypes == inputType) match {
         case Some(ArgsTypeWithInstrs(_, instrs)) =>
           instrs
         case None =>
-          throw Error(s"Invalid args type $inputType for builtin func $name")
+          throw Error(s"Invalid args type ${quote(inputType)} for builtin func $name", None)
       }
     }
   }
@@ -246,7 +280,7 @@ object BuiltIn {
         argsName: Seq[(String, String)],
         doc: String,
         usePreapprovedAssets: Boolean,
-        useAssetsInContract: Boolean
+        useAssetsInContract: Ast.ContractAssetsAnnotation
     ): OverloadedSimpleBuiltIn[StatefulContext] = {
       val signature: String = {
         val args =
@@ -272,12 +306,20 @@ object BuiltIn {
 
   sealed abstract class GenericStatelessBuiltIn(val name: String)
       extends BuiltIn[StatelessContext] {
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
   }
 
   val blake2b: SimpleBuiltIn[StatelessContext] =
-    SimpleBuiltIn.hash("blake2b", Seq(Type.ByteVec), Seq(Type.ByteVec), Blake2b)
+    SimpleBuiltIn.cryptography(
+      "blake2b",
+      Seq(Type.ByteVec),
+      Seq(Type.ByteVec),
+      Blake2b,
+      argsName = Seq("data" -> "the input data to be hashed"),
+      retComment = "the 32 bytes hash result",
+      doc = s"Computes the Blake2b-256 hash of the input."
+    )
   val keccak256: SimpleBuiltIn[StatelessContext] =
     SimpleBuiltIn.hash("keccak256", Seq(Type.ByteVec), Seq(Type.ByteVec), Keccak256)
   val sha256: SimpleBuiltIn[StatelessContext] =
@@ -294,7 +336,7 @@ object BuiltIn {
         "condition" -> "the condition to be checked",
         "errorCode" -> "the error code to throw if the check fails"
       ),
-      retComment = "true if the condition is satisfied, false otherwise",
+      retComment = "",
       doc = "Tests the condition or checks invariants."
     )
   val verifyTxSignature: SimpleBuiltIn[StatelessContext] =
@@ -303,10 +345,20 @@ object BuiltIn {
       Seq(Type.ByteVec),
       Seq(),
       VerifyTxSignature,
-      argsName = Seq("publicKey" -> "the public key of the signer"),
-      retComment = "true if the signature is valid, false otherwise",
+      argsName = Seq("publicKey" -> "the public key (33 bytes) of the signer"),
+      retComment = "",
       doc =
-        "Verifies the transaction signature of a public key. The signature is signed against the transaction id."
+        "Verifies the transaction SecP256K1 signature of a public key. The signature is signed against the transaction id."
+    )
+  val getSegregatedSignature: SimpleBuiltIn[StatelessContext] =
+    SimpleBuiltIn.cryptography(
+      "getSegregatedSignature",
+      Seq.empty,
+      Seq(Type.ByteVec),
+      GetSegregatedSignature,
+      argsName = Seq.empty,
+      retComment = "the segregated signature of the transaction",
+      doc = "The segregated signature of the transaction"
     )
   val verifySecP256K1: SimpleBuiltIn[StatelessContext] =
     SimpleBuiltIn.cryptography(
@@ -315,11 +367,11 @@ object BuiltIn {
       Seq.empty,
       VerifySecP256K1,
       argsName = Seq(
-        "data"      -> "the data that was supposed to have been signed",
-        "publicKey" -> "the public key of the signer",
-        "signature" -> "the signature value"
+        "data"      -> "the data (32 bytes) that was supposed to have been signed",
+        "publicKey" -> "the public key (33 bytes) of the signer",
+        "signature" -> "the signature (64 bytes) value"
       ),
-      retComment = "true if the signature is valid, false otherwise",
+      retComment = "",
       doc = s"Verifies the SecP256K1 signature of the input and public key."
     )
   val checkCaller: SimpleBuiltIn[StatelessContext] =
@@ -342,12 +394,26 @@ object BuiltIn {
       Seq.empty,
       VerifyED25519,
       argsName = Seq(
-        "data"      -> "the data that was supposed to have been signed",
-        "publicKey" -> "the public key of the signer",
-        "signature" -> "the signature value"
+        "data"      -> "the data (32 bytes) that was supposed to have been signed",
+        "publicKey" -> "the public key (32 bytes) of the signer",
+        "signature" -> "the signature value (64 bytes)"
       ),
-      retComment = "true if the signature is valid, false otherwise",
+      retComment = "",
       doc = s"Verifies the ED25519 signature of the input and public key."
+    )
+  val verifyBIP340Schnorr: SimpleBuiltIn[StatelessContext] =
+    SimpleBuiltIn.cryptography(
+      "verifyBIP340Schnorr",
+      Seq(Type.ByteVec, Type.ByteVec, Type.ByteVec),
+      Seq.empty,
+      VerifyBIP340Schnorr,
+      argsName = Seq(
+        "data"      -> "the data (32 bytes) that was supposed to have been signed",
+        "publicKey" -> "the public key (32 bytes) of the signer",
+        "signature" -> "the signature value (64 bytes)"
+      ),
+      retComment = "",
+      doc = s"Verifies the BIP340 Schnorr signature of the input and public key."
     )
   val ethEcRecover: SimpleBuiltIn[StatelessContext] =
     SimpleBuiltIn.cryptography(
@@ -450,8 +516,8 @@ object BuiltIn {
       Seq.empty,
       VerifyAbsoluteLocktime,
       argsName = Seq("lockUntil" -> "the timestamp until which the lock is valid"),
-      retComment = "true if the lock timestamp is before the block timestamp, false otherwise",
-      doc = "Verifies the absolute locktime with the block timestamp."
+      retComment = "",
+      doc = "Verifies that the absolute locktime is before the block timestamp, otherwise it fails."
     )
   val verifyRelativeLocktime: SimpleBuiltIn[StatelessContext] =
     SimpleBuiltIn.chain(
@@ -463,9 +529,9 @@ object BuiltIn {
         "txInputIndex" -> "the index of the transaction input",
         "lockDuration" -> "the duration that the input is locked for"
       ),
-      retComment =
-        "true if the input's creation timestamp + lock duration is before the block timestamp, false otherwise",
-      doc = "Verifies the relative locktime for transaction input."
+      retComment = "",
+      doc =
+        "Verifies that the input's creation timestamp + lock duration is before the block timestamp, otherwise it fails."
     )
 
   sealed abstract class ConversionBuiltIn(name: String) extends GenericStatelessBuiltIn(name) {
@@ -477,9 +543,12 @@ object BuiltIn {
 
     def validate(tpe: Type): Boolean = validTypes.contains(tpe) && (tpe != toType)
 
-    override def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+    override def getReturnType[C <: StatelessContext](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] = {
       if (inputType.length != 1 || !validate(inputType(0))) {
-        throw Error(s"Invalid args type $inputType for builtin func $name")
+        throw Error(s"Invalid args type ${quote(inputType)} for builtin func $name", None)
       } else {
         Seq(toType)
       }
@@ -593,19 +662,23 @@ object BuiltIn {
   val encodeToByteVec: BuiltIn[StatelessContext] = new BuiltIn[StatelessContext] {
     val name: String = "encodeToByteVec"
 
-    def category: Category            = Category.ByteVec
-    override def isVariadic: Boolean  = true
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def category: Category                                = Category.ByteVec
+    override def isVariadic: Boolean                      = true
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
-    def getReturnType(inputType: Seq[Type]): Seq[Type] = Seq(Type.ByteVec)
+    def getReturnType[C <: StatelessContext](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] =
+      Seq(Type.ByteVec)
 
     def genCode(inputType: Seq[Type]): Seq[Instr[StatelessContext]] = Seq(Encode)
 
     def signature: String   = s"fn $name!(...any) -> (ByteVec)"
     def params: Seq[String] = Seq("@param any a sequence of input values")
     def returns: String     = "@returns a ByteVec encoding the inputs"
-    def doc: String         = "Encodes inputs as ByteVec."
+    def doc: String         = "Encodes inputs as big-endian ByteVec."
   }
 
   val zeros: SimpleBuiltIn[StatelessContext] =
@@ -637,7 +710,7 @@ object BuiltIn {
       U256To2Byte,
       argsName = Seq("u256" -> "the input U256"),
       retComment = "2 bytes",
-      doc = "Converts U256 to 2 bytes."
+      doc = "Converts U256 to 2 big-endian bytes."
     )
 
   val u256To4Byte: SimpleBuiltIn[StatelessContext] =
@@ -648,7 +721,7 @@ object BuiltIn {
       U256To4Byte,
       argsName = Seq("u256" -> "the input U256"),
       retComment = "4 bytes",
-      doc = "Converts U256 to 4 bytes."
+      doc = "Converts U256 to 4 big-endian bytes."
     )
 
   val u256To8Byte: SimpleBuiltIn[StatelessContext] =
@@ -659,7 +732,7 @@ object BuiltIn {
       U256To8Byte,
       argsName = Seq("u256" -> "the input U256"),
       retComment = "8 bytes",
-      doc = "Converts U256 to 8 bytes."
+      doc = "Converts U256 to 8 big-endian bytes."
     )
 
   val u256To16Byte: SimpleBuiltIn[StatelessContext] =
@@ -670,7 +743,7 @@ object BuiltIn {
       U256To16Byte,
       argsName = Seq("u256" -> "the input U256"),
       retComment = "16 bytes",
-      doc = "Converts U256 to 16 bytes."
+      doc = "Converts U256 to 16 big-endian bytes."
     )
 
   val u256To32Byte: SimpleBuiltIn[StatelessContext] =
@@ -681,7 +754,40 @@ object BuiltIn {
       U256To32Byte,
       argsName = Seq("u256" -> "the input U256"),
       retComment = "32 bytes",
-      doc = "Converts U256 to 32 bytes."
+      doc = "Converts U256 to 32 big-endian bytes."
+    )
+
+  val u256ToString: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.conversion(
+      "u256ToString",
+      Seq[Type](Type.U256),
+      Seq[Type](Type.ByteVec),
+      U256ToString,
+      argsName = Seq("u256" -> "the input U256"),
+      retComment = "Converted string in ByteVec",
+      doc = "Converts U256 to string in ByteVec."
+    )
+
+  val i256ToString: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.conversion(
+      "i256ToString",
+      Seq[Type](Type.I256),
+      Seq[Type](Type.ByteVec),
+      I256ToString,
+      argsName = Seq("i256" -> "the input I256"),
+      retComment = "Converted string in ByteVec",
+      doc = "Converts I256 to string in ByteVec."
+    )
+
+  val boolToString: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.conversion(
+      "boolToString",
+      Seq[Type](Type.Bool),
+      Seq[Type](Type.ByteVec),
+      BoolToString,
+      argsName = Seq("bool" -> "the input Bool"),
+      retComment = "Converted string in ByteVec",
+      doc = "Converts Bool to string in ByteVec."
     )
 
   val u256From1Byte: SimpleBuiltIn[StatelessContext] =
@@ -703,7 +809,7 @@ object BuiltIn {
       U256From2Byte,
       argsName = Seq("bytes" -> "the input ByteVec"),
       retComment = "an U256",
-      doc = "Converts 2 byte to U256."
+      doc = "Converts 2 big-endian bytes to U256."
     )
 
   val u256From4Byte: SimpleBuiltIn[StatelessContext] =
@@ -714,7 +820,7 @@ object BuiltIn {
       U256From4Byte,
       argsName = Seq("bytes" -> "the input ByteVec"),
       retComment = "an U256",
-      doc = "Converts 4 byte to U256."
+      doc = "Converts 4 big-endian bytes to U256."
     )
 
   val u256From8Byte: SimpleBuiltIn[StatelessContext] =
@@ -725,7 +831,7 @@ object BuiltIn {
       U256From8Byte,
       argsName = Seq("bytes" -> "the input ByteVec"),
       retComment = "an U256",
-      doc = "Converts 8 byte to U256."
+      doc = "Converts 8 big-endian bytes to U256."
     )
 
   val u256From16Byte: SimpleBuiltIn[StatelessContext] =
@@ -736,7 +842,7 @@ object BuiltIn {
       U256From16Byte,
       argsName = Seq("bytes" -> "the input ByteVec"),
       retComment = "an U256",
-      doc = "Converts 16 byte to U256."
+      doc = "Converts 16 big-endian bytes to U256."
     )
 
   val u256From32Byte: SimpleBuiltIn[StatelessContext] =
@@ -747,7 +853,7 @@ object BuiltIn {
       U256From32Byte,
       argsName = Seq("bytes" -> "the input ByteVec"),
       retComment = "an U256",
-      doc = "Converts 32 byte to U256."
+      doc = "Converts 32 big-endian bytes to U256."
     )
 
   val byteVecToAddress: SimpleBuiltIn[StatelessContext] =
@@ -772,6 +878,29 @@ object BuiltIn {
       doc = "Converts contract id (ByteVec) to contract address (Address)."
     )
 
+  val addressToContractId: SimpleBuiltIn[StatelessContext] = SimpleBuiltIn[StatelessContext](
+    name = "addressToContractId",
+    argsType = Seq[Type](Type.Address),
+    returnType = Seq[Type](Type.ByteVec),
+    Seq(
+      Dup,
+      IsContractAddress,
+      Assert,
+      AddressToByteVec,
+      U256Const1,
+      // scalastyle:off magic.number
+      U256Const(Val.U256(U256.unsafe(33))),
+      // scalastyle:on magic.number
+      ByteVecSlice
+    ),
+    usePreapprovedAssets = false,
+    useAssetsInContract = Ast.NotUseContractAssets,
+    category = Category.Conversion,
+    argsCommentedName = Seq("contractAddress" -> "the input contract address"),
+    retComment = "a contract id",
+    doc = "Converts contract address (Address) to contract id (ByteVec)"
+  )
+
   val dustAmount: SimpleBuiltIn[StatelessContext] =
     SimpleBuiltIn.chainSimple(
       "dustAmount",
@@ -783,13 +912,19 @@ object BuiltIn {
     )
 
   val panic: BuiltIn[StatelessContext] = new BuiltIn[StatelessContext] {
-    val name: String                  = "panic"
-    def category: Category            = Category.Utils
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
-    override def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+    val name: String                                      = "panic"
+    def category: Category                                = Category.Utils
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+    override def getReturnType[C <: StatelessContext](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] = {
       if (inputType.nonEmpty && inputType != Seq(Type.U256)) {
-        throw Compiler.Error(s"Invalid argument type for $name, optional U256 expected")
+        throw Compiler.Error(
+          s"""Invalid args type for builtin func $name, optional "List(U256)" expected""",
+          None
+        )
       }
       Seq(Type.Panic)
     }
@@ -809,14 +944,98 @@ object BuiltIn {
     def doc: String     = "Terminates the application immediately."
   }
 
-  val blockHash: BuiltIn[StatelessContext] =
-    SimpleBuiltIn.chainSimple(
-      "blockHash",
+  val mulModN: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.utilsSimple(
+      "mulModN",
+      Seq(Type.U256, Type.U256, Type.U256),
+      Seq(Type.U256),
+      MulModN,
+      Seq("x" -> "x", "y" -> "y", "n" -> "n"),
+      retComment = "compute the x * y % n"
+    )
+
+  val addModN: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.utilsSimple(
+      "addModN",
+      Seq(Type.U256, Type.U256, Type.U256),
+      Seq(Type.U256),
+      AddModN,
+      Seq("x" -> "x", "y" -> "y", "n" -> "n"),
+      retComment = "compute the (x + y) % n"
+    )
+
+  val u256Max: BuiltIn[StatelessContext] = {
+    // scalastyle:off magic.number
+    val instrs = Seq[Instr[StatelessContext]](
+      U256Const0,
+      U256Const1,
+      U256ModSub
+    )
+    // scalastyle:on magic.number
+    SimpleBuiltIn.utilsMultipleInstr(
+      "u256Max",
       Seq.empty,
-      Seq(Type.ByteVec),
-      BlockHash,
-      Seq(),
-      retComment = "the block hash of the current block"
+      Seq(Type.U256),
+      instrs,
+      Seq.empty,
+      retComment = "the max value of U256"
+    )
+  }
+
+  val i256Max: BuiltIn[StatelessContext] = {
+    // scalastyle:off magic.number
+    val instrs = Seq[Instr[StatelessContext]](
+      U256Const1,
+      U256Const(Val.U256(U256.unsafe(255))),
+      U256SHL,
+      U256Const1,
+      U256Sub,
+      U256ToI256
+    )
+    // scalastyle:on magic.number
+    SimpleBuiltIn.utilsMultipleInstr(
+      "i256Max",
+      Seq.empty,
+      Seq(Type.I256),
+      instrs,
+      Seq.empty,
+      retComment = "the max value of I256"
+    )
+  }
+
+  val i256Min: BuiltIn[StatelessContext] = {
+    // scalastyle:off magic.number
+    val instrs = Seq[Instr[StatelessContext]](
+      U256Const1,
+      U256Const(Val.U256(U256.unsafe(255))),
+      U256SHL,
+      U256Const1,
+      U256Sub,
+      U256ToI256,
+      I256ConstN1,
+      I256Mul,
+      I256ConstN1,
+      I256Add
+    )
+    // scalastyle:on magic.number
+    SimpleBuiltIn.utilsMultipleInstr(
+      "i256Min",
+      Seq.empty,
+      Seq(Type.I256),
+      instrs,
+      Seq.empty,
+      retComment = "the min value of I256"
+    )
+  }
+
+  val groupOfAddress: BuiltIn[StatelessContext] =
+    SimpleBuiltIn.utilsSimple(
+      "groupOfAddress",
+      Seq(Type.Address),
+      Seq(Type.U256),
+      GroupOfAddress,
+      Seq("address" -> "the input address"),
+      retComment = "the group of the input address"
     )
 
   val statelessFuncsSeq: Seq[(String, BuiltIn[StatelessContext])] = Seq(
@@ -827,10 +1046,11 @@ object BuiltIn {
     assert,
     checkCaller,
     verifyTxSignature,
+    getSegregatedSignature,
     verifySecP256K1,
     verifyED25519,
+    verifyBIP340Schnorr,
     networkId,
-    blockHash,
     blockTimeStamp,
     blockTarget,
     txId,
@@ -851,6 +1071,7 @@ object BuiltIn {
     encodeToByteVec,
     zeros,
     contractIdToAddress,
+    addressToContractId,
     byteVecToAddress,
     u256To1Byte,
     u256To2Byte,
@@ -858,6 +1079,9 @@ object BuiltIn {
     u256To8Byte,
     u256To16Byte,
     u256To32Byte,
+    u256ToString,
+    i256ToString,
+    boolToString,
     u256From1Byte,
     u256From2Byte,
     u256From4Byte,
@@ -866,7 +1090,13 @@ object BuiltIn {
     u256From32Byte,
     ethEcRecover,
     dustAmount,
-    panic
+    panic,
+    mulModN,
+    addModN,
+    u256Max,
+    i256Max,
+    i256Min,
+    groupOfAddress
   ).map(f => f.name -> f)
 
   val statelessFuncs: Map[String, BuiltIn[StatelessContext]] = statelessFuncsSeq.toMap
@@ -918,7 +1148,7 @@ object BuiltIn {
       Seq[Type](Type.Address, Type.ByteVec, Type.U256),
       Seq.empty,
       TransferTokenFromSelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName = Seq(
         "toAddress" -> "the address to transfer token to",
         "tokenId"   -> "the token to be transferred",
@@ -934,7 +1164,7 @@ object BuiltIn {
       Seq[Type](Type.Address, Type.ByteVec, Type.U256),
       Seq.empty,
       TransferTokenToSelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName = Seq(
         "fromAddress" -> "the address to transfer token from",
         "tokenId"     -> "the token to be transferred",
@@ -990,13 +1220,14 @@ object BuiltIn {
   val createContract: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.contract(
       "createContract",
-      Seq[Type](Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
       Seq[Type](Type.ByteVec),
       CreateContract,
       usePreapprovedAssets = true,
       argsName = Seq(
-        "bytecode"      -> "the bytecode of the contract to be created",
-        "encodedFields" -> "the encoded fields as a ByteVec"
+        "bytecode"         -> "the bytecode of the contract to be created",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec"
       ),
       retComment = "the id of the created contract",
       doc = docContractFunction(issueToken = false, copy = false, subContract = false)
@@ -1007,21 +1238,22 @@ object BuiltIn {
       "createContractWithToken",
       argsTypeWithInstrs = Seq(
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
           Seq(CreateContractWithToken)
         ),
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
           Seq(CreateContractAndTransferToken)
         )
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.Contract,
       argsName = Seq(
         "bytecode"         -> "the bytecode of the contract to be created",
-        "encodedFields"    -> "the encoded fields as a ByteVec",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec",
         "issueTokenAmount" -> "the amount of token to be issued"
       ),
       doc = docContractFunction(issueToken = true, copy = false, subContract = false)
@@ -1030,13 +1262,14 @@ object BuiltIn {
   val copyCreateContract: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.contract(
       "copyCreateContract",
-      Seq[Type](Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
       Seq[Type](Type.ByteVec),
       CopyCreateContract,
       usePreapprovedAssets = true,
       argsName = Seq(
-        "contractId"    -> "the id of the contract to be copied",
-        "encodedFields" -> "the encoded fields as a ByteVec"
+        "contractId"       -> "the id of the contract to be copied",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec"
       ),
       retComment = "the id of the created contract",
       doc = docContractFunction(
@@ -1052,21 +1285,22 @@ object BuiltIn {
       "copyCreateContractWithToken",
       argsTypeWithInstrs = Seq(
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
           Seq(CopyCreateContractWithToken)
         ),
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
           Seq(CopyCreateContractAndTransferToken)
         )
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.Contract,
       argsName = Seq(
         "contractId"       -> "the id of the contract to be copied",
-        "encodedFields"    -> "the encoded fields as a ByteVec",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec",
         "issueTokenAmount" -> "the amount of token to be issued"
       ),
       doc = docContractFunction(
@@ -1080,14 +1314,15 @@ object BuiltIn {
   val createSubContract: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.subContract(
       "createSubContract",
-      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.ByteVec),
       Seq[Type](Type.ByteVec),
       CreateSubContract,
       usePreapprovedAssets = true,
       argsName = Seq(
-        "subContractPath" -> "the path of the sub-contract to be created",
-        "bytecode"        -> "the bytecode of the sub-contract to be created",
-        "encodedFields"   -> "the encoded fields as a ByteVec"
+        "subContractPath"  -> "the path of the sub-contract to be created",
+        "bytecode"         -> "the bytecode of the sub-contract to be created",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec"
       ),
       retComment = "the id of the created contract",
       doc = docContractFunction(issueToken = false, copy = false, subContract = true)
@@ -1098,22 +1333,30 @@ object BuiltIn {
       "createSubContractWithToken",
       argsTypeWithInstrs = Seq(
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
           Seq(CreateSubContractWithToken)
         ),
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
+          Seq[Type](
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.U256,
+            Type.Address
+          ),
           Seq(CreateSubContractAndTransferToken)
         )
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.SubContract,
       argsName = Seq(
         "subContractPath"  -> "the path of the sub-contract to be created",
         "bytecode"         -> "the bytecode of the sub-contract to be created",
-        "encodedFields"    -> "the encoded fields as a ByteVec",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec",
         "issueTokenAmount" -> "the amount of token to be issued"
       ),
       doc = docContractFunction(issueToken = true, copy = false, subContract = true)
@@ -1122,14 +1365,15 @@ object BuiltIn {
   val copyCreateSubContract: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.subContract(
       "copyCreateSubContract",
-      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.ByteVec),
       Seq[Type](Type.ByteVec),
       CopyCreateSubContract,
       usePreapprovedAssets = true,
       argsName = Seq(
-        "subContractPath" -> "the path of the sub-contract to be created",
-        "contractId"      -> "the id of the contract to be copied",
-        "encodedFields"   -> "the encoded fields as a ByteVec"
+        "subContractPath"  -> "the path of the sub-contract to be created",
+        "contractId"       -> "the id of the contract to be copied",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec"
       ),
       retComment = "the id of the created contract",
       doc = docContractFunction(
@@ -1145,22 +1389,30 @@ object BuiltIn {
       "copyCreateSubContractWithToken",
       argsTypeWithInstrs = Seq(
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
+          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256),
           Seq(CopyCreateSubContractWithToken)
         ),
         ArgsTypeWithInstrs(
-          Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec, Type.U256, Type.Address),
+          Seq[Type](
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.ByteVec,
+            Type.U256,
+            Type.Address
+          ),
           Seq(CopyCreateSubContractAndTransferToken)
         )
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.SubContract,
       argsName = Seq(
         "subContractPath"  -> "the path of the sub-contract to be created",
         "contractId"       -> "the id of the contract to be copied",
-        "encodedFields"    -> "the encoded fields as a ByteVec",
+        "encodedImmFields" -> "the encoded immutable fields as a ByteVec",
+        "encodedMutFields" -> "the encoded mutable fields as a ByteVec",
         "issueTokenAmount" -> "the amount of token to be issued"
       ),
       doc = docContractFunction(
@@ -1177,7 +1429,7 @@ object BuiltIn {
       Seq[Type](Type.Address),
       Seq.empty,
       DestroySelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName =
         Seq("refundAddress" -> "the address to receive the remaining assets in the contract"),
       retComment = "",
@@ -1198,12 +1450,13 @@ object BuiltIn {
   val migrateWithFields: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.contract(
       "migrateWithFields",
-      Seq[Type](Type.ByteVec, Type.ByteVec),
+      Seq[Type](Type.ByteVec, Type.ByteVec, Type.ByteVec),
       Seq.empty,
       MigrateWithFields,
       argsName = Seq(
-        "newBytecode"      -> "the bytecode for the contract to migrate to",
-        "newEncodedFields" -> "the new fields for the contract to migrate to"
+        "newBytecode"         -> "the bytecode for the contract to migrate to",
+        "newEncodedImmFields" -> "the encoded immutable fields for the contract to migrate to",
+        "newEncodedMutFields" -> "the encoded mutable fields for the contract to migrate to"
       ),
       retComment = "",
       doc = "Migrates both the code and the fields of the contract."
@@ -1322,13 +1575,50 @@ object BuiltIn {
       retComment = "the contract code hash of the contract"
     )
 
+  val payGasFee: SimpleBuiltIn[StatefulContext] =
+    SimpleBuiltIn.asset(
+      "payGasFee",
+      Seq[Type](Type.Address, Type.U256),
+      Seq.empty,
+      PayGasFee,
+      argsName = Seq(
+        "payer"  -> "payer of the gas",
+        "amount" -> "the amount of gas to be paid in ALPH"
+      ),
+      retComment = "",
+      doc = "Pay gas fee."
+    )
+
+  val minimalContractDeposit: SimpleBuiltIn[StatefulContext] =
+    SimpleBuiltIn.utils(
+      "minimalContractDeposit",
+      Seq.empty,
+      Seq(Type.U256),
+      MinimalContractDeposit,
+      argsName = Seq.empty,
+      retComment = "the minimal ALPH amount for contract deposit",
+      doc = "The minimal contract deposit"
+    )
+
+  val mapEntryDeposit: SimpleBuiltIn[StatefulContext] =
+    SimpleBuiltIn.utils(
+      "mapEntryDeposit",
+      Seq.empty,
+      Seq(Type.U256),
+      MinimalContractDeposit,
+      argsName = Seq.empty,
+      retComment = "the amount of ALPH required to create a map entry",
+      doc =
+        "The amount of ALPH required to create a map entry, which is '0.1 ALPH' since Rhone upgrade"
+    )
+
   sealed abstract private class SubContractBuiltIn extends BuiltIn[StatefulContext] with DocUtils {
     def name: String
-    def category: Category            = Category.SubContract
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def category: Category                                = Category.SubContract
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
-    def returnType: Seq[Type] = Seq(Type.ByteVec)
+    def returnType(selfContractType: Type): Seq[Type] = Seq(Type.ByteVec)
 
     def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]]
 
@@ -1336,7 +1626,8 @@ object BuiltIn {
     def doc: String        = s"Returns ${retComment}."
   }
 
-  val subContractId: BuiltIn[StatefulContext] = new SubContractBuiltIn with NoOverloadingUtils {
+  val subContractId: BuiltIn[StatefulContext] = new SubContractBuiltIn
+    with NoOverloadingUtils[StatefulContext] {
     val name: String        = "subContractId"
     def argsType: Seq[Type] = Seq(Type.ByteVec)
 
@@ -1347,12 +1638,16 @@ object BuiltIn {
     def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = {
       Seq(SubContractId)
     }
+
+    override def signature: String = s"fn $name!(subContractPath:ByteVec) -> (ByteVec)"
   }
 
   @SuppressWarnings(Array("org.wartremover.warts.IsInstanceOf"))
-  val subContractIdOf: BuiltIn[StatefulContext] = new SubContractBuiltIn {
-    val name: String = "subContractIdOf"
-    override def getReturnType(inputType: Seq[Type]): Seq[Type] = {
+  sealed abstract private class SubContractIdOfBuiltIn extends SubContractBuiltIn {
+    override def getReturnType[C <: StatefulContext](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] = {
       if (
         inputType.length == 2 &&
         inputType(0).isInstanceOf[Type.Contract] &&
@@ -1360,11 +1655,13 @@ object BuiltIn {
       ) {
         Seq(Type.ByteVec)
       } else {
-        throw Error(s"Invalid argument type for $name, (Contract, ByteVec) expected")
+        throw Error(
+          s"""Invalid args type ${quote(
+              inputType
+            )} for builtin func $name, expected "List(Contract, ByteVec)"""",
+          None
+        )
       }
-    }
-    def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = {
-      Seq[Instr[StatefulContext]](SubContractIdOf)
     }
 
     val argsCommentedName: Seq[(String, String)] =
@@ -1377,6 +1674,42 @@ object BuiltIn {
       s"fn $name!(contract:<Contract>, subContractPath:ByteVec) -> (ByteVec)"
   }
 
+  val subContractIdOf: BuiltIn[StatefulContext] = new SubContractIdOfBuiltIn {
+    val name: String = "subContractIdOf"
+
+    def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = {
+      Seq[Instr[StatefulContext]](SubContractIdOf)
+    }
+  }
+
+  val subContractIdInParentGroup: BuiltIn[StatefulContext] = new SubContractIdOfBuiltIn {
+    val name: String = "subContractIdInParentGroup"
+
+    override def genCodeForArgs[C <: StatefulContext](
+        args: Seq[Ast.Expr[C]],
+        state: Compiler.State[C]
+    ): Seq[Instr[C]] = {
+      assume(args.length == 2)
+      (args(0).genCode(state) :+ Dup) ++ args(1).genCode(state)
+    }
+
+    def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = {
+      Seq[Instr[StatefulContext]](
+        SubContractIdOf,
+        U256Const0,
+        // scalastyle:off magic.number
+        U256Const(Val.U256(U256.unsafe(31))),
+        ByteVecSlice,
+        Swap,
+        U256Const(Val.U256(U256.unsafe(31))),
+        U256Const(Val.U256(U256.unsafe(32))),
+        // scalastyle:on magic.number
+        ByteVecSlice,
+        ByteVecConcat
+      )
+    }
+  }
+
   val nullContractAddress: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.utilsSimple(
       "nullContractAddress",
@@ -1386,6 +1719,109 @@ object BuiltIn {
       argsName = Seq(),
       retComment = "the null contract address with contract id being zeros"
     )
+
+  private def contractIdBuiltIn(funcName: String) = {
+    new BuiltIn[StatefulContext] with DocUtils {
+      val name: String       = funcName
+      val category: Category = Category.Contract
+
+      def signature: String             = s"fn $name!(contract:<Contract>) -> (ByteVec)"
+      def usePreapprovedAssets: Boolean = false
+      def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+
+      def returnType(selfContractType: Type): Seq[Type] = Seq(Type.ByteVec)
+
+      @SuppressWarnings(Array("org.wartremover.warts.IsInstanceOf"))
+      def getReturnType[C <: StatefulContext](
+          inputType: Seq[Type],
+          state: Compiler.State[C]
+      ): Seq[Type] = {
+        if (inputType.length == 1 && inputType(0).isInstanceOf[Type.Contract]) {
+          Seq(Type.ByteVec)
+        } else {
+          throw Error(
+            s"""Invalid args type ${quote(
+                inputType
+              )} for builtin func ${name}, expected "List(Contract)"""",
+            None
+          )
+        }
+      }
+
+      def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = Seq.empty
+
+      val argsCommentedName: Seq[(String, String)] =
+        Seq("contract" -> "the contract variable")
+
+      val retComment: String = "the id of the contract"
+      def doc: String        = s"Returns $retComment"
+    }
+  }
+
+  val selfContract: BuiltIn[StatefulContext] = new BuiltIn[StatefulContext] with DocUtils {
+    val name: String       = "selfContract"
+    val category: Category = Category.Contract
+
+    def signature: String                                 = s"fn $name!() -> (<Contract>)"
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+
+    def returnType(selfContractType: Type): Seq[Type] = Seq(selfContractType)
+    def getReturnType[C <: StatefulContext](
+        inputType: Seq[Type],
+        state: Compiler.State[C]
+    ): Seq[Type] =
+      Seq(state.selfContractType)
+
+    def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = Seq(SelfContractId)
+
+    val argsCommentedName: Seq[(String, String)] = Seq.empty
+    val retComment: String                       = "self contract"
+    def doc: String                              = s"Returns $retComment"
+  }
+
+  val tokenId: BuiltIn[StatefulContext]    = contractIdBuiltIn("tokenId")
+  val contractId: BuiltIn[StatefulContext] = contractIdBuiltIn("contractId")
+
+  val contractAddress: BuiltIn[StatefulContext] = {
+    new BuiltIn[StatefulContext] with DocUtils {
+      val name: String       = "contractAddress"
+      val category: Category = Category.Contract
+
+      def signature: String             = s"fn contractAddress!(contract:<Contract>) -> (Address)"
+      def usePreapprovedAssets: Boolean = false
+      def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+
+      def returnType(selfContractType: Type): Seq[Type] = Seq(Type.Address)
+
+      @SuppressWarnings(Array("org.wartremover.warts.IsInstanceOf"))
+      def getReturnType[C <: StatefulContext](
+          inputType: Seq[Type],
+          state: Compiler.State[C]
+      ): Seq[Type] = {
+        if (inputType.length == 1 && inputType(0).isInstanceOf[Type.Contract]) {
+          Seq(Type.Address)
+        } else {
+          throw Error(
+            s"""Invalid args type ${quote(
+                inputType
+              )} for builtin func ${name}, expected "List(Contract)"""",
+            None
+          )
+        }
+      }
+
+      def genCode(inputType: Seq[Type]): Seq[Instr[StatefulContext]] = Seq(
+        ContractIdToAddress
+      )
+
+      val argsCommentedName: Seq[(String, String)] =
+        Seq("contract" -> "the contract variable")
+
+      val retComment: String = "the address of the contract"
+      def doc: String        = s"Returns $retComment"
+    }
+  }
 
   val statefulFuncsSeq: Seq[(String, BuiltIn[StatefulContext])] =
     statelessFuncsSeq ++ Seq(
@@ -1407,6 +1843,9 @@ object BuiltIn {
       selfAddress,
       selfContractId,
       selfTokenId,
+      tokenId,
+      contractId,
+      contractAddress,
       callerContractId,
       callerAddress,
       contractInitialStateHash,
@@ -1420,8 +1859,82 @@ object BuiltIn {
       isCalledFromTxScript,
       subContractId,
       subContractIdOf,
-      nullContractAddress
+      subContractIdInParentGroup,
+      nullContractAddress,
+      selfContract,
+      payGasFee,
+      minimalContractDeposit,
+      mapEntryDeposit
     ).map(f => f.name -> f)
 
   val statefulFuncs: Map[String, BuiltIn[StatefulContext]] = statefulFuncsSeq.toMap
+
+  trait ContractBuiltIn[Ctx <: StatelessContext] extends Compiler.ContractFunc[Ctx] {
+    val isPublic: Boolean                                 = true
+    val usePreapprovedAssets: Boolean                     = false
+    val useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+    val useUpdateFields: Boolean                          = false
+
+    override def isStatic: Boolean = true
+
+    def returnType: Seq[Type]
+    def getReturnType[C <: Ctx](inputType: Seq[Type], state: Compiler.State[C]): Seq[Type] = {
+      if (inputType == argsType) {
+        returnType
+      } else {
+        throw Error(s"Invalid args type ${quote(inputType)} for builtin func $name", None)
+      }
+    }
+  }
+
+  object ContractBuiltIn {
+    @inline def genCodeForStdId[Ctx <: StatelessContext](
+        stdInterfaceIdOpt: Option[Ast.StdInterfaceId],
+        fieldLength: Int
+    ): Seq[Instr[Ctx]] = {
+      stdInterfaceIdOpt match {
+        case Some(id) =>
+          Seq[Instr[Ctx]](
+            BytesConst(Val.ByteVec(id.bytes)),
+            U256Const(Val.U256.unsafe(fieldLength + 1)),
+            Encode
+          )
+        case _ => Seq[Instr[Ctx]](U256Const(Val.U256.unsafe(fieldLength)), Encode)
+      }
+    }
+  }
+
+  def encodeFields[Ctx <: StatelessContext](
+      stdInterfaceIdOpt: Option[Ast.StdInterfaceId],
+      fields: Seq[Ast.Argument],
+      globalState: Ast.GlobalState
+  ): Compiler.ContractFunc[Ctx] = {
+    val fieldsMutability =
+      fields.flatMap(arg => globalState.flattenTypeMutability(arg.tpe, arg.isMutable))
+    val immFieldsLength = fieldsMutability.count(!_)
+    val mutFieldsLength = fieldsMutability.length - immFieldsLength
+    new ContractBuiltIn[Ctx] {
+      val name: String          = "encodeFields"
+      val argsType: Seq[Type]   = globalState.resolveTypes(fields.map(_.tpe))
+      val returnType: Seq[Type] = Seq(Type.ByteVec, Type.ByteVec)
+
+      override def genCodeForArgs[C <: Ctx](
+          args: Seq[Ast.Expr[C]],
+          state: Compiler.State[C]
+      ): Seq[Instr[C]] = {
+        val (immFields, mutFields) = state.genFieldsInitCodes(fieldsMutability, args)
+        val immFieldInstrs = immFields ++ ContractBuiltIn.genCodeForStdId(
+          stdInterfaceIdOpt,
+          immFieldsLength
+        )
+        val mutFieldInstrs = mutFields ++ Seq[Instr[Ctx]](
+          U256Const(Val.U256.unsafe(mutFieldsLength)),
+          Encode
+        )
+        immFieldInstrs ++ mutFieldInstrs
+      }
+
+      def genCode(inputType: Seq[Type]): Seq[Instr[Ctx]] = Seq.empty
+    }
+  }
 }

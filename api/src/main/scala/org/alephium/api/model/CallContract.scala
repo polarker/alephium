@@ -27,6 +27,7 @@ final case class CallContract(
     worldStateBlockHash: Option[BlockHash] = None,
     txId: Option[TransactionId] = None,
     address: Address.Contract,
+    callerAddress: Option[Address.Contract] = None,
     methodIndex: Int,
     args: Option[AVector[Val]] = None,
     existingContracts: Option[AVector[Address.Contract]] = None,
@@ -40,6 +41,17 @@ final case class CallContract(
         } else {
           Left(badRequest(s"Invalid group $group"))
         }
+      addressGroup = address.groupIndex.value
+      _ <-
+        if (addressGroup == group) {
+          Right(())
+        } else {
+          Left(
+            badRequest(
+              s"Group mismatch: provided group is ${group}; group for $address is ${addressGroup}"
+            )
+          )
+        }
       chainIndex = ChainIndex.unsafe(group, group)
       _ <-
         if (worldStateBlockHash.map(ChainIndex.from).getOrElse(chainIndex) != chainIndex) {
@@ -50,3 +62,5 @@ final case class CallContract(
     } yield chainIndex.from
   }
 }
+
+final case class MultipleCallContract(calls: AVector[CallContract])

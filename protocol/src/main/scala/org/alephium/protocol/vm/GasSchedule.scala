@@ -84,6 +84,28 @@ object GasToByte {
     GasBox.unsafe(gasPerByte * GasFormula.wordLength(byteLength))
 }
 
+trait GasExp extends GasFormula {
+  def gas(byteLength: Int): GasBox = GasExp.gas(byteLength)
+}
+object GasExp {
+  val baseGas: Int    = 10
+  val gasPerByte: Int = 50
+
+  def gas(byteLength: Int): GasBox = GasBox.unsafe(baseGas + gasPerByte * byteLength)
+}
+
+@Gas
+trait GasMulModN extends GasSimple
+object GasMulModN {
+  val gas: GasBox = GasBox.unsafe(13) // GasMid + GasLow
+}
+
+@Gas
+trait GasAddModN extends GasSimple
+object GasAddModN {
+  val gas: GasBox = GasBox.unsafe(8) // GasVeryLow + GasLow
+}
+
 trait GasHash extends GasFormula {
   def gas(byteLength: Int): GasBox = GasHash.gas(byteLength)
 }
@@ -219,6 +241,8 @@ object GasUniqueAddress {
 
 object GasSchedule {
   val callGas: GasBox = GasBox.unsafe(200)
+  def selectorCallSearchGas(numSearches: Int): GasBox =
+    GasBox.unsafe(numSearches * GasMid.gas.value)
 
   def contractLoadGas(estimatedContractSize: Int): GasBox = {
     GasBox.unsafe(800 + GasFormula.wordLength(estimatedContractSize))

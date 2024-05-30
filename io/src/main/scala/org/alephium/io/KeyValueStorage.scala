@@ -33,6 +33,8 @@ trait AbstractKeyValueStorage[K, V] {
 
   def getOptUnsafe(key: K): Option[V]
 
+  def multiGetUnsafe(keys: Seq[K]): Seq[V]
+
   def put(key: K, value: V): IOResult[Unit]
 
   def putUnsafe(key: K, value: V): Unit
@@ -41,15 +43,18 @@ trait AbstractKeyValueStorage[K, V] {
 
   def existsUnsafe(key: K): Boolean
 
-  def delete(key: K): IOResult[Unit]
+  def remove(key: K): IOResult[Unit]
 
-  def deleteUnsafe(key: K): Unit
+  def removeUnsafe(key: K): Unit
+
+  def removeBatchUnsafe(keys: Seq[K]): Unit
 }
 
 trait KeyValueStorage[K, V]
     extends AbstractKeyValueStorage[K, V]
     with RawKeyValueStorage
-    with ReadableKV[K, V] {
+    with MutableKV[K, V, Unit] {
+  def unit: Unit = ()
 
   protected def storageKey(key: K): ByteString = serialize(key)
 
@@ -63,10 +68,22 @@ trait KeyValueStorage[K, V]
     }
   }
 
+  def getRawUnsafe(key: K): ByteString = getRawUnsafe(storageKey(key))
+
   def getOpt(key: K): IOResult[Option[V]] = IOUtils.tryExecute(getOptUnsafe(key))
 
   def getOptUnsafe(key: K): Option[V] = {
     getOptRawUnsafe(storageKey(key)) map { data =>
+      deserialize[V](data) match {
+        case Left(e)  => throw e
+        case Right(v) => v
+      }
+    }
+  }
+
+  def multiGetUnsafe(keys: Seq[K]): Seq[V] = {
+    val storageKeys: Seq[ByteString] = keys.map(storageKey(_))
+    multiGetRawUnsafe(storageKeys) map { data =>
       deserialize[V](data) match {
         case Left(e)  => throw e
         case Right(v) => v
@@ -94,9 +111,14 @@ trait KeyValueStorage[K, V]
     existsRawUnsafe(storageKey(key))
   }
 
-  def delete(key: K): IOResult[Unit] = IOUtils.tryExecute(deleteUnsafe(key))
+  def remove(key: K): IOResult[Unit] = IOUtils.tryExecute(removeUnsafe(key))
 
-  def deleteUnsafe(key: K): Unit = {
+  def removeUnsafe(key: K): Unit = {
     deleteRawUnsafe(storageKey(key))
+  }
+
+  def removeBatchUnsafe(keys: Seq[K]): Unit = {
+    val storageKeys = keys.map(storageKey(_))
+    deleteBatchRawUnsafe(storageKeys)
   }
 }

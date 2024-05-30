@@ -27,7 +27,7 @@ import org.scalacheck.Gen
 
 import org.alephium.flow.{AlephiumFlowActorSpec, FlowFixture}
 import org.alephium.flow.core.BlockFlow
-import org.alephium.flow.handler.{AllHandlers, DependencyHandler, FlowHandler, TestUtils, TxHandler}
+import org.alephium.flow.handler.{AllHandlers, FlowHandler, TestUtils, TxHandler}
 import org.alephium.flow.network.CliqueManager
 import org.alephium.flow.network.broker.{BrokerHandler => BaseBrokerHandler}
 import org.alephium.flow.network.broker.{InboundBrokerHandler => BaseInboundBrokerHandler}
@@ -37,14 +37,9 @@ import org.alephium.flow.setting.NetworkSetting
 import org.alephium.protocol.Generators
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.message._
-import org.alephium.protocol.model.{
-  BlockHash,
-  ChainIndex,
-  CliqueInfo,
-  NoIndexModelGeneratorsLike,
-  TransactionId
-}
-import org.alephium.util.{ActorRefT, AVector, TimeStamp, UnsecureRandom}
+import org.alephium.protocol.model._
+import org.alephium.serde.serialize
+import org.alephium.util.{ActorRefT, AVector, Duration, TimeStamp, UnsecureRandom}
 
 class BrokerHandlerSpec extends AlephiumFlowActorSpec {
   it should "set remote synced" in new Fixture {
@@ -72,24 +67,11 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     }
     brokerHandlerActor.selfSynced is true
     brokerHandlerActor.remoteSynced is false
-    cliqueManager.expectNoMessage()
+    cliqueManager.expectMsg(CliqueManager.Synced(brokerHandlerActor.remoteBrokerInfo))
 
     EventFilter.info(start = "Self synced", occurrences = 0).intercept {
       brokerHandler ! BaseBrokerHandler.Received(InvResponse(RequestId.random(), AVector.empty))
     }
-  }
-
-  it should "set synced" in new Fixture {
-    brokerHandlerActor.selfSynced is false
-    brokerHandlerActor.remoteSynced is false
-
-    brokerHandler ! FlowHandler.SyncInventories(Some(RequestId.random()), AVector(AVector.empty))
-    brokerHandler ! BaseBrokerHandler.Received(InvResponse(RequestId.random(), AVector.empty))
-    eventually {
-      brokerHandlerActor.selfSynced is true
-      brokerHandlerActor.remoteSynced is true
-    }
-    cliqueManager.expectMsg(CliqueManager.Synced(brokerHandlerActor.remoteBrokerInfo))
   }
 
   it should "mark block seen when receive valid NewBlock/NewBlockHash" in new Fixture {
@@ -106,9 +88,6 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val block = emptyBlock(blockFlow, chainIndex)
 
     brokerHandler ! BaseBrokerHandler.Received(NewBlockHash(block.hash))
-    blockFlowSynchronizer.expectMsg(
-      BlockFlowSynchronizer.HandShaked(brokerHandlerActor.remoteBrokerInfo)
-    )
     eventually(brokerHandlerActor.seenBlocks.contains(block.hash) is true)
     blockFlowSynchronizer.expectMsg(BlockFlowSynchronizer.BlockAnnouncement(block.hash))
     brokerHandler ! BaseBrokerHandler.Received(NewBlockHash(block.hash))
@@ -117,7 +96,9 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
 
   it should "not mark block seen when receive BlocksResponse/HeadersResponse/InvResponse" in new Fixture {
     val block = emptyBlock(blockFlow, chainIndex)
-    brokerHandler ! BaseBrokerHandler.Received(BlocksResponse(RequestId.random(), AVector(block)))
+    brokerHandler ! BaseBrokerHandler.Received(
+      BlocksResponse.fromBlockBytes(RequestId.random(), AVector(serialize(block)))
+    )
     eventually(brokerHandlerActor.seenBlocks.contains(block.hash)) is false
 
     val blockHeader = emptyBlock(blockFlow, chainIndex).header
@@ -144,7 +125,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     blockFlow.cacheHeaderVerifiedBlock(block)
     requestBlocks()
     connectionHandler.expectMsg {
-      val payload = BlocksResponse(requestId, AVector(block))
+      val payload = BlocksResponse.fromBlockBytes(requestId, AVector(serialize(block)))
       ConnectionHandler.Send(Message.serialize(payload))
     }
   }
@@ -176,7 +157,9 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
   }
 
   it should "publish misbehavior when receive invalid pow block hash" in new Fixture {
-    override val configValues = Map(("alephium.consensus.num-zeros-at-least-in-hash", 1))
+    override val configValues = Map(
+      ("alephium.consensus.num-zeros-at-least-in-hash", 1)
+    )
 
     val invalidPoWBlock = invalidNonceBlock(blockFlow, chainIndex)
     val listener        = TestProbe()
@@ -200,29 +183,6 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val message = Message.serialize(NewBlockHash(blockHash2))
     connectionHandler.expectMsg(ConnectionHandler.Send(message))
     brokerHandlerActor.seenBlocks.contains(blockHash2) is true
-  }
-
-  it should "publish misbehavior when receive deep forked block" in new Fixture {
-    val invalidForkedBlock = emptyBlock(blockFlow, chainIndex)
-    val listener           = TestProbe()
-    val blockChain         = blockFlow.getBlockChain(chainIndex)
-
-    addAndCheck(blockFlow, emptyBlock(blockFlow, chainIndex))
-    addAndCheck(blockFlow, emptyBlock(blockFlow, chainIndex))
-    blockChain.maxHeightUnsafe is 2
-    val validForkedBlock = emptyBlock(blockFlow, chainIndex)
-    (0 until maxForkDepth).foreach(_ => addAndCheck(blockFlow, emptyBlock(blockFlow, chainIndex)))
-    blockChain.maxHeightUnsafe is (2 + maxForkDepth)
-
-    brokerHandler ! BaseBrokerHandler.Received(NewBlock(validForkedBlock))
-    val message = DependencyHandler.AddFlowData(AVector(validForkedBlock), dataOrigin)
-    allHandlerProbes.dependencyHandler.expectMsg(message)
-
-    system.eventStream.subscribe(listener.ref, classOf[MisbehaviorManager.Misbehavior])
-    val remoteAddress = brokerHandlerActor.remoteAddress
-    watch(brokerHandler)
-    brokerHandler ! BaseBrokerHandler.Received(NewBlock(invalidForkedBlock))
-    listener.expectMsg(MisbehaviorManager.DeepForkBlock(remoteAddress))
   }
 
   it should "cleanup cache based on capacity" in new Fixture {
@@ -257,7 +217,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val txs = AVector.fill(10)(transactionGen(chainIndexGen = chainIndexGen).sample.get.toTemplate)
     brokerHandler ! BaseBrokerHandler.Received(TxsResponse(RequestId.random(), txs))
     allHandlerProbes.txHandler.expectMsg(
-      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false)
+      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false, isLocalTx = false)
     )
     txs.foreach { tx =>
       brokerHandlerActor.seenTxs.contains(tx.id) is false
@@ -301,7 +261,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val txHash1 = TransactionId.generate
     val txHash2 = TransactionId.generate
 
-    brokerHandlerActor.seenTxs.put(txHash1, ())
+    brokerHandlerActor.seenTxs.put(txHash1, TimeStamp.now())
     brokerHandler ! BaseBrokerHandler.RelayTxs(AVector((chainIndex, AVector(txHash1))))
     connectionHandler.expectNoMessage()
     brokerHandlerActor.seenTxs.keys().toSet is Set(txHash1)
@@ -342,7 +302,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val response = TxsResponse(RequestId.random(), txs)
     brokerHandler ! BaseBrokerHandler.Received(response)
     allHandlerProbes.txHandler.expectMsg(
-      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false)
+      TxHandler.AddToMemPool(txs, isIntraCliqueSyncing = false, isLocalTx = false)
     )
 
     val invalidTx =
@@ -403,11 +363,32 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     listener.expectMsg(MisbehaviorManager.InvalidFlowChainIndex(brokerHandlerActor.remoteAddress))
   }
 
+  it should "remove seen txs based on expiry duration" in new Fixture {
+    setSynced()
+
+    val Seq(txHash0, txHash1, txHash2, txHash3) = Seq.fill(4)(TransactionId.generate)
+    brokerHandler ! BaseBrokerHandler.Received(NewTxHashes(AVector((chainIndex, AVector(txHash0)))))
+    brokerHandler ! BaseBrokerHandler.RelayTxs(AVector((chainIndex, AVector(txHash2))))
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash0) is true)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash1) is false)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash2) is true)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash3) is false)
+
+    Thread.sleep((seenTxExpiryDuration + Duration.ofSecondsUnsafe(1)).millis)
+
+    brokerHandler ! BaseBrokerHandler.Received(NewTxHashes(AVector((chainIndex, AVector(txHash1)))))
+    brokerHandler ! BaseBrokerHandler.RelayTxs(AVector((chainIndex, AVector(txHash3))))
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash0) is false)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash1) is true)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash2) is false)
+    eventually(brokerHandler.underlyingActor.seenTxs.contains(txHash3) is true)
+  }
+
   trait Fixture extends FlowFixture {
     val cliqueManager         = TestProbe()
     val connectionHandler     = TestProbe()
     val blockFlowSynchronizer = TestProbe()
-    val maxForkDepth          = 5
+    val seenTxExpiryDuration  = Duration.ofSecondsUnsafe(3)
 
     lazy val (allHandler, allHandlerProbes) = TestUtils.createAllHandlersProbe
     lazy val brokerHandler = TestActorRef[TestBrokerHandler](
@@ -420,7 +401,7 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
         ActorRefT(cliqueManager.ref),
         ActorRefT(blockFlowSynchronizer.ref),
         ActorRefT(connectionHandler.ref),
-        maxForkDepth
+        seenTxExpiryDuration
       )
     )
     lazy val brokerHandlerActor = brokerHandler.underlyingActor
@@ -459,7 +440,7 @@ object TestBrokerHandler {
       cliqueManager: ActorRefT[CliqueManager.Command],
       blockFlowSynchronizer: ActorRefT[BlockFlowSynchronizer.Command],
       brokerConnectionHandler: ActorRefT[ConnectionHandler.Command],
-      maxForkDepth: Int
+      seenTxExpiryDuration: Duration
   )(implicit brokerConfig: BrokerConfig, networkSetting: NetworkSetting): Props =
     Props(
       new TestBrokerHandler(
@@ -471,7 +452,7 @@ object TestBrokerHandler {
         cliqueManager,
         blockFlowSynchronizer,
         brokerConnectionHandler,
-        maxForkDepth
+        seenTxExpiryDuration
       )
     )
 }
@@ -485,7 +466,7 @@ class TestBrokerHandler(
     val cliqueManager: ActorRefT[CliqueManager.Command],
     val blockFlowSynchronizer: ActorRefT[BlockFlowSynchronizer.Command],
     override val brokerConnectionHandler: ActorRefT[ConnectionHandler.Command],
-    override val maxForkDepth: Int
+    override val seenTxExpiryDuration: Duration
 )(implicit val brokerConfig: BrokerConfig, val networkSetting: NetworkSetting)
     extends BaseInboundBrokerHandler
     with BrokerHandler {

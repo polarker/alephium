@@ -18,17 +18,21 @@ package org.alephium.flow.core
 
 import scala.annotation.tailrec
 
+import akka.util.ByteString
+
 import org.alephium.flow.Utils
 import org.alephium.flow.core.BlockChain.{ChainDiff, TxIndex, TxStatus}
 import org.alephium.flow.io._
-import org.alephium.flow.setting.ConsensusSetting
+import org.alephium.flow.setting.ConsensusSettings
 import org.alephium.io.{IOResult, IOUtils}
-import org.alephium.protocol.{ALPH}
+import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.{BrokerConfig, NetworkConfig}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.WorldState
-import org.alephium.serde.Serde
+import org.alephium.serde.{serialize, Serde}
 import org.alephium.util.{AVector, TimeStamp}
+
+// scalastyle:off number.of.methods
 
 trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
   def blockStorage: BlockStorage
@@ -44,12 +48,125 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
     }
   }
 
+  private[core] lazy val blockCache =
+    FlowCache.blocks(consensusConfigs.blockCacheCapacityPerChain * 4)
+
+  def cacheBlock(block: Block): Unit = {
+    blockCache.put(block.hash, block)
+  }
+
   def getBlock(hash: BlockHash): IOResult[Block] = {
-    blockStorage.get(hash)
+    blockCache.getE(hash)(blockStorage.get(hash))
   }
 
   def getBlockUnsafe(hash: BlockHash): Block = {
-    blockStorage.getUnsafe(hash)
+    blockCache.getUnsafe(hash)(blockStorage.getUnsafe(hash))
+  }
+
+  def getBlockBytes(hash: BlockHash): IOResult[ByteString] = {
+    IOUtils.tryExecute(getBlockBytesUnsafe(hash))
+  }
+
+  def getBlockBytesUnsafe(hash: BlockHash): ByteString = {
+    blockCache.get(hash).map(serialize(_)).getOrElse(blockStorage.getRawUnsafe(hash))
+  }
+
+  def getSyncDataUnsafe(locators: AVector[BlockHash]): AVector[BlockHash] = {
+    val reversed           = locators.reverse
+    val lastCanonicalIndex = reversed.indexWhere(isCanonicalUnsafe)
+    if (lastCanonicalIndex == -1) {
+      AVector.empty // nothing in common
+    } else {
+      val lastCanonicalHash = reversed(lastCanonicalIndex)
+      val heightFrom        = getHeightUnsafe(lastCanonicalHash) + 1
+      getSyncDataFromHeightUnsafe(heightFrom)
+    }
+  }
+
+  def getSyncDataFromHeightUnsafe(heightFrom: Int): AVector[BlockHash] = {
+    val maxHeight = maxHeightUnsafe
+    val heightTo  = math.min(heightFrom + maxSyncBlocksPerChain, maxHeight)
+    AVector.from(heightFrom to heightTo).flatMap(getHashesUnsafe)
+  }
+
+  private def getUsedGhostUnclesAndAncestorsUnsafe(
+      parentHeader: BlockHeader
+  ): (AVector[BlockHash], AVector[BlockHash]) = {
+    @tailrec
+    def iter(
+        fromHash: BlockHash,
+        num: Int,
+        unclesAcc: AVector[BlockHash],
+        ancestorsAcc: AVector[BlockHash]
+    ): (AVector[BlockHash], AVector[BlockHash]) = {
+      if (num == 0) {
+        (unclesAcc, ancestorsAcc)
+      } else {
+        val block = getBlockUnsafe(fromHash)
+        if (block.isGenesis) {
+          (unclesAcc, ancestorsAcc)
+        } else {
+          val parentHash = block.parentHash
+          val uncles = block.ghostUncleHashes match {
+            case Right(hashes) => hashes
+            case Left(error)   => throw error
+          }
+          iter(parentHash, num - 1, unclesAcc ++ uncles, ancestorsAcc :+ parentHash)
+        }
+      }
+    }
+    iter(parentHeader.hash, ALPH.MaxGhostUncleAge, AVector.empty, AVector.empty)
+  }
+
+  def getUsedGhostUnclesAndAncestors(
+      parentHeader: BlockHeader
+  ): IOResult[(AVector[BlockHash], AVector[BlockHash])] = {
+    IOUtils.tryExecute(getUsedGhostUnclesAndAncestorsUnsafe(parentHeader))
+  }
+
+  def selectGhostUnclesUnsafe(
+      parentHeader: BlockHeader,
+      validator: BlockHeader => Boolean
+  ): AVector[SelectedGhostUncle] = {
+    val blockHeight             = getHeightUnsafe(parentHeader.hash) + 1
+    val (usedUncles, ancestors) = getUsedGhostUnclesAndAncestorsUnsafe(parentHeader)
+
+    @tailrec
+    def iter(
+        fromHeader: BlockHeader,
+        num: Int,
+        unclesAcc: AVector[SelectedGhostUncle]
+    ): AVector[SelectedGhostUncle] = {
+
+      if (fromHeader.isGenesis || num == 0 || unclesAcc.length >= ALPH.MaxGhostUncleSize) {
+        unclesAcc
+      } else {
+        val uncleHeight = getHeightUnsafe(fromHeader.hash)
+        val uncleHashes = getHashesUnsafe(uncleHeight).filter(_ != fromHeader.hash)
+        val uncleBlocks = uncleHashes.map(getBlockUnsafe)
+        val selected = uncleBlocks
+          .filter(uncle =>
+            !usedUncles.contains(uncle.hash) &&
+              ancestors.exists(_ == uncle.parentHash) &&
+              validator(uncle.header)
+          )
+          .map(block =>
+            SelectedGhostUncle(block.hash, block.minerLockupScript, blockHeight - uncleHeight)
+          )
+        val parentHeader = getBlockHeaderUnsafe(fromHeader.parentHash)
+        iter(parentHeader, num - 1, unclesAcc ++ selected)
+      }
+    }
+
+    val availableUncles = iter(parentHeader, ALPH.MaxGhostUncleAge, AVector.empty)
+    availableUncles.takeUpto(ALPH.MaxGhostUncleSize)
+  }
+
+  def selectGhostUncles(
+      parentHeader: BlockHeader,
+      validator: BlockHeader => Boolean
+  ): IOResult[AVector[SelectedGhostUncle]] = {
+    IOUtils.tryExecute(selectGhostUnclesUnsafe(parentHeader, validator))
   }
 
   def getMainChainBlockByHeight(height: Int): IOResult[Option[Block]] = {
@@ -66,7 +183,7 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
       toTs: TimeStamp
   ): IOResult[(ChainIndex, AVector[(Block, Int)])] =
     for {
-      height <- maxHeight
+      height <- maxHeightByWeight
       result <- searchByTimestampHeight(height, fromTs, toTs)
     } yield (chainIndex, result)
 
@@ -222,7 +339,7 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
   }
 
   protected def persistBlock(block: Block): IOResult[Unit] = {
-    blockStorage.put(block)
+    blockStorage.put(block).map(_ => cacheBlock(block))
   }
 
   protected def persistTxs(block: Block): IOResult[Unit] = {
@@ -261,7 +378,7 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
   def getTxStatusUnsafe(txId: TransactionId): Option[TxStatus] = {
     getCanonicalTxIndex(txId).flatMap { selectedIndex =>
       val selectedHeight     = getHeightUnsafe(selectedIndex.hash)
-      val maxHeight          = maxHeightUnsafe
+      val maxHeight          = maxHeightByWeightUnsafe
       val chainConfirmations = maxHeight - selectedHeight + 1
       Some(TxStatus(selectedIndex, chainConfirmations))
     }
@@ -279,6 +396,10 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
       acc ++ Utils.unsafe(getHashes(height))
     }
   }
+
+  override def checkCompletenessUnsafe(hash: BlockHash): Boolean = {
+    checkCompletenessHelper(hash, blockStorage.existsUnsafe, super.checkCompletenessUnsafe)
+  }
 }
 
 object BlockChain {
@@ -287,7 +408,7 @@ object BlockChain {
   )(implicit
       brokerConfig: BrokerConfig,
       networkConfig: NetworkConfig,
-      consensusSetting: ConsensusSetting
+      consensusSettings: ConsensusSettings
   ): BlockChain = {
     val initialize = initializeGenesis(genesisBlock)(_)
     createUnsafe(genesisBlock, storages, initialize)
@@ -298,7 +419,7 @@ object BlockChain {
   )(implicit
       brokerConfig: BrokerConfig,
       networkConfig: NetworkConfig,
-      consensusSetting: ConsensusSetting
+      consensusSettings: ConsensusSettings
   ): BlockChain = {
     createUnsafe(genesisBlock, storages, initializeFromStorage)
   }
@@ -310,12 +431,12 @@ object BlockChain {
   )(implicit
       _brokerConfig: BrokerConfig,
       _networkConfig: NetworkConfig,
-      _consensusSetting: ConsensusSetting
+      _consensusSettings: ConsensusSettings
   ): BlockChain = {
     val blockchain: BlockChain = new BlockChain {
       override val brokerConfig      = _brokerConfig
       override val networkConfig     = _networkConfig
-      override val consensusConfig   = _consensusSetting
+      override val consensusConfigs  = _consensusSettings
       override val blockStorage      = storages.blockStorage
       override val txStorage         = storages.txStorage
       override val headerStorage     = storages.headerStorage

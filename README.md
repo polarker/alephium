@@ -22,7 +22,6 @@ The protocol's innovations extend battle-tested ideas from [Bitcoin](https://bit
   * Flash loan is not available by design
   * Eliminate many attack vectors of EVM, including unlimited authorization, double dip issue, reentrancy attack, etc
   * UTXO style `fine-grained execution model` reduces risk-free arbitrage
-* `Front-running mitigation` through random execution of transactions (see code, wiki to come)
 * PoLW algorithm reduces the energy consumption of PoW in the long term ([research paper](https://github.com/alephium/research/blob/master/polw.pdf))
   * Adaptive rewards based on hashrate and timestamp are designed and implemented
   * Internal mining cost through burning will be activated when hashrate and energy consumption is significantly high
@@ -90,3 +89,13 @@ Have a look at our contribution guide described in [CONTRIBUTING.md](CONTRIBUTIN
 [codecov-link]: https://codecov.io/gh/alephium/alephium
 [discord-badge]: https://img.shields.io/discord/747741246667227157?logo=discord
 [discord-link]: https://discord.gg/JErgRBfRSB
+
+## Acknowledgements
+
+<img src="https://www.yourkit.com/images/yklogo.png" align="right" />
+
+YourKit supports open source projects with innovative and intelligent tools
+for monitoring and profiling Java and .NET applications.
+YourKit is the creator of <a href="https://www.yourkit.com/java/profiler/">YourKit Java Profiler</a>,
+<a href="https://www.yourkit.com/.net/profiler/">YourKit .NET Profiler</a>,
+and <a href="https://www.yourkit.com/youmonitor/">YourKit YouMonitor</a>.

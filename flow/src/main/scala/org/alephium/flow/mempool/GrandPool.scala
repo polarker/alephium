@@ -19,14 +19,20 @@ package org.alephium.flow.mempool
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.setting.MemPoolSetting
 import org.alephium.protocol.config.BrokerConfig
-import org.alephium.protocol.model.{ChainIndex, GroupIndex, TransactionTemplate}
-import org.alephium.util.{AVector, TimeStamp}
+import org.alephium.protocol.model.{ChainIndex, GroupIndex, TransactionId, TransactionTemplate}
+import org.alephium.util.{AVector, OptionF, TimeStamp}
 
 class GrandPool(val mempools: AVector[MemPool])(implicit
     val brokerConfig: BrokerConfig
 ) {
+  def size: Int = mempools.fold(0)(_ + _.size)
+
   @inline def getMemPool(mainGroup: GroupIndex): MemPool = {
     mempools(brokerConfig.groupIndexOfBroker(mainGroup))
+  }
+
+  def get(txId: TransactionId): Option[TransactionTemplate] = {
+    OptionF.getAny(mempools.toIterable)(_.get(txId))
   }
 
   def add(
@@ -58,11 +64,23 @@ class GrandPool(val mempools: AVector[MemPool])(implicit
     mempools.flatMap(_.getOutTxsWithTimestamp())
   }
 
-  def clean(
+  def cleanInvalidTxs(
       blockFlow: BlockFlow,
       timeStampThreshold: TimeStamp
-  ): Unit = {
-    mempools.foreach(_.clean(blockFlow, timeStampThreshold))
+  ): Int = {
+    mempools.fold(0)(_ + _.cleanInvalidTxs(blockFlow, timeStampThreshold))
+  }
+
+  def cleanUnconfirmedTxs(timeStampThreshold: TimeStamp): Int = {
+    mempools.fold(0)(_ + _.cleanUnconfirmedTxs(timeStampThreshold))
+  }
+
+  def clear(): Unit = {
+    mempools.foreach(_.clear())
+  }
+
+  def validateAllTxs(blockFlow: BlockFlow): Int = {
+    cleanInvalidTxs(blockFlow, TimeStamp.now())
   }
 }
 

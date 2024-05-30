@@ -118,7 +118,7 @@ trait ApiModelCodec {
     _.toHexString
   )
   implicit val hashReader: Reader[Hash] =
-    byteStringReader.map(Hash.from(_).getOrElse(throw new Abort("cannot decode hash")))
+    byteStringReader.map(Hash.from(_).getOrElse(throw new Abort("cannot decode 32 bytes hash")))
 
   implicit val blockHashWriter: Writer[BlockHash] = StringWriter.comap[BlockHash](
     _.toHexString
@@ -178,11 +178,13 @@ trait ApiModelCodec {
 
   implicit val hashrateResponseRW: RW[HashRateResponse] = macroRW
 
+  implicit val currentDifficultyRW: RW[CurrentDifficulty] = macroRW
+
   implicit val blocksPerTimeStampRangeRW: RW[BlocksPerTimeStampRange] = macroRW
 
   implicit val blocksAndEventsPerTimeStampRangeRW: RW[BlocksAndEventsPerTimeStampRange] = macroRW
 
-  implicit val unconfirmedTransactionsRW: RW[UnconfirmedTransactions] = macroRW
+  implicit val mempoolTransactionsRW: RW[MempoolTransactions] = macroRW
 
   implicit val outputRefRW: RW[OutputRef] = macroRW
 
@@ -210,6 +212,8 @@ trait ApiModelCodec {
   implicit val transactionRW: RW[Transaction] = macroRW
 
   implicit val exportFileRW: RW[ExportFile] = macroRW
+
+  implicit val ghostUncleBlockEntryRW: RW[GhostUncleBlockEntry] = macroRW
 
   implicit val blockEntryRW: RW[BlockEntry] = macroRW
 
@@ -247,7 +251,23 @@ trait ApiModelCodec {
 
   implicit val destinationRW: RW[Destination] = macroRW
 
+  implicit val fromPublicKeyTypeRW: RW[BuildTxCommon.PublicKeyType] = readwriter[String].bimap(
+    {
+      case BuildTxCommon.Default       => "default"
+      case BuildTxCommon.BIP340Schnorr => "bip340-schnorr"
+    },
+    {
+      case "default"        => BuildTxCommon.Default
+      case "bip340-schnorr" => BuildTxCommon.BIP340Schnorr
+      case other            => throw Abort(s"Invalid public key type: $other")
+    }
+  )
   implicit val buildTransactionRW: RW[BuildTransaction] = macroRW
+
+  implicit val buildMultiAddressesTransactionSourceRW: RW[BuildMultiAddressesTransaction.Source] =
+    macroRW
+
+  implicit val buildMultiAddressesTransactionRW: RW[BuildMultiAddressesTransaction] = macroRW
 
   implicit val buildSweepAddressTransactionsRW: RW[BuildSweepAddressTransactions] = macroRW
 
@@ -282,6 +302,8 @@ trait ApiModelCodec {
 
   implicit val buildMultisigRW: RW[BuildMultisig] = macroRW
 
+  implicit val buildSweepMultisigRW: RW[BuildSweepMultisig] = macroRW
+
   implicit val submitMultisigTransactionRW: RW[SubmitMultisig] = macroRW
 
   implicit val compilerOptionsRW: RW[CompilerOptions] = macroRW
@@ -296,7 +318,12 @@ trait ApiModelCodec {
     readwriter[String].bimap(_.value, CompileProjectResult.Patch(_))
   implicit val compileResultFieldsRW: RW[CompileResult.FieldsSig]     = macroRW
   implicit val compileResultFunctionRW: RW[CompileResult.FunctionSig] = macroRW
+  implicit val compileResultMapsRW: RW[CompileResult.MapsSig]         = macroRW
   implicit val compileResultEventRW: RW[CompileResult.EventSig]       = macroRW
+  implicit val compileResultConstantRW: RW[CompileResult.Constant]    = macroRW
+  implicit val compileResultEnumFieldRW: RW[CompileResult.EnumField]  = macroRW
+  implicit val compileResultEnumRW: RW[CompileResult.Enum]            = macroRW
+  implicit val compileResultStructRW: RW[CompileResult.StructSig]     = macroRW
   implicit val compileScriptResultRW: RW[CompileScriptResult]         = macroRW
   implicit val compileContractResultRW: RW[CompileContractResult]     = macroRW
   implicit val compileProjectResultRW: RW[CompileProjectResult]       = macroRW
@@ -319,8 +346,13 @@ trait ApiModelCodec {
   implicit val debugMessageRW: ReadWriter[DebugMessage]             = macroRW
   implicit val testContractResultRW: ReadWriter[TestContractResult] = macroRW
 
-  implicit val callContractRW: ReadWriter[CallContract]             = macroRW
-  implicit val callContractResultRW: ReadWriter[CallContractResult] = macroRW
+  implicit val callContractRW: ReadWriter[CallContract]                   = macroRW
+  implicit val callContractSucceededRW: ReadWriter[CallContractSucceeded] = macroRW
+  implicit val callContractFailedRW: ReadWriter[CallContractFailed]       = macroRW
+  implicit val callContractResultRW: ReadWriter[CallContractResult]       = macroRW
+
+  implicit val multipleCallContractRW: ReadWriter[MultipleCallContract]             = macroRW
+  implicit val multipleCallContractResultRW: ReadWriter[MultipleCallContractResult] = macroRW
 
   implicit val txResultRW: RW[SubmitTxResult] = macroRW
 
@@ -416,6 +448,9 @@ trait ApiModelCodec {
   }
 
   implicit val verifySignatureRW: RW[VerifySignature] = macroRW
+
+  implicit val targetToHashrateRW: RW[TargetToHashrate]              = macroRW
+  implicit val targetToHashrateResultRW: RW[TargetToHashrate.Result] = macroRW
 
   implicit val releaseVersionEncoder: Writer[model.ReleaseVersion] = StringWriter.comap(_.toString)
   implicit val releaseVersionDecoder: Reader[model.ReleaseVersion] = StringReader.map { raw =>

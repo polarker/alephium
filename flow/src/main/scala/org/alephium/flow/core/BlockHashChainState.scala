@@ -17,7 +17,7 @@
 package org.alephium.flow.core
 
 import org.alephium.flow.io.ChainStateStorage
-import org.alephium.flow.setting.ConsensusSetting
+import org.alephium.flow.setting.ConsensusSettings
 import org.alephium.io.IOResult
 import org.alephium.protocol.model.BlockHash
 import org.alephium.util.{AVector, ConcurrentHashMap, TimeStamp}
@@ -27,11 +27,12 @@ trait BlockHashChainState {
 
   protected val tips = ConcurrentHashMap.empty[BlockHash, TimeStamp]
 
-  implicit def consensusConfig: ConsensusSetting
+  def consensusConfigs: ConsensusSettings
 
   protected def chainStateStorage: ChainStateStorage
 
   def getTimestamp(hash: BlockHash): IOResult[TimeStamp]
+  def getTimestampUnsafe(hash: BlockHash): TimeStamp
 
   def setGenesisState(newTip: BlockHash, timeStamp: TimeStamp): IOResult[Unit] = {
     numHashes += 1
@@ -60,6 +61,11 @@ trait BlockHashChainState {
     updateDB()
   }
 
+  def removeInvalidTip(tip: BlockHash): Unit = {
+    tips.remove(tip)
+    ()
+  }
+
   @inline
   private def updateDB(): IOResult[Unit] = {
     val state = BlockHashChain.State(numHashes, AVector.from(tips.keys()))
@@ -69,7 +75,7 @@ trait BlockHashChainState {
   @inline
   private def pruneDueto(timeStamp: TimeStamp): Unit = {
     tips.entries().foreach { entry =>
-      if (entry.getValue + consensusConfig.tipsPruneDuration < timeStamp) {
+      if (entry.getValue + consensusConfigs.tipsPruneDuration < timeStamp) {
         tips.remove(entry.getKey)
       }
     }

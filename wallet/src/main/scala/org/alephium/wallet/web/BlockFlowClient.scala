@@ -107,7 +107,7 @@ object BlockFlowClient {
     def fetchBalance(
         address: Address.Asset
     ): Future[Either[ApiError[_ <: StatusCode], (Amount, Amount, Option[String])]] =
-      requestFromGroup(address.groupIndex, getBalance, address).map(
+      requestFromGroup(address.groupIndex, getBalance, (address, Some(true))).map(
         _.map(res => (res.balance, res.lockedBalance, res.warning))
       )
 
@@ -123,7 +123,8 @@ object BlockFlowClient {
         lockupScript.groupIndex,
         buildTransaction,
         BuildTransaction(
-          fromPublicKey,
+          fromPublicKey.bytes,
+          None,
           destinations,
           None,
           gas,
@@ -147,6 +148,7 @@ object BlockFlowClient {
         BuildSweepAddressTransactions(
           fromPublicKey,
           address,
+          None,
           lockTime,
           gas,
           gasPrice

@@ -178,9 +178,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
       transferFromP2sh(lockup, unlock)
 
       val estimator = assetScriptGasEstimator(lockup, unlock)
-      GasEstimation
-        .estimateInputGas(unlock, None, estimator)
-        .leftValue is "Please use binary search to set the gas manually as signature is required in P2SH script"
+      GasEstimation.estimateInputGas(unlock, None, estimator) isE GasBox.unsafe(4277)
     }
 
     info("P2SH, other execution error, e.g. ArithmeticError")
@@ -252,7 +250,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |  verifyTxSignature!(#${pubKey.toHexString})
            |}
            |""".stripMargin
-      ).leftValue is "Please use binary search to set the gas manually as signature is required in tx script or contract"
+      ) isE GasBox.unsafe(6745)
     }
 
     info("Other execution error, e.g. AssertionFailed")
@@ -265,7 +263,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
            |  assert!(1 == 2, 0)
            |}
            |""".stripMargin
-      ).leftValue is "Execution error when estimating gas for tx script or contract: AssertionFailedWithErrorCode(null,0)"
+      ).leftValue is "Execution error when estimating gas for tx script or contract: Assertion Failed in TxScript, Error Code: 0"
       // scalastyle:on no.equal
     }
   }
@@ -355,7 +353,7 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
         unlock,
         output,
         None,
-        defaultGasPrice,
+        nonCoinbaseMinGasPrice,
         defaultUtxoLimit
       )
       .rightValue
@@ -369,9 +367,9 @@ class GasEstimationSpec extends AlephiumFlowSpec with TxInputGenerators {
     val unlock            = UnlockScript.p2pkh(publicKey)
     val utxos             = blockFlow.getUsableUtxos(lockup, 100).rightValue
     val inputs            = utxos.map(_.ref).map(TxInput(_, unlock))
-    val estimator         = TxScriptGasEstimator.Default(inputs, blockFlow)
+    val estimator         = TxScriptGasEstimator.Default(blockFlow)
 
-    GasEstimation.estimate(script, estimator)
+    GasEstimation.estimate(inputs, script, estimator)
   }
 
   private def assetScriptGasEstimator(
