@@ -21,7 +21,7 @@ object Version {
   lazy val tapir      = "1.2.2"
   lazy val sttp       = "3.5.2"
   lazy val apispec    = "0.3.1"
-  lazy val prometheus = "0.16.0"
+  lazy val prometheus = "1.9.0"
 }
 
 object Dependencies {
@@ -58,10 +58,11 @@ object Dependencies {
   lazy val `sttp-backend` =
     "com.softwaremill.sttp.client3" %% "async-http-client-backend-future" % Version.sttp
 
-  lazy val `prometheus-simple-client` = "io.prometheus" % "simpleclient" % Version.prometheus
+  lazy val `prometheus-simple-client` =
+    "io.prometheus" % "prometheus-metrics-core" % Version.prometheus
   lazy val `prometheus-simple-client-common` =
     "io.prometheus" % "simpleclient_common" % Version.prometheus
   lazy val `prometheus-simple-client-hotspot` =
-    "io.prometheus" % "simpleclient_hotspot" % Version.prometheus
+    "io.prometheus" % "prometheus-metrics-instrumentation-jvm" % Version.prometheus
   lazy val scopt = "com.github.scopt" %% "scopt" % "4.1.0"
 }
